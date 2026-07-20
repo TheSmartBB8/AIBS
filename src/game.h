@@ -7,6 +7,7 @@
 #include "player.h"
 #include "weapons.h"
 #include "particles.h"
+#include "props.h"
 #include "audio.h"
 #include "net.h"
 #include "render.h"
@@ -43,8 +44,12 @@ struct Game {
     Player player;
     WeaponsState weapons;
     ParticleSystem particles;
+    FireSystem fires;
+    LooseVoxelSystem loose;
     AudioSystem audio;
     WeaponContext wctx;
+    int grabbedProp = -1;     // index into loose.props, or -1 if not carrying anything
+    bool despawnLooseProps = true;
 
     GameState state = ST_MAIN_MENU;
     int selectedMap = 0;
@@ -83,6 +88,11 @@ struct Game {
         wctx.addLight = [this](vec3 pos, vec3 col, float radius, float) {
             if (ren.lights.size() < 16) ren.lights.push_back({pos, radius, col});
         };
+        wctx.tryIgnite = [this](int x, int y, int z) { fires.ignite(world, x, y, z); };
+        wctx.extinguishFireCone = [this](vec3 eye, vec3 dir, float range, float cosHalf) {
+            fires.extinguishCone(eye, dir, range, cosHalf);
+        };
+        wctx.spawnLooseDebris = [this](vec3 pos, uint8_t pal, vec3 vel) { loose.spawn(pos, pal, vel); };
     }
 
     void shutdown() {
@@ -104,6 +114,9 @@ struct Game {
         player.pitch = 0;
         weapons = WeaponsState();
         particles.clearAll();
+        fires.clearAll();
+        loose.props.clear();
+        grabbedProp = -1;
         ren.lights.clear();
         for (auto& r : remotes) r = RemotePlayer();
         opLog.clear();
@@ -458,16 +471,49 @@ struct Game {
             if (in.keyPressed[(unsigned char)key]) { weapons.current = (Tool)k; audio.play(SND_CLICK, 0.5f); }
         }
 
-        // fire
-        weapons.cooldown = std::max(0.f, weapons.cooldown - dt);
         vec3 eye = player.eye();
         vec3 dir = player.forward();
+
+        // loose-voxel pickup: hold right-click to grab and carry a piece of debris. The
+        // spray can already uses right-click for its own color-cycle, so grabbing is
+        // unavailable while it's the equipped tool — a small, honest simplification rather
+        // than a real per-tool "off-hand" system.
+        if (weapons.current != TOOL_SPRAYCAN) {
+            if (grabbedProp < 0 && in.mousePressed[1]) {
+                int idx = loose.findGrabbable(eye, dir, 2.5f);
+                if (idx >= 0) {
+                    grabbedProp = idx;
+                    loose.props[idx].held = true;
+                    audio.play(SND_CLICK, 0.3f);
+                }
+            }
+            if (grabbedProp >= 0 && grabbedProp < (int)loose.props.size()) {
+                if (!in.mouseDown[1]) {
+                    LooseVoxel& lv = loose.props[grabbedProp];
+                    lv.held = false;
+                    lv.resting = false;
+                    lv.vel = player.forwardFlat() * 1.0f;
+                    grabbedProp = -1;
+                } else {
+                    LooseVoxel& lv = loose.props[grabbedProp];
+                    vec3 carryPos = eye + dir * 1.1f;
+                    lv.pos = vlerp(lv.pos, carryPos, clampf(dt * 14.f, 0.f, 1.f));
+                    lv.vel = vec3(0, 0, 0);
+                }
+            } else grabbedProp = -1;
+        } else if (grabbedProp >= 0) {
+            if (grabbedProp < (int)loose.props.size()) loose.props[grabbedProp].held = false;
+            grabbedProp = -1;
+        }
+
+        // fire (suppressed while carrying an object — one prop occupies both hands here)
+        weapons.cooldown = std::max(0.f, weapons.cooldown - dt);
         static Rng shotRng(9001);
         if (weapons.current == TOOL_SPRAYCAN && in.mousePressed[1]) {
             weapons.cycleSprayColor();
             audio.play(SND_CLICK, 0.4f);
         }
-        if (in.mouseDown[0] && weapons.cooldown <= 0.f) {
+        if (grabbedProp < 0 && in.mouseDown[0] && weapons.cooldown <= 0.f) {
             weapons.cooldown = weapons.cooldownFor(weapons.current);
             switch (weapons.current) {
                 case TOOL_SLEDGE: fireSledge(wctx, weapons, eye, dir); break;
@@ -497,6 +543,8 @@ struct Game {
         updateRockets(wctx, weapons, dt);
         updatePlacedBombs(wctx, weapons, dt);
         particles.update(dt, world);
+        fires.update(dt, wctx, mapInfo.waterLevel, mapInfo.hasWater);
+        loose.update(dt, world);
 
         // falling clusters
         for (auto& fc : world.clusters) {
@@ -510,6 +558,7 @@ struct Game {
                     const PalEntry& pe = world.palette[pal];
                     vec3 vp((x + 0.5f) * VOXEL_SIZE, (y + 0.5f) * VOXEL_SIZE, (z + 0.5f) * VOXEL_SIZE);
                     particles.voxelDebris(vp, pe.r, pe.g, pe.b, vec3(lr.sf(), 0.3f, lr.sf()), 2.f);
+                    if (lr.uf() < 0.12f) loose.spawn(vp, pal, vec3(lr.sf(), lr.uf() * 0.5f, lr.sf()) * 1.5f);
                 });
                 if (fc.drop >= 6) {
                     shakeAmp = std::max(shakeAmp, 0.35f);
@@ -567,6 +616,17 @@ struct Game {
             drawAvatar(r);
         }
 
+        // loose grabbable debris props (the one currently held is drawn with the viewmodel)
+        if (!loose.props.empty()) {
+            ren.modelBegin();
+            for (auto& lv : loose.props) {
+                if (lv.held) continue;
+                const PalEntry& pe = world.palette[lv.pal];
+                ren.modelBox(lv.pos, vec3(0.11f, 0.11f, 0.11f), pe.r, pe.g, pe.b);
+            }
+            ren.modelDraw(mat4::identity(), mapInfo, mapInfo.ambient);
+        }
+
         // particles
         static std::vector<PartInst> alphaP, addP;
         alphaP.clear(); addP.clear();
@@ -605,6 +665,17 @@ struct Game {
 
         mat4 model = mat4_translate(base) * mat4_roty(-player.yaw) * mat4_rotx(-player.pitch);
         ren.modelBegin();
+
+        if (grabbedProp >= 0 && grabbedProp < (int)loose.props.size()) {
+            // hand gripping the carried piece of debris, instead of the equipped tool
+            const PalEntry& pe = world.palette[loose.props[grabbedProp].pal];
+            ren.modelBox(vec3(0, -0.04f, 0.02f), vec3(0.11f, 0.11f, 0.11f), pe.r, pe.g, pe.b);
+            ren.modelBox(vec3(0.06f, -0.13f, -0.02f), vec3(0.03f, 0.05f, 0.06f), 224, 190, 160);
+            ren.modelBox(vec3(-0.06f, -0.13f, -0.02f), vec3(0.03f, 0.05f, 0.06f), 224, 190, 160);
+            ren.modelDraw(model, mapInfo, 1.0f);
+            return;
+        }
+
         float rec = weapons.recoilAnim;
         switch (weapons.current) {
             case TOOL_SLEDGE: {
@@ -842,13 +913,20 @@ struct Game {
             for (int i = 0; i < 4; i++) if (fabsf(ren.settings.renderScale - scales[i]) < 0.01f) idx = i;
             ren.settings.renderScale = scales[(idx + 1) % 4];
         }
+        char despawnLbl[40];
+        std::snprintf(despawnLbl, sizeof despawnLbl, "LOOSE DEBRIS: %s", despawnLooseProps ? "DESPAWNS" : "NEVER DESPAWNS");
+        if (btn(x, y + gap * 5, bw, bh, despawnLbl)) {
+            audio.play(SND_CLICK);
+            despawnLooseProps = !despawnLooseProps;
+            loose.despawnTime = despawnLooseProps ? 30.f : -1.f;
+        }
         ren.uiTextCentered("HIGHER RENDER SCALE = SHARPER IMAGE, MORE GPU LOAD",
-                           cx, y + gap * 5 - 12, 1.3f, 0.55f, 0.6f, 0.65f, 0.75f);
+                           cx, y + gap * 6 - 12, 1.3f, 0.55f, 0.6f, 0.65f, 0.75f);
         ren.uiTextCentered("GL 3.3 CORE - RUNS ON NVIDIA / AMD / INTEL",
-                           cx, y + gap * 5 + 20, 1.4f, 0.55f, 0.6f, 0.65f, 0.8f);
+                           cx, y + gap * 6 + 20, 1.4f, 0.55f, 0.6f, 0.65f, 0.8f);
         char coreLbl[48];
         std::snprintf(coreLbl, sizeof coreLbl, "WORKER THREADS: %d", ThreadPool::get().workerCount());
-        ren.uiTextCentered(coreLbl, cx, y + gap * 5 + 44, 1.4f, 0.55f, 0.6f, 0.65f, 0.8f);
+        ren.uiTextCentered(coreLbl, cx, y + gap * 6 + 44, 1.4f, 0.55f, 0.6f, 0.65f, 0.8f);
         if (btn(cx - 100, (float)plat->st.height - 90, 200, 50, "BACK"))
             { audio.play(SND_CLICK); state = ST_MAIN_MENU; }
     }
@@ -899,6 +977,29 @@ struct Game {
             ren.uiRect(cx - th * 0.5f, cy - gap - cs, th, cs, 1, 1, 1, 0.85f);
             ren.uiRect(cx - th * 0.5f, cy + gap, th, cs, 1, 1, 1, 0.85f);
             ren.uiRect(cx - 1, cy - 1, 2, 2, 1, 1, 1, 0.55f);
+        }
+        // grip hint: corner-bracket reticle when aiming at a grabbable piece of debris
+        // (stands in for a hand-grip cursor icon, which this UI system has no bitmap for)
+        {
+            bool showGrab = false;
+            if (weapons.current != TOOL_SPRAYCAN && grabbedProp < 0)
+                showGrab = loose.findGrabbable(player.eye(), player.forward(), 2.5f) >= 0;
+            if (showGrab) {
+                float bs = 14.f, bl = 5.f, bt = 1.5f;
+                float gr = UI_ACCENT_R, gg = UI_ACCENT_G, gb = UI_ACCENT_B;
+                ren.uiRect(cx - bs, cy - bs, bl, bt, gr, gg, gb, 0.9f);
+                ren.uiRect(cx - bs, cy - bs, bt, bl, gr, gg, gb, 0.9f);
+                ren.uiRect(cx + bs - bl, cy - bs, bl, bt, gr, gg, gb, 0.9f);
+                ren.uiRect(cx + bs - bt, cy - bs, bt, bl, gr, gg, gb, 0.9f);
+                ren.uiRect(cx - bs, cy + bs - bt, bl, bt, gr, gg, gb, 0.9f);
+                ren.uiRect(cx - bs, cy + bs - bl, bt, bl, gr, gg, gb, 0.9f);
+                ren.uiRect(cx + bs - bl, cy + bs - bt, bl, bt, gr, gg, gb, 0.9f);
+                ren.uiRect(cx + bs - bt, cy + bs - bl, bt, bl, gr, gg, gb, 0.9f);
+            }
+            if (grabbedProp >= 0) {
+                const char* lbl = "CARRYING";
+                ren.uiTextCentered(lbl, cx, cy + 22, 1.4f, UI_ACCENT_R, UI_ACCENT_G, UI_ACCENT_B, 0.85f);
+            }
         }
         // tool indicator: minimal corner tag, no panel — name + underline + a tick per tool
         {

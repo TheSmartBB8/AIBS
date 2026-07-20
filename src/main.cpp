@@ -465,6 +465,110 @@ static int selftestMain() {
         CHECK(vlen(debrisP.vel - velBefore) > 0.01f, "leaf blower pushes debris particles in its cone");
     }
 
+    // ---- fire system: ignites only flammable material, spreads, burns voxels away, capped
+    {
+        World w;
+        w.init();
+        uint8_t bedrock = w.addPal(50, 50, 50, M_BEDROCK);
+        uint8_t wood = w.addPal(150, 112, 70, M_MED);
+        uint8_t heavy = w.addPal(150, 150, 155, M_HEAVY);
+        for (int x = 0; x < 20; x++) for (int z = 0; z < 20; z++) w.setRaw(x, 0, z, bedrock);
+        for (int x = 0; x < 10; x++) w.setRaw(x, 1, 5, wood);   // a wooden row that fire can travel along
+        w.setRaw(15, 1, 5, heavy);
+
+        FireSystem fs;
+        CHECK(!fs.ignite(w, 15, 1, 5), "fire cannot ignite non-flammable (heavy) material");
+        CHECK(fs.ignite(w, 0, 1, 5), "fire ignites flammable (wood) material");
+        CHECK(!fs.ignite(w, 0, 1, 5), "the same voxel can't be ignited twice");
+
+        ParticleSystem ps;
+        int burnOps = 0;
+        WeaponContext ctx; ctx.world = &w; ctx.particles = &ps;
+        ctx.emitOp = [&](const DestructionOp& op) { burnOps++; applyDestructionOp(ctx, op, false); };
+        ctx.emitFire = [](const FireEvent&) {};
+        ctx.addShake = [](vec3, float) {};
+        ctx.playSound = [](int) {};
+        ctx.addLight = [](vec3, vec3, float, float) {};
+        for (int i = 0; i < 600; i++) fs.update(1.f / 30.f, ctx, -1000.f, false);
+        CHECK(burnOps > 0, "a burned-out voxel is destroyed via the normal networked op path");
+        CHECK(w.get(0, 1, 5) == 0, "the originally ignited voxel is gone after it finishes burning");
+
+        // spread + cap: a long flammable run should hit the MAX_FIRES ceiling, not runaway
+        World big;
+        big.init();
+        uint8_t bedrock2 = big.addPal(50, 50, 50, M_BEDROCK);
+        uint8_t wood2 = big.addPal(150, 112, 70, M_MED);
+        for (int x = 0; x < 200; x++) for (int z = 0; z < 5; z++) big.setRaw(x, 0, z, bedrock2);
+        for (int x = 0; x < 190; x++) big.setRaw(x, 1, 2, wood2);
+        FireSystem fsBig;
+        fsBig.ignite(big, 0, 1, 2);
+        WeaponContext ctxBig; ctxBig.world = &big; ctxBig.particles = &ps;
+        ctxBig.emitOp = [&](const DestructionOp& op) { applyDestructionOp(ctxBig, op, false); };
+        ctxBig.emitFire = [](const FireEvent&) {};
+        ctxBig.addShake = [](vec3, float) {};
+        ctxBig.playSound = [](int) {};
+        ctxBig.addLight = [](vec3, vec3, float, float) {};
+        int maxSeen = 0;
+        for (int i = 0; i < 300; i++) {
+            fsBig.update(1.f / 20.f, ctxBig, -1000.f, false);
+            maxSeen = std::max(maxSeen, (int)fsBig.fires.size());
+        }
+        CHECK(maxSeen <= MAX_FIRES, "concurrent fire count never exceeds the cap");
+
+        // submersion in water extinguishes
+        FireSystem fsWater;
+        fsWater.ignite(w, 3, 1, 5);
+        WeaponContext ctxW; ctxW.world = &w; ctxW.particles = &ps;
+        ctxW.emitOp = [](const DestructionOp&) {};
+        ctxW.emitFire = [](const FireEvent&) {};
+        ctxW.addShake = [](vec3, float) {};
+        ctxW.playSound = [](int) {};
+        ctxW.addLight = [](vec3, vec3, float, float) {};
+        fsWater.update(0.01f, ctxW, 100.f, true);   // water level far above the fire -> submerged
+        CHECK(fsWater.fires.empty(), "a fire submerged in water is extinguished");
+
+        // extinguisher cone
+        FireSystem fsCone;
+        fsCone.ignite(w, 3, 1, 5);
+        vec3 fireCenter(3.5f * VOXEL_SIZE, 1.5f * VOXEL_SIZE, 5.5f * VOXEL_SIZE);
+        fsCone.extinguishCone(fireCenter - vnorm(vec3(0, 0, 1)) * 2.f, vnorm(vec3(0, 0, 1)), 6.f, 0.5f);
+        CHECK(fsCone.fires.empty(), "the extinguisher cone puts out a fire in its path");
+    }
+
+    // ---- loose voxel props: spawn, settle under gravity, and are grabbable within a cone
+    {
+        World w;
+        w.init();
+        uint8_t bedrock = w.addPal(50, 50, 50, M_BEDROCK);
+        uint8_t wood = w.addPal(150, 112, 70, M_MED);
+        for (int x = 0; x < 10; x++) for (int z = 0; z < 10; z++) w.setRaw(x, 0, z, bedrock);
+
+        LooseVoxelSystem lvs;
+        vec3 dropPos(5 * VOXEL_SIZE, 3 * VOXEL_SIZE, 5 * VOXEL_SIZE);
+        CHECK(lvs.spawn(dropPos, wood, vec3(0, 0, 0)), "a loose voxel prop can be spawned");
+        for (int i = 0; i < 300 && !lvs.props[0].resting; i++) lvs.update(1.f / 60.f, w);
+        CHECK(lvs.props[0].resting, "a dropped loose voxel settles under gravity onto solid ground");
+        CHECK(lvs.props[0].pos.y < dropPos.y, "the settled voxel ended up lower than where it was dropped");
+
+        vec3 eye = lvs.props[0].pos - vec3(0, 0, 1.5f);
+        int found = lvs.findGrabbable(eye, vnorm(vec3(0, 0, 1)), 3.f);
+        CHECK(found == 0, "a nearby loose voxel prop is found by an aim-cone grab check");
+        int notFound = lvs.findGrabbable(eye, vnorm(vec3(1, 0, 0)), 3.f);
+        CHECK(notFound == -1, "a loose voxel prop outside the aim cone is not found");
+
+        // cap + recycle: filling past MAX_LOOSE_VOXELS reuses the oldest settled prop
+        // rather than growing unbounded
+        LooseVoxelSystem cap;
+        for (int i = 0; i < MAX_LOOSE_VOXELS; i++) {
+            cap.spawn(vec3(1, 3, 1), wood, vec3(0, 0, 0));
+            cap.props.back().resting = true;
+        }
+        CHECK((int)cap.props.size() == MAX_LOOSE_VOXELS, "loose voxel pool fills up to its cap");
+        bool spawnedOneMore = cap.spawn(vec3(1, 3, 1), wood, vec3(0, 0, 0));
+        CHECK(spawnedOneMore && (int)cap.props.size() == MAX_LOOSE_VOXELS,
+              "spawning past the cap recycles an old settled prop instead of growing unbounded");
+    }
+
     std::printf("== %s (%d failing check%s) ==\n", fails == 0 ? "ALL CHECKS PASSED" : "SELFTEST FAILED",
                fails, fails == 1 ? "" : "s");
     return fails == 0 ? 0 : 1;

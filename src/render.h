@@ -12,6 +12,18 @@
 #include <cstdio>
 
 // ---------------------------------------------------------------- shader utils
+// Shader errors are reported via MessageBox on Windows (not just stderr) because a
+// -mwindows GUI build has no visible console — a driver rejecting a shader would
+// otherwise fail completely silently and just look like "the graphics are broken".
+static void reportShaderError(const char* tag, const char* stage, const char* log) {
+    fprintf(stderr, "[shader] %s %s error:\n%s\n", tag, stage, log);
+#ifdef _WIN32
+    char buf[4200];
+    _snprintf(buf, sizeof buf, "Shader \"%s\" failed to %s:\n\n%s", tag, stage, log);
+    buf[sizeof buf - 1] = 0;
+    MessageBoxA(nullptr, buf, "VoxWreck - Shader Error", MB_ICONERROR);
+#endif
+}
 static GLuint compileShader(GLenum type, const char* src, const char* tag) {
     GLuint s = glCreateShader(type);
     glShaderSource(s, 1, &src, nullptr);
@@ -21,7 +33,7 @@ static GLuint compileShader(GLenum type, const char* src, const char* tag) {
     if (!ok) {
         char log[4096];
         glGetShaderInfoLog(s, sizeof log, nullptr, log);
-        fprintf(stderr, "[shader] %s compile error:\n%s\n", tag, log);
+        reportShaderError(tag, type == GL_VERTEX_SHADER ? "compile (vertex)" : "compile (fragment)", log);
     }
     return s;
 }
@@ -37,7 +49,7 @@ static GLuint linkProgram(const char* vs, const char* fs, const char* tag) {
     if (!ok) {
         char log[4096];
         glGetProgramInfoLog(p, sizeof log, nullptr, log);
-        fprintf(stderr, "[shader] %s link error:\n%s\n", tag, log);
+        reportShaderError(tag, "link", log);
     }
     glDeleteShader(v);
     glDeleteShader(f);
@@ -103,10 +115,15 @@ vec3 skyColor(vec3 dir) {
 }
 )";
 
-// voxel ray tracing against occupancy textures (fine + 8x coarse)
+// Voxel ray tracing against a 3-level mipmapped occupancy hierarchy — fine (1 voxel),
+// mid (2^3 block, max-downsampled) and coarse (8^3 block, max-downsampled) — matching the
+// "mipmaps forming a dense octree" acceleration structure Teardown uses to skip empty space:
+// a ray jumps a full coarse cell when it's empty, falls back to mid-sized jumps near clutter,
+// and only steps voxel-by-voxel right next to actual geometry.
 static const char* GLSL_TRACE_COMMON = R"(
-uniform sampler3D uOcc;         // R8: 1 = solid (voxel resolution)
-uniform sampler3D uOccCoarse;   // R8: 8x downsampled max
+uniform sampler3D uOcc;         // R8: 1 = solid (mip 0, voxel resolution)
+uniform sampler3D uOccMid;      // R8: 2x2x2 max-downsampled (mip 1)
+uniform sampler3D uOccCoarse;   // R8: 8x8x8 max-downsampled (mip 2)
 uniform vec3 uWorldSize;        // voxels
 
 float occAt(ivec3 c) { return texelFetch(uOcc, c, 0).r; }
@@ -118,7 +135,7 @@ float traceRay(vec3 ro, vec3 rd, float maxT) {
     vec3 invd = 1.0 / rd;
     vec3 sgn = step(vec3(0.0), rd);
     float t = 0.0;
-    for (int i = 0; i < 160; i++) {
+    for (int i = 0; i < 220; i++) {
         vec3 p = ro + rd * t;
         if (p.y >= uWorldSize.y && rd.y > 0.0) return 1.0;
         if (p.y < 0.0 && rd.y < 0.0) return 0.0;
@@ -127,16 +144,23 @@ float traceRay(vec3 ro, vec3 rd, float maxT) {
         bool inside = all(greaterThanEqual(p, vec3(0.0))) && all(lessThan(p, uWorldSize));
         if (inside) {
             ivec3 vc = ivec3(floor(p));
-            ivec3 cc = vc >> 3;
-            if (texelFetch(uOccCoarse, cc, 0).r < 0.001) {
-                vec3 cellMin = vec3(cc << 3);
+            ivec3 ccoarse = vc >> 3;
+            if (texelFetch(uOccCoarse, ccoarse, 0).r < 0.001) {
+                vec3 cellMin = vec3(ccoarse << 3);
                 vec3 tExit = (cellMin + sgn * 8.0 - ro) * invd;
                 t = min(min(tExit.x, tExit.y), tExit.z) + 0.002;
             } else {
-                if (occAt(vc) > 0.5) return 0.0;
-                vec3 vMin = floor(p);
-                vec3 tExit = (vMin + sgn - ro) * invd;
-                t = min(min(tExit.x, tExit.y), tExit.z) + 0.002;
+                ivec3 cmid = vc >> 1;
+                if (texelFetch(uOccMid, cmid, 0).r < 0.001) {
+                    vec3 cellMin = vec3(cmid << 1);
+                    vec3 tExit = (cellMin + sgn * 2.0 - ro) * invd;
+                    t = min(min(tExit.x, tExit.y), tExit.z) + 0.002;
+                } else {
+                    if (occAt(vc) > 0.5) return 0.0;
+                    vec3 vMin = vec3(vc);
+                    vec3 tExit = (vMin + sgn - ro) * invd;
+                    t = min(min(tExit.x, tExit.y), tExit.z) + 0.002;
+                }
             }
         } else {
             // outside: step to world box (cheap: advance a coarse cell)
@@ -149,22 +173,33 @@ float traceRay(vec3 ro, vec3 rd, float maxT) {
     return 1.0;
 }
 
-// short-range occlusion ray: returns visibility 0..1 with distance falloff
-float aoRay(vec3 ro, vec3 rd, float maxT) {
+// Ambient occlusion ray: returns the fraction of maxT traveled before hitting a voxel
+// (1.0 = never hit). Teardown's ambient pass uses this distance directly as the AO
+// intensity — the farther a ray gets before colliding, the less obscured the surface is —
+// rather than a binary hit/miss test.
+float aoRayDist(vec3 ro, vec3 rd, float maxT) {
     vec3 ard = abs(rd);
     rd += vec3(lessThan(ard, vec3(1e-5))) * 1e-5;
     vec3 invd = 1.0 / rd;
     vec3 sgn = step(vec3(0.0), rd);
     float t = 0.0;
-    for (int i = 0; i < 8; i++) {
+    for (int i = 0; i < 16; i++) {
         vec3 p = ro + rd * t;
         if (any(lessThan(p, vec3(0.0))) || any(greaterThanEqual(p, uWorldSize))) return 1.0;
-        if (occAt(ivec3(floor(p))) > 0.5) return clamp(t / maxT, 0.0, 1.0) * 0.6;
-        vec3 tExit = (floor(p) + sgn - ro) * invd;
-        t = min(min(tExit.x, tExit.y), tExit.z) + 0.002;
+        ivec3 vc = ivec3(floor(p));
+        ivec3 cmid = vc >> 1;
+        if (texelFetch(uOccMid, cmid, 0).r < 0.001) {
+            vec3 cellMin = vec3(cmid << 1);
+            vec3 tExit = (cellMin + sgn * 2.0 - ro) * invd;
+            t = min(min(tExit.x, tExit.y), tExit.z) + 0.002;
+        } else {
+            if (occAt(vc) > 0.5) return clamp(t / maxT, 0.0, 1.0);
+            vec3 tExit = (vec3(vc) + sgn - ro) * invd;
+            t = min(min(tExit.x, tExit.y), tExit.z) + 0.002;
+        }
         if (t >= maxT) return 1.0;
     }
-    return 1.0;
+    return clamp(t / maxT, 0.0, 1.0);
 }
 
 float hash13(vec3 p) {
@@ -180,12 +215,16 @@ layout(location=0) in vec3 aPos;
 layout(location=1) in vec4 aColor;      // rgb + emissive/8
 layout(location=2) in float aNormal;    // 0..5
 layout(location=3) in float aAO;        // 0..1
+layout(location=4) in float aRefl;      // 0..1 specular reflectivity
+layout(location=5) in float aSmooth;    // 0..1 smoothness (1-roughness)
 uniform mat4 uViewProj;
 uniform vec3 uOffset;                   // falling cluster offset (meters)
 out vec3 vWorld;
 out vec4 vColor;
 out vec3 vNormal;
 out float vAO;
+out float vRefl;
+out float vSmooth;
 const vec3 NRM[6] = vec3[6](vec3(1,0,0), vec3(-1,0,0), vec3(0,1,0), vec3(0,-1,0), vec3(0,0,1), vec3(0,0,-1));
 void main() {
     vec3 wp = aPos + uOffset;
@@ -193,6 +232,8 @@ void main() {
     vColor = aColor;
     vNormal = NRM[int(aNormal + 0.5)];
     vAO = aAO;
+    vRefl = aRefl;
+    vSmooth = aSmooth;
     gl_Position = uViewProj * vec4(wp, 1.0);
 }
 )";
@@ -203,6 +244,8 @@ in vec3 vWorld;
 in vec4 vColor;
 in vec3 vNormal;
 in float vAO;
+in float vRefl;
+in float vSmooth;
 out vec4 FragColor;
 uniform vec3 uCamPos;
 uniform float uVoxelSize;
@@ -250,24 +293,31 @@ void main() {
         }
     } else sunVis = 0.0;
 
-    // ---- ray-traced AO (short rays in normal hemisphere) x baked vertex AO
+    // ---- ray-traced ambient occlusion: cosine-weighted hemisphere rays whose *distance*
+    // to the nearest voxel sets the AO intensity (mirrors Teardown's ambient lighting pass:
+    // farther unobstructed travel = less occluded), blended with baked per-vertex corner AO.
     float ao = vAO;
     if (uAOQuality > 0) {
         vec3 T = normalize(abs(N.y) < 0.9 ? cross(N, vec3(0, 1, 0)) : vec3(1, 0, 0));
         vec3 B = cross(N, T);
-        float h = hash13(vWorld * 53.1) * 6.2831;
-        float cs = cos(h), sn = sin(h);
-        vec3 T2 = T * cs + B * sn;
-        vec3 B2 = -T * sn + B * cs;
-        float rayAO = 0.0;
         int n = uAOQuality == 1 ? 2 : 4;
+        float maxDist = 20.0;
+        float accum = 0.0;
         for (int k = 0; k < 4; k++) {
             if (k >= n) break;
-            float ang = (float(k) + 0.5) / float(n) * 6.2831;
-            vec3 d = normalize(N * 1.1 + T2 * cos(ang) * 0.85 + B2 * sin(ang) * 0.85);
-            rayAO += aoRay(vp, d, 9.0);
+            vec3 jp = vWorld * (11.0 + float(k) * 4.0) + float(k) * 91.7;
+            float u1 = hash13(jp);
+            float u2 = hash13(jp + 3.3);
+            float rr = sqrt(u1);
+            float phi = 6.2831853 * u2;
+            vec3 localDir = vec3(rr * cos(phi), rr * sin(phi), sqrt(max(0.0, 1.0 - u1)));
+            vec3 d = normalize(T * localDir.x + B * localDir.y + N * localDir.z);
+            // jitter the ray origin too, to hide repeating per-voxel AO artifacts
+            vec3 originJitter = (vec3(hash13(jp + 9.1), hash13(jp + 13.7), hash13(jp + 21.3)) - 0.5) * 0.5;
+            accum += aoRayDist(vp + originJitter, d, maxDist);
         }
-        ao *= mix(1.0, rayAO / float(n), 0.75);
+        float rayAO = accum / float(n);
+        ao *= mix(1.0, rayAO, 0.85);
     }
 
     // ---- lighting
@@ -277,18 +327,48 @@ void main() {
     vec3 bounce = uSunColor * 0.06 * max(dot(N, vec3(-toSun.x, 0.4, -toSun.z)), 0.0);
     vec3 light = direct + (skyAmb + bounce) * ao;
 
-    // dynamic lights (explosions, muzzle flash)
+    // dynamic lights (explosions, muzzle flash): raytraced visibility so light no longer
+    // bleeds through walls, with the sampled point jittered over the light's volume for a
+    // soft area-light-like penumbra (Teardown: "ray to a random point on the light's surface").
     for (int i = 0; i < uNumLights; i++) {
-        vec3 L = uLightPosR[i].xyz - vWorld;
-        float d = length(L);
+        vec3 lightCenter = uLightPosR[i].xyz;
         float r = uLightPosR[i].w;
-        if (d < r) {
-            float att = pow(1.0 - d / r, 2.0);
-            light += uLightCol[i] * att * max(dot(N, L / max(d, 0.01)), 0.1);
+        float dCenter = length(lightCenter - vWorld);
+        if (dCenter < r) {
+            vec3 jp = vWorld * 17.3 + float(i) * 51.1;
+            vec3 jitter = (vec3(hash13(jp), hash13(jp + 5.5), hash13(jp + 11.1)) - 0.5) * (r * 0.12);
+            vec3 Lp = (lightCenter + jitter) - vWorld;
+            float d = length(Lp);
+            vec3 Ldir = Lp / max(d, 0.01);
+            float att = pow(clamp(1.0 - dCenter / r, 0.0, 1.0), 2.0);
+            float diff = max(dot(N, Ldir), 0.12);
+            float lvis = traceRay(vp, Ldir, d / uVoxelSize);
+            light += uLightCol[i] * att * diff * lvis;
         }
     }
 
     vec3 col = albedo * light + albedo * emis;
+
+    // ---- raytraced specular reflections / specular occlusion (Teardown-style): the
+    // reflection ray (jittered by roughness, so rough materials get blurrier reflections)
+    // is traced against the same occupancy volume used for shadows. Unblocked -> sample the
+    // sky; blocked -> the reflection darkens rather than faking a full mirror image, which is
+    // exactly the "specular occlusion" the technique relies on in place of global illumination.
+    if (uShadowQuality > 0 && vRefl > 0.05) {
+        vec3 V = normalize(uCamPos - vWorld);
+        vec3 R = reflect(-V, N);
+        float roughness = 1.0 - vSmooth;
+        vec3 jp2 = vWorld * 71.0 + 3.1;
+        vec3 jitter2 = vec3(hash13(jp2), hash13(jp2 + 6.2), hash13(jp2 + 12.4)) * 2.0 - 1.0;
+        vec3 Rj = normalize(R + jitter2 * roughness * 0.6);
+        if (dot(Rj, N) < 0.0) Rj = reflect(Rj, N);
+        float skyVis = traceRay(vp, Rj, 44.0);
+        vec3 reflColor = skyColor(Rj) * skyVis;
+        float sunGlint = pow(max(dot(Rj, toSun), 0.0), mix(8.0, 140.0, vSmooth)) * sunVis;
+        vec3 tint = mix(vec3(1.0), albedo, 0.35);
+        float fres = pow(1.0 - max(dot(N, V), 0.0), 3.0) * 0.6 + 0.15;
+        col += vRefl * fres * tint * (reflColor * 0.35 + uSunColor * sunGlint * 1.3);
+    }
 
     // fog
     float dist = length(vWorld - uCamPos);
@@ -545,15 +625,17 @@ struct UIInst { float cx, cy, hw, hh; float r, g, b, a; float radius; };
 struct DynLight { vec3 pos; float radius; vec3 color; };
 
 struct RenderSettings {
-    int shadowQuality = 1;    // 0 low, 1 medium, 2 high
-    int aoQuality = 1;
+    int shadowQuality = 2;    // 0 low, 1 medium, 2 high
+    int aoQuality = 2;
     float fov = 75.f;
     float bloom = 0.55f;
     bool vsync = true;
+    float renderScale = 1.25f; // internal supersampling factor (1.0/1.25/1.5/2.0)
 };
 
 struct Renderer {
-    int width = 1280, height = 720;
+    int width = 1280, height = 720;      // actual window size (final composite target)
+    int renderW = 1280, renderH = 720;   // internal supersampled scene resolution
     GLuint progChunk = 0, progSky = 0, progWater = 0, progPart = 0, progModel = 0;
     GLuint progBright = 0, progBlur = 0, progComposite = 0, progUI = 0;
     // fullscreen quad
@@ -565,8 +647,8 @@ struct Renderer {
     // UI
     GLuint uiVAO = 0, uiQuadVBO = 0, uiInstVBO = 0;
     std::vector<UIInst> uiBatch;
-    // 3D occupancy textures
-    GLuint occTex = 0, occCoarseTex = 0;
+    // 3D occupancy textures: fine (1 voxel), mid (2^3 max-downsample), coarse (8^3 max-downsample)
+    GLuint occTex = 0, occMidTex = 0, occCoarseTex = 0;
     // HDR pipeline
     GLuint sceneFBO = 0, sceneColor = 0, sceneDepth = 0;
     GLuint bloomFBO[2] = {0, 0}, bloomTex[2] = {0, 0};
@@ -683,6 +765,13 @@ struct Renderer {
         glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+        glGenTextures(1, &occMidTex);
+        glBindTexture(GL_TEXTURE_3D, occMidTex);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
         glGenTextures(1, &occCoarseTex);
         glBindTexture(GL_TEXTURE_3D, occCoarseTex);
         glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
@@ -692,6 +781,7 @@ struct Renderer {
         glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
 
         createTargets();
+        lastRenderScale = settings.renderScale;
         glEnable(GL_DEPTH_TEST);
         glDepthFunc(GL_LEQUAL);
         glEnable(GL_CULL_FACE);
@@ -711,14 +801,16 @@ struct Renderer {
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         };
+        renderW = std::max(8, (int)(width * settings.renderScale));
+        renderH = std::max(8, (int)(height * settings.renderScale));
         if (sceneFBO) { glDeleteFramebuffers(1, &sceneFBO); sceneFBO = 0; }
-        makeTex2D(sceneColor, width, height, GL_RGBA16F, GL_RGBA, GL_FLOAT);
-        makeTex2D(sceneDepth, width, height, GL_DEPTH_COMPONENT24, GL_DEPTH_COMPONENT, GL_UNSIGNED_INT);
+        makeTex2D(sceneColor, renderW, renderH, GL_RGBA16F, GL_RGBA, GL_FLOAT);
+        makeTex2D(sceneDepth, renderW, renderH, GL_DEPTH_COMPONENT24, GL_DEPTH_COMPONENT, GL_UNSIGNED_INT);
         glGenFramebuffers(1, &sceneFBO);
         glBindFramebuffer(GL_FRAMEBUFFER, sceneFBO);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, sceneColor, 0);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, sceneDepth, 0);
-        bloomW = width / 2; bloomH = height / 2;
+        bloomW = renderW / 2; bloomH = renderH / 2;
         if (bloomW < 1) bloomW = 1;
         if (bloomH < 1) bloomH = 1;
         for (int i = 0; i < 2; i++) {
@@ -731,16 +823,30 @@ struct Renderer {
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
     }
 
+    float lastRenderScale = -1.f;
     void resize(int w, int h) {
-        if (w == width && h == height) return;
+        bool scaleChanged = settings.renderScale != lastRenderScale;
+        if (w == width && h == height && !scaleChanged) return;
         if (w < 8 || h < 8) return;
         width = w; height = h;
+        lastRenderScale = settings.renderScale;
         createTargets();
     }
 
     // ---------------- 3D occupancy upload
     // Texture layout convention: (s,t,r) = (x,y,z); GL data must therefore be
     // ordered x fastest, then y, then z (our vox array is x, z, y — transpose on upload).
+    // Two downsample levels are maintained (mid = 2^3 max, coarse = 8^3 max), matching the
+    // 3-level mip hierarchy the trace shader walks for empty-space skipping.
+    static void buildDownsample(const World& w, int factor, std::vector<uint8_t>& out, int& ox, int& oy, int& oz) {
+        ox = WX / factor; oy = WY / factor; oz = WZ / factor;
+        out.assign((size_t)ox * oy * oz, 0);
+        for (int y = 0; y < WY; y++)
+            for (int z = 0; z < WZ; z++)
+                for (int x = 0; x < WX; x++)
+                    if (w.vox[World::vidx(x, y, z)])
+                        out[((size_t)(z / factor) * oy + y / factor) * ox + x / factor] = 255;
+    }
     void uploadFullOccupancy(const World& w) {
         static std::vector<uint8_t> occ;
         occ.assign((size_t)WX * WY * WZ, 0);
@@ -752,22 +858,46 @@ struct Renderer {
             }
         glBindTexture(GL_TEXTURE_3D, occTex);
         glTexImage3D(GL_TEXTURE_3D, 0, GL_R8, WX, WY, WZ, 0, GL_RED, GL_UNSIGNED_BYTE, occ.data());
-        // coarse (8x max-downsample), same (x,y,z) convention
-        const int CX = WX / 8, CY = WY / 8, CZ = WZ / 8;
+
+        static std::vector<uint8_t> mid;
+        int mx, my, mz;
+        buildDownsample(w, 2, mid, mx, my, mz);
+        glBindTexture(GL_TEXTURE_3D, occMidTex);
+        glTexImage3D(GL_TEXTURE_3D, 0, GL_R8, mx, my, mz, 0, GL_RED, GL_UNSIGNED_BYTE, mid.data());
+
         static std::vector<uint8_t> coarse;
-        coarse.assign((size_t)CX * CY * CZ, 0);
-        for (int y = 0; y < WY; y++)
-            for (int z = 0; z < WZ; z++)
-                for (int x = 0; x < WX; x++)
-                    if (w.vox[World::vidx(x, y, z)])
-                        coarse[((size_t)(z / 8) * CY + y / 8) * CX + x / 8] = 255;
+        int cx, cy, cz;
+        buildDownsample(w, 8, coarse, cx, cy, cz);
         glBindTexture(GL_TEXTURE_3D, occCoarseTex);
-        glTexImage3D(GL_TEXTURE_3D, 0, GL_R8, CX, CY, CZ, 0, GL_RED, GL_UNSIGNED_BYTE, coarse.data());
+        glTexImage3D(GL_TEXTURE_3D, 0, GL_R8, cx, cy, cz, 0, GL_RED, GL_UNSIGNED_BYTE, coarse.data());
     }
 
+    // recompute the downsampled cells covering [r.x0..r.x1]x[...] at the given factor and
+    // sub-upload them into 'tex'
+    static void resubDownsample(const World& w, int factor, GLuint tex, const DirtyRegion& r, std::vector<uint8_t>& buf) {
+        int dimY = WY / factor, dimZ = WZ / factor;
+        int cx0 = r.x0 / factor, cx1 = r.x1 / factor;
+        int cy0 = r.y0 / factor, cy1 = r.y1 / factor;
+        int cz0 = r.z0 / factor, cz1 = r.z1 / factor;
+        int cnx = cx1 - cx0 + 1, cny = cy1 - cy0 + 1, cnz = cz1 - cz0 + 1;
+        buf.assign((size_t)cnx * cny * cnz, 0);
+        for (int cz = cz0; cz <= cz1; cz++)
+            for (int cy = cy0; cy <= cy1; cy++)
+                for (int cx = cx0; cx <= cx1; cx++) {
+                    uint8_t v = 0;
+                    for (int yy = cy * factor; yy < cy * factor + factor && yy < WY && !v; yy++)
+                        for (int zz = cz * factor; zz < cz * factor + factor && zz < WZ && !v; zz++)
+                            for (int xx = cx * factor; xx < cx * factor + factor && xx < WX; xx++)
+                                if (w.vox[World::vidx(xx, yy, zz)]) { v = 255; break; }
+                    buf[((size_t)(cz - cz0) * cny + (cy - cy0)) * cnx + (cx - cx0)] = v;
+                }
+        glBindTexture(GL_TEXTURE_3D, tex);
+        glTexSubImage3D(GL_TEXTURE_3D, 0, cx0, cy0, cz0, cnx, cny, cnz, GL_RED, GL_UNSIGNED_BYTE, buf.data());
+        (void)dimY; (void)dimZ;
+    }
     void uploadDirtyOccupancy(World& w) {
         if (w.texDirty.empty()) return;
-        static std::vector<uint8_t> buf, cbuf;
+        static std::vector<uint8_t> buf, mbuf, cbuf;
         for (const DirtyRegion& r : w.texDirty) {
             int nx = r.x1 - r.x0 + 1, ny = r.y1 - r.y0 + 1, nz = r.z1 - r.z0 + 1;
             buf.resize((size_t)nx * ny * nz);
@@ -778,22 +908,8 @@ struct Renderer {
                         buf[o++] = w.vox[World::vidx(x, y, z)] ? 255 : 0;
             glBindTexture(GL_TEXTURE_3D, occTex);
             glTexSubImage3D(GL_TEXTURE_3D, 0, r.x0, r.y0, r.z0, nx, ny, nz, GL_RED, GL_UNSIGNED_BYTE, buf.data());
-            // recompute covered coarse cells
-            int cx0 = r.x0 / 8, cx1 = r.x1 / 8, cy0 = r.y0 / 8, cy1 = r.y1 / 8, cz0 = r.z0 / 8, cz1 = r.z1 / 8;
-            int cnx = cx1 - cx0 + 1, cny = cy1 - cy0 + 1, cnz = cz1 - cz0 + 1;
-            cbuf.assign((size_t)cnx * cny * cnz, 0);
-            for (int cz = cz0; cz <= cz1; cz++)
-                for (int cy = cy0; cy <= cy1; cy++)
-                    for (int cx = cx0; cx <= cx1; cx++) {
-                        uint8_t v = 0;
-                        for (int yy = cy * 8; yy < cy * 8 + 8 && yy < WY && !v; yy++)
-                            for (int zz = cz * 8; zz < cz * 8 + 8 && zz < WZ && !v; zz++)
-                                for (int xx = cx * 8; xx < cx * 8 + 8 && xx < WX; xx++)
-                                    if (w.vox[World::vidx(xx, yy, zz)]) { v = 255; break; }
-                        cbuf[((size_t)(cz - cz0) * cny + (cy - cy0)) * cnx + (cx - cx0)] = v;
-                    }
-            glBindTexture(GL_TEXTURE_3D, occCoarseTex);
-            glTexSubImage3D(GL_TEXTURE_3D, 0, cx0, cy0, cz0, cnx, cny, cnz, GL_RED, GL_UNSIGNED_BYTE, cbuf.data());
+            resubDownsample(w, 2, occMidTex, r, mbuf);
+            resubDownsample(w, 8, occCoarseTex, r, cbuf);
         }
         w.texDirty.clear();
     }
@@ -815,6 +931,10 @@ struct Renderer {
             glVertexAttribPointer(2, 1, GL_UNSIGNED_BYTE, GL_FALSE, sizeof(Vertex), (void*)16);
             glEnableVertexAttribArray(3);
             glVertexAttribPointer(3, 1, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(Vertex), (void*)17);
+            glEnableVertexAttribArray(4);
+            glVertexAttribPointer(4, 1, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(Vertex), (void*)18);
+            glEnableVertexAttribArray(5);
+            glVertexAttribPointer(5, 1, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(Vertex), (void*)19);
         } else glBindVertexArray(c.vao);
         glBindBuffer(GL_ARRAY_BUFFER, c.vbo);
         glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(c.verts.size() * sizeof(Vertex)),
@@ -844,6 +964,10 @@ struct Renderer {
         glVertexAttribPointer(2, 1, GL_UNSIGNED_BYTE, GL_FALSE, sizeof(Vertex), (void*)16);
         glEnableVertexAttribArray(3);
         glVertexAttribPointer(3, 1, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(Vertex), (void*)17);
+        glEnableVertexAttribArray(4);
+        glVertexAttribPointer(4, 1, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(Vertex), (void*)18);
+        glEnableVertexAttribArray(5);
+        glVertexAttribPointer(5, 1, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(Vertex), (void*)19);
         glBindVertexArray(0);
         fc.gpuReady = true;
     }
@@ -884,7 +1008,7 @@ struct Renderer {
 
     void beginScene(const MapInfo& mi) {
         glBindFramebuffer(GL_FRAMEBUFFER, sceneFBO);
-        glViewport(0, 0, width, height);
+        glViewport(0, 0, renderW, renderH);
         glClearColor(mi.skyHorizon.x, mi.skyHorizon.y, mi.skyHorizon.z, 1);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     }
@@ -917,8 +1041,11 @@ struct Renderer {
         glBindTexture(GL_TEXTURE_3D, occTex);
         glUniform1i(glGetUniformLocation(progChunk, "uOcc"), 0);
         glActiveTexture(GL_TEXTURE0 + 1);
+        glBindTexture(GL_TEXTURE_3D, occMidTex);
+        glUniform1i(glGetUniformLocation(progChunk, "uOccMid"), 1);
+        glActiveTexture(GL_TEXTURE0 + 2);
         glBindTexture(GL_TEXTURE_3D, occCoarseTex);
-        glUniform1i(glGetUniformLocation(progChunk, "uOccCoarse"), 1);
+        glUniform1i(glGetUniformLocation(progChunk, "uOccCoarse"), 2);
         // dynamic lights
         int n = (int)lights.size();
         if (n > 16) n = 16;

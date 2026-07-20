@@ -32,8 +32,21 @@ struct Vertex {                 // 20 bytes
     uint8_t r, g, b, a;         // a = emissive * 32 (clamped); shader: emis = a/255 * 8
     uint8_t normal;             // 0..5 (+x,-x,+y,-y,+z,-z)
     uint8_t ao;                 // 0..255 baked vertex AO
-    uint8_t pad0, pad1;
+    uint8_t refl;               // 0..255 specular reflectivity (Teardown G-buffer "reflectivity")
+    uint8_t smooth_;            // 0..255 smoothness = 1-roughness (Teardown G-buffer "smoothness")
 };
+
+// per-material reflectivity/smoothness, mirroring Teardown's material G-buffer (R:reflectivity,
+// G:smoothness) closely enough for a raytraced specular pass without a full PBR material system.
+static inline void materialSpecular(uint8_t mat, uint8_t& refl, uint8_t& smooth_) {
+    switch (mat) {
+        case M_HEAVY:   refl = 150; smooth_ = 165; break;   // metal/concrete/stone
+        case M_BEDROCK: refl = 80;  smooth_ = 55;  break;   // rough ground rock
+        case M_BARREL:  refl = 130; smooth_ = 140; break;   // painted metal
+        case M_LIGHT:   refl = 190; smooth_ = 215; break;   // glass (also covers leaves; acceptable)
+        case M_MED: default: refl = 12; smooth_ = 25; break; // wood/brick/drywall: barely reflective
+    }
+}
 
 struct ChunkMesh {
     std::vector<Vertex> verts;
@@ -481,7 +494,7 @@ struct World {
                             }
                             aoV[c] = ao;
                             v.ao = (uint8_t)(255 - ao * 62);
-                            v.pad0 = v.pad1 = 0;
+                            materialSpecular(pe.mat, v.refl, v.smooth_);
                             cm.verts.push_back(v);
                         }
                         // flip quad diagonal for consistent AO interpolation
@@ -547,7 +560,8 @@ struct World {
                     vv.z = (v.z + co[2]) * VOXEL_SIZE;
                     vv.r = pe.r; vv.g = pe.g; vv.b = pe.b;
                     vv.a = (uint8_t)clampf(pe.emissive * 32.f, 0.f, 255.f);
-                    vv.normal = (uint8_t)f; vv.ao = 235; vv.pad0 = vv.pad1 = 0;
+                    vv.normal = (uint8_t)f; vv.ao = 235;
+                    materialSpecular(pe.mat, vv.refl, vv.smooth_);
                     fc.verts.push_back(vv);
                 }
                 fc.idx.push_back(base + 0); fc.idx.push_back(base + 1); fc.idx.push_back(base + 2);

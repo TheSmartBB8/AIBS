@@ -283,6 +283,17 @@ static MapInfo genMall(World& w, uint32_t seed = 1337) {
     }
     for (int x = 30; x < WX - 20; x += 70) placeStreetlight(B, P, x, G, 57, -1);
 
+    // ---- shopping cart corrals in the gap between parking rows (kept clear of spawn at x160,z100)
+    for (int cx : {90, 230}) {
+        int cz0 = 94, cz1 = 106;
+        for (int x : {cx - 4, cx + 4}) B.fill(x, G, cz0, x, G + 3, cz1, P.metalDark);
+        for (int z : {cz0, cz1}) B.fill(cx - 4, G + 3, z, cx + 4, G + 3, z, P.metalDark);
+        for (int i = 0; i < 3; i++) {
+            int bx = cx - 2 + i * 2;
+            B.fill(bx, G, cz0 + 3, bx + 1, G + 2, cz0 + 6, P.steel);
+        }
+    }
+
     // ---- the mall: x=60..260, z=140..282
     const int MX0 = 60, MX1 = 260, MZ0 = 140, MZ1 = 282;
     const int F1 = G;             // ground floor walking level (y=8)
@@ -329,13 +340,22 @@ static MapInfo genMall(World& w, uint32_t seed = 1337) {
     rail(142, OA0 - 1, 144, OA0 - 1); rail(156, OA0 - 1, 178, OA0 - 1);  // gap x145..155: north stairs
     rail(142, OA1 + 1, 164, OA1 + 1); rail(176, OA1 + 1, 178, OA1 + 1);  // gap x165..175: south stairs
 
-    // ---- stairs (inside atrium, arriving flush with the slab-opening edges)
+    // ---- stairs (inside atrium, arriving flush with the slab-opening edges), with
+    // stepped escalator-style handrails tracking the tread height on both edges
     // north stair: top step at z=OA0, ascending toward -z exit onto slab at z=OA0-1
-    for (int i = 0; i < 20; i++)
-        B.fill(146, F1 + i, OA0 + (19 - i), 154, F1 + i, OA0 + 19, P.concreteDark);
+    for (int i = 0; i < 20; i++) {
+        int zz = OA0 + (19 - i);
+        B.fill(146, F1 + i, zz, 154, F1 + i, OA0 + 19, P.concreteDark);
+        B.fill(145, F1 + i, zz, 145, F1 + i + 3, zz, P.metalDark);
+        B.fill(155, F1 + i, zz, 155, F1 + i + 3, zz, P.metalDark);
+    }
     // south stair: top step at z=OA1, exit onto slab at z=OA1+1
-    for (int i = 0; i < 20; i++)
-        B.fill(166, F1 + i, OA1 - 19, 174, F1 + i, OA1 - (19 - i), P.concreteDark);
+    for (int i = 0; i < 20; i++) {
+        int zz = OA1 - (19 - i);
+        B.fill(166, F1 + i, OA1 - 19, 174, F1 + i, zz, P.concreteDark);
+        B.fill(165, F1 + i, zz, 165, F1 + i + 3, zz, P.metalDark);
+        B.fill(175, F1 + i, zz, 175, F1 + i + 3, zz, P.metalDark);
+    }
 
     // ---- entrance (front, centered): glass wall + doors
     B.clear(138, F1, MZ0, 182, F1 + 11, MZ0 + 1);
@@ -370,12 +390,23 @@ static MapInfo genMall(World& w, uint32_t seed = 1337) {
         B.fill(MX1 - 1, F2 + 3, z, MX1, F2 + 9, z + 12, P.glassBlue);
     }
 
-    // ---- loading dock at back
+    // ---- loading dock at back, with a delivery truck backed up to the shutter
     B.fill(200, F1, MZ1 - 1, 216, F1 + 10, MZ1, P.metalDark);
     B.fill(196, F1 - 1, MZ1 + 1, 220, F1 + 1, MZ1 + 10, P.concreteDark);
     placeBarrel(B, P, 226, F1, MZ1 + 4);
     placeBarrel(B, P, 232, F1, MZ1 + 6);
     placeBarrel(B, P, 229, F1, MZ1 + 10);
+    {
+        uint8_t truckWhite = w.addPal(222, 224, 226, M_MED);
+        uint8_t truckCab = w.addPal(60, 90, 150, M_MED);
+        int tx0 = 201, tx1 = 207, tz0 = MZ1 + 2, tz1 = MZ1 + 12;
+        B.fill(tx0, F1, tz0, tx1, F1 + 9, tz1, truckWhite);         // cargo box
+        B.clear(tx0 + 1, F1 + 1, tz0 + 1, tx1 - 1, F1 + 8, tz1 - 1);
+        B.fill(tx0, F1, tz1 + 1, tx1, F1 + 7, tz1 + 5, truckCab);    // cab
+        B.fill(tx0, F1 + 4, tz1 + 5, tx1, F1 + 6, tz1 + 5, P.glassBlue); // windshield
+        for (int wz : {tz0 + 1, tz1 + 4})
+            for (int wx : {tx0, tx1}) B.fill(wx, F1 - 1, wz, wx, F1, wz, P.black);
+    }
     {
         uint8_t dumpGreen = w.addPal(52, 96, 60, M_MED);
         B.fill(180, F1, MZ1 + 3, 192, F1 + 6, MZ1 + 9, dumpGreen);
@@ -389,9 +420,11 @@ static MapInfo genMall(World& w, uint32_t seed = 1337) {
             B.fill(x, F2, z, x + 2, ROOF - 1, z + 2, P.concrete);
         }
 
-    // ---- shops along both sides, both floors
-    const char* shopNames[] = {"SHOES", "TECHTRONIC", "BOOKS", "TOYS", "FASHION", "SPORTS", "MUSIC", "GADGETS"};
-    uint8_t signCols[] = {signCyan, signPink, signWhite, signGreen, signOrange, signCyan, signPink, signGreen};
+    // ---- shops along both sides, both floors. Slot 0 (ground floor, west side, first bay)
+    // is the anchor department store, matching the big-box anchor every mall heist map has.
+    const char* shopNames[] = {"MEGAMART", "TECHTRONIC", "BOOKS", "TOYS", "FASHION", "SPORTS", "MUSIC", "GADGETS"};
+    uint8_t signAnchor = w.addPal(255, 205, 60, M_LIGHT, 5.5f);
+    uint8_t signCols[] = {signAnchor, signPink, signWhite, signGreen, signOrange, signCyan, signPink, signGreen};
     int shopIdx = 0;
     for (int floor = 0; floor < 2; floor++) {
         int fy = floor == 0 ? F1 : F2;
@@ -508,7 +541,7 @@ static MapInfo genMall(World& w, uint32_t seed = 1337) {
     MapInfo mi;
     mi.name = "EVERMORE MALL";
     mi.desc = "TWO-STOREY MALL: ATRIUM, SHOPS, PARKING LOT.";
-    mi.spawn = vec3(160 * VOXEL_SIZE, G * VOXEL_SIZE + 1.4f, 100 * VOXEL_SIZE);
+    mi.spawn = vec3(160 * VOXEL_SIZE, G * VOXEL_SIZE + 0.92f, 100 * VOXEL_SIZE);
     mi.spawnYaw = 0.0f;   // facing +z toward the mall
     mi.sunDir = vnorm(vec3(0.42f, -0.78f, 0.34f));
     mi.sunColor = vec3(1.25f, 1.17f, 1.02f) * 3.0f;
@@ -708,7 +741,7 @@ static MapInfo genMarina(World& w, uint32_t seed = 4242) {
         for (int i = 0; i < 4; i++) B.cylY(lx, lz, Q + 44 + i, Q + 44 + i, 4.f - i, tankRed);
     }
 
-    // ---- harbor office shack (no sign; windows + door)
+    // ---- harbor office shack
     {
         int X0 = 158, X1 = 184, Z0 = 112, Z1 = 150;
         B.fill(X0, Q, Z0, X1, Q + 12, Z1, P.woodLight);
@@ -719,6 +752,11 @@ static MapInfo genMarina(World& w, uint32_t seed = 4242) {
         B.clear(X1, Q, (Z0 + Z1) / 2 - 3, X1, Q + 9, (Z0 + Z1) / 2 + 3);
         for (int i = 0; i < 8; i++)
             B.fill(X0 - 1 + i, Q + 12 + i, Z0 - 1, X1 + 1 - i, Q + 12 + i, Z1 + 1, hullRed);
+        const char* t = "OFFICE";
+        int tw = B.textLen(t, 1);
+        int tz = (Z0 + Z1) / 2 - tw / 2;
+        B.fill(X1, Q + 9, tz - 2, X1, Q + 11, tz + tw + 1, P.signBack);
+        B.text3d(t, X1 + 1, Q + 10, tz, 3, 1, signWhite, 1);
     }
 
     // ---- quay lamps, pallets, trees
@@ -738,7 +776,7 @@ static MapInfo genMarina(World& w, uint32_t seed = 4242) {
     MapInfo mi;
     mi.name = "SANDPOINT MARINA";
     mi.desc = "SUNSET HARBOR: WAREHOUSE, CRANE, FUEL DEPOT, BOATS.";
-    mi.spawn = vec3(168 * VOXEL_SIZE, Q * VOXEL_SIZE + 1.4f, 105 * VOXEL_SIZE);
+    mi.spawn = vec3(168 * VOXEL_SIZE, Q * VOXEL_SIZE + 0.92f, 105 * VOXEL_SIZE);
     mi.spawnYaw = 3.14159f * 0.5f;   // face +x toward the water
     mi.sunDir = vnorm(vec3(0.78f, -0.30f, 0.12f));
     mi.sunColor = vec3(1.5f, 0.95f, 0.55f) * 2.6f;

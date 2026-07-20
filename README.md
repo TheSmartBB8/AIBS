@@ -13,10 +13,28 @@ OpenGL 3.3-capable GPU — any NVIDIA, AMD, or Intel card from the last ~15 year
 
 - **Voxel world, fully destructible.** Every wall, column, shelf and vehicle is made of
   0.2 m voxels. Blow chunks out with the sledgehammer, shotgun or rocket launcher.
-- **Ray-traced-style lighting.** Sun shadows and ambient occlusion are computed per-pixel
-  by marching rays through a 3D occupancy texture (DDA voxel traversal) against the whole
-  world, not baked — shadows and AO update live as you tear the map apart. Runs on plain
-  OpenGL 3.3 core, so it works identically on NVIDIA and AMD (and Intel).
+- **Ray-traced lighting, modeled directly on Teardown's own documented technique** (per its
+  developer and independent GPU-debugger breakdowns of the shipped renderer): no baked
+  lightmaps and no global illumination — instead, every frame marches rays through a
+  3-level mipmapped occupancy volume (fine voxels, then 2³ and 8³ max-downsampled coarse
+  levels, so empty space is skipped in large jumps and only refined near actual geometry).
+  - **Sun shadows**: a jittered shadow ray per pixel for soft penumbras, with quality tiers
+    trading jitter samples for sharpness.
+  - **Ambient occlusion**: cosine-weighted hemisphere rays whose *travel distance* before
+    hitting a voxel sets the AO intensity (matches "the farther the ray travels... the more
+    ambient lighting will be used"), not a binary hit test.
+  - **Specular reflections / specular occlusion**: reflective surfaces (metal, concrete,
+    glass) trace a roughness-jittered reflection ray against the same volume — unblocked
+    hits the sky, blocked darkens the reflection, since there's no screen-space history to
+    fall back on.
+  - **Dynamic lights** (explosions, muzzle flashes) are raytraced too, so they no longer
+    bleed through walls, with the sample point jittered across the light's volume for a
+    soft area-light-style penumbra.
+  - Runs on plain OpenGL 3.3 core with no compute shaders — identical code path on NVIDIA,
+    AMD, and Intel.
+  - Every shader is validated offline against real GLSL 3.30 core semantics
+    (`glslangValidator`, the Khronos reference compiler) as part of every build — see
+    `tools/dump_shaders.cpp`.
 - **Structural integrity.** After every destructive edit, a flood-fill from the ground and
   map boundary finds anything left unsupported. Small debris crumbles instantly; large
   disconnected sections become physics-driven falling clusters that crash down and shatter
@@ -38,6 +56,9 @@ OpenGL 3.3-capable GPU — any NVIDIA, AMD, or Intel card from the last ~15 year
   the exact edit history and land in an identical, already-wrecked world.
 - **Procedural sky, water, particles, HDR bloom.** Animated cloud/sun sky, reflective
   wind-rippled water with sun glint, GPU-instanced smoke/fire/sparks/debris, ACES tonemap.
+- **Adjustable render scale (supersampling).** Renders internally at up to 2x resolution
+  and downsamples to the window, for a sharper image on GPUs with headroom to spare;
+  configurable in Options alongside shadow/AO quality and bloom.
 - **Fully synthesized audio.** Every sound effect (swing, impact, shotgun blast, rocket
   launch, explosion, glass shatter, debris) is generated procedurally at startup — no
   audio assets shipped.
@@ -80,9 +101,13 @@ audio synthesis, networking) is self-contained in `src/`.
 
 This always builds and runs the headless logic **selftest** (map generation, destruction,
 structural integrity, threaded meshing, particle sim, audio synthesis, and a real loopback
-network host/client exchange) using the system's native `g++`. If
-`x86_64-w64-mingw32-g++` is installed (`apt-get install g++-mingw-w64-x86-64-posix` on
-Debian/Ubuntu), it then cross-compiles `dist/VoxWreck.exe`.
+network host/client exchange) using the system's native `g++`. If `glslangValidator` is
+installed (`apt-get install glslang-tools`), it then validates every GLSL shader stage
+against real GLSL 3.30 core semantics offline (`tools/dump_shaders.cpp` extracts the exact
+shader source strings the game generates) — this catches shader syntax/type errors without
+needing a GPU. Finally, if `x86_64-w64-mingw32-g++` is installed
+(`apt-get install g++-mingw-w64-x86-64-posix` on Debian/Ubuntu), it cross-compiles
+`dist/VoxWreck.exe`.
 
 To build directly on Windows with MSVC or MinGW, compile `src/main.cpp` and
 `src/glapi.cpp` together and link `opengl32 gdi32 user32 winmm ws2_32`.

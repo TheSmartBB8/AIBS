@@ -592,26 +592,33 @@ struct Game {
             ren.uiTextCentered(statusMsg.c_str(), plat->st.width * 0.5f, 96, 2.2f, 1.f, 0.85f, 0.3f, std::min(1.f, statusTimer));
     }
 
+    // Flat, minimal, dark-with-one-amber-accent styling — matching Teardown's own UI, which
+    // (per its renderer breakdown) is "only a few quads... blended straight onto the
+    // framebuffer": sharp corners, thin borders, no drop shadows or heavy gradients.
+    static constexpr float UI_ACCENT_R = 0.95f, UI_ACCENT_G = 0.62f, UI_ACCENT_B = 0.15f;
+
     bool btn(float x, float y, float w, float h, const char* label, bool highlight = false) {
         PlatformState& in = plat->st;
         bool hover = in.mouseX >= x && in.mouseX <= x + w && in.mouseY >= y && in.mouseY <= y + h;
-        vec3 base = highlight ? vec3(0.95f, 0.55f, 0.15f) : vec3(0.16f, 0.17f, 0.20f);
-        if (hover) base = highlight ? vec3(1.0f, 0.65f, 0.25f) : vec3(0.24f, 0.26f, 0.30f);
-        ren.uiRect(x, y, w, h, base.x, base.y, base.z, 0.92f, 8.f);
-        ren.uiRect(x, y, w, 2, 1, 1, 1, hover ? 0.5f : 0.18f);
-        float scale = 2.2f;
-        ren.uiTextCentered(label, x + w * 0.5f, y + h * 0.5f - 7, scale, 1, 1, 1, 1);
+        vec3 base = hover ? vec3(0.145f, 0.15f, 0.175f) : vec3(0.09f, 0.095f, 0.11f);
+        ren.uiRect(x, y, w, h, base.x, base.y, base.z, 0.95f, 2.f);
+        bool accented = highlight || hover;
+        vec3 bc = accented ? vec3(UI_ACCENT_R, UI_ACCENT_G, UI_ACCENT_B) : vec3(0.34f, 0.36f, 0.40f);
+        float ba = accented ? 0.95f : 0.45f, bt = 1.5f;
+        ren.uiRect(x, y, w, bt, bc.x, bc.y, bc.z, ba);
+        ren.uiRect(x, y + h - bt, w, bt, bc.x, bc.y, bc.z, ba);
+        ren.uiRect(x, y, bt, h, bc.x, bc.y, bc.z, ba);
+        ren.uiRect(x + w - bt, y, bt, h, bc.x, bc.y, bc.z, ba);
+        if (highlight) ren.uiRect(x, y, 4.f, h, bc.x, bc.y, bc.z, 1.f);
+        vec3 tc = highlight ? bc : vec3(0.93f, 0.94f, 0.96f);
+        ren.uiTextCentered(label, x + w * 0.5f, y + h * 0.5f - 7, 2.0f, tc.x, tc.y, tc.z, 1);
         return hover && in.mousePressed[0];
     }
 
     void panelBg() {
-        ren.uiRect(0, 0, (float)plat->st.width, (float)plat->st.height, 0.04f, 0.045f, 0.06f, 1.f);
-        for (int i = 0; i < 40; i++) {
-            float x = (float)((i * 977) % plat->st.width);
-            float y = (float)((i * 613 + 111) % plat->st.height);
-            float s = 1.5f + (i % 3);
-            ren.uiRect(x, y, s, s, 0.5f, 0.55f, 0.65f, 0.06f);
-        }
+        ren.uiRect(0, 0, (float)plat->st.width, (float)plat->st.height, 0.035f, 0.038f, 0.045f, 1.f);
+        // thin amber baseline near the bottom, a small recurring Teardown-HUD motif
+        ren.uiRect(0, (float)plat->st.height - 3, (float)plat->st.width, 1.5f, UI_ACCENT_R, UI_ACCENT_G, UI_ACCENT_B, 0.5f);
     }
 
     void uiMainMenu() {
@@ -642,9 +649,11 @@ struct Game {
             float x = startX + i * (cw + gap), y = 140;
             PlatformState& in = plat->st;
             bool hover = in.mouseX >= x && in.mouseX <= x + cw && in.mouseY >= y && in.mouseY <= y + ch;
-            ren.uiRect(x, y, cw, ch, hover ? 0.22f : 0.14f, hover ? 0.23f : 0.15f, hover ? 0.27f : 0.18f, 0.95f, 10.f);
+            ren.uiRect(x, y, cw, ch, hover ? 0.13f : 0.09f, hover ? 0.135f : 0.095f, hover ? 0.155f : 0.11f, 0.95f, 2.f);
+            vec3 bc = hover ? vec3(UI_ACCENT_R, UI_ACCENT_G, UI_ACCENT_B) : vec3(0.3f, 0.32f, 0.36f);
+            ren.uiRect(x, y, cw, 1.5f, bc.x, bc.y, bc.z, hover ? 0.9f : 0.4f);
             vec3 tint = i == 0 ? vec3(0.35f, 0.55f, 0.9f) : vec3(0.95f, 0.55f, 0.25f);
-            ren.uiRect(x + 16, y + 16, cw - 32, 120, tint.x, tint.y, tint.z, 0.5f, 6.f);
+            ren.uiRect(x + 16, y + 16, cw - 32, 120, tint.x, tint.y, tint.z, 0.35f, 2.f);
             ren.uiTextCentered(names[i], x + cw * 0.5f, y + 152, 2.4f, 1, 1, 1, 1);
             // wrap desc into ~2 lines manually by splitting on spaces roughly
             ren.uiTextCentered(descs[i], x + cw * 0.5f, y + 190, 1.3f, 0.75f, 0.78f, 0.82f, 0.9f);
@@ -678,8 +687,8 @@ struct Game {
             }
             if (in.keyPressed[VK_BACK] && !joinIpBuf.empty()) joinIpBuf.pop_back();
         }
-        ren.uiRect(ix, iy, iw, ih, 0.10f, 0.11f, 0.13f, 0.95f, 6.f);
-        ren.uiRect(ix, iy, iw, 2, typingJoinIp ? 1.f : 0.4f, typingJoinIp ? 0.7f : 0.4f, 0.2f, 0.7f);
+        ren.uiRect(ix, iy, iw, ih, 0.08f, 0.085f, 0.10f, 0.95f, 2.f);
+        ren.uiRect(ix, iy, iw, 1.5f, UI_ACCENT_R, UI_ACCENT_G, UI_ACCENT_B, typingJoinIp ? 0.9f : 0.4f);
         std::string shown = joinIpBuf + (typingJoinIp && ((int)(simTime * 2) % 2 == 0) ? "_" : "");
         ren.uiText(shown.c_str(), ix + 16, iy + ih * 0.5f - 7, 2.0f, 1, 1, 1, 1);
 
@@ -717,11 +726,22 @@ struct Game {
             ren.settings.bloom += 0.25f;
             if (ren.settings.bloom > 1.01f) ren.settings.bloom = 0.f;
         }
+        char scaleLbl[48];
+        std::snprintf(scaleLbl, sizeof scaleLbl, "RENDER SCALE: %.0f%%", ren.settings.renderScale * 100.f);
+        if (btn(x, y + gap * 4, bw, bh, scaleLbl)) {
+            audio.play(SND_CLICK);
+            static const float scales[4] = {1.0f, 1.25f, 1.5f, 2.0f};
+            int idx = 0;
+            for (int i = 0; i < 4; i++) if (fabsf(ren.settings.renderScale - scales[i]) < 0.01f) idx = i;
+            ren.settings.renderScale = scales[(idx + 1) % 4];
+        }
+        ren.uiTextCentered("HIGHER RENDER SCALE = SHARPER IMAGE, MORE GPU LOAD",
+                           cx, y + gap * 5 - 12, 1.3f, 0.55f, 0.6f, 0.65f, 0.75f);
         ren.uiTextCentered("GL 3.3 CORE - RUNS ON NVIDIA / AMD / INTEL",
-                           cx, y + gap * 4 + 10, 1.4f, 0.55f, 0.6f, 0.65f, 0.8f);
+                           cx, y + gap * 5 + 20, 1.4f, 0.55f, 0.6f, 0.65f, 0.8f);
         char coreLbl[48];
         std::snprintf(coreLbl, sizeof coreLbl, "WORKER THREADS: %d", ThreadPool::get().workerCount());
-        ren.uiTextCentered(coreLbl, cx, y + gap * 4 + 34, 1.4f, 0.55f, 0.6f, 0.65f, 0.8f);
+        ren.uiTextCentered(coreLbl, cx, y + gap * 5 + 44, 1.4f, 0.55f, 0.6f, 0.65f, 0.8f);
         if (btn(cx - 100, (float)plat->st.height - 90, 200, 50, "BACK"))
             { audio.play(SND_CLICK); state = ST_MAIN_MENU; }
     }
@@ -764,17 +784,27 @@ struct Game {
     void uiHud() {
         int w = plat->st.width, h = plat->st.height;
         float cx = w * 0.5f, cy = h * 0.5f;
-        // crosshair
-        float cs = 10.f;
-        ren.uiRect(cx - cs, cy - 1, cs * 2, 2, 1, 1, 1, 0.85f);
-        ren.uiRect(cx - 1, cy - cs, 2, cs * 2, 1, 1, 1, 0.85f);
-        // tool name + ammo-less indicator
-        ren.uiRect(24, h - 78, 320, 54, 0.08f, 0.08f, 0.10f, 0.7f, 8.f);
-        ren.uiText(TOOL_NAMES[weapons.current], 40, h - 62, 2.0f, 1, 0.85f, 0.4f, 1);
-        for (int i = 0; i < TOOL_COUNT; i++) {
-            float bx = 40 + i * 34;
-            bool sel = (int)weapons.current == i;
-            ren.uiRect(bx, h - 30, 26, 8, sel ? 1.f : 0.4f, sel ? 0.6f : 0.4f, sel ? 0.2f : 0.45f, sel ? 1.f : 0.5f, 3.f);
+        // crosshair: small gapped cross + center dot, Teardown-style (not a bold solid plus)
+        {
+            float cs = 6.f, gap = 3.f, th = 1.5f;
+            ren.uiRect(cx - gap - cs, cy - th * 0.5f, cs, th, 1, 1, 1, 0.85f);
+            ren.uiRect(cx + gap, cy - th * 0.5f, cs, th, 1, 1, 1, 0.85f);
+            ren.uiRect(cx - th * 0.5f, cy - gap - cs, th, cs, 1, 1, 1, 0.85f);
+            ren.uiRect(cx - th * 0.5f, cy + gap, th, cs, 1, 1, 1, 0.85f);
+            ren.uiRect(cx - 1, cy - 1, 2, 2, 1, 1, 1, 0.55f);
+        }
+        // tool indicator: minimal corner tag, no panel — name + underline + a tick per tool
+        {
+            const char* nm = TOOL_NAMES[weapons.current];
+            ren.uiText(nm, 28, h - 46, 1.8f, UI_ACCENT_R, UI_ACCENT_G, UI_ACCENT_B, 1);
+            float tw = ren.uiTextWidth(nm, 1.8f);
+            ren.uiRect(28, h - 28, tw, 1.5f, UI_ACCENT_R, UI_ACCENT_G, UI_ACCENT_B, 0.7f);
+            for (int i = 0; i < TOOL_COUNT; i++) {
+                float bx = 28 + i * 16;
+                bool sel = (int)weapons.current == i;
+                vec3 c = sel ? vec3(UI_ACCENT_R, UI_ACCENT_G, UI_ACCENT_B) : vec3(0.4f, 0.42f, 0.46f);
+                ren.uiRect(bx, h - 20, 12, 3, c.x, c.y, c.z, sel ? 1.f : 0.5f);
+            }
         }
         // map name
         char mapLbl[64];

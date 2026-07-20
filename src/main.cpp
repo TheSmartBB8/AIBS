@@ -128,6 +128,20 @@ static int selftestMain() {
         CHECK(h.hit, "raycast downward from the sky hits the ground");
     }
 
+    // ---- raycast: exact axis-aligned ray from an origin exactly on a voxel grid boundary
+    // must not drift off-axis (regression test for the tx/ty tie-break bug fixed above)
+    {
+        World w;
+        w.init();
+        uint8_t solid = w.addPal(100, 100, 100, M_HEAVY);
+        // a single isolated target voxel; a drifted ray would sail past it and miss entirely
+        w.setRaw(5, 3, 8, solid);
+        vec3 eye(5 * VOXEL_SIZE, 3 * VOXEL_SIZE, 2 * VOXEL_SIZE);
+        World::RayHit h = w.raycast(eye, vec3(0, 0, 1), 3.f);
+        CHECK(h.hit && h.x == 5 && h.y == 3 && h.z == 8,
+              "axis-aligned raycast from a grid-boundary origin hits the exact target voxel, no drift");
+    }
+
     // ---- destruction + structural integrity: a floating platform detaches and falls
     {
         World w;
@@ -206,7 +220,7 @@ static int selftestMain() {
     {
         AudioSystem as;
         as.init();
-        CHECK(as.sounds.size() == 9, "all sound effects synthesized");
+        CHECK(as.sounds.size() == SND_COUNT, "all sound effects synthesized");
         for (auto& s : as.sounds) CHECK(!s.samples.empty(), "synthesized sound has samples");
         as.shutdown();
     }
@@ -280,7 +294,175 @@ static int selftestMain() {
         fireSledge(ctx, ws, eye, vec3(0, -1, 0));
         CHECK(opsEmitted > 0, "firing the sledgehammer emits a destruction op");
         CHECK(firesEmitted > 0, "firing the sledgehammer emits a fire visual event");
+
+        opsEmitted = 0;
+        fireGun(ctx, ws, eye, vec3(0, -1, 0));
+        CHECK(opsEmitted > 0, "firing the pistol emits a destruction op");
+
+        opsEmitted = 0;
+        fireMinigun(ctx, ws, eye, vec3(0, -1, 0), 42);
+        CHECK(opsEmitted > 0, "firing the minigun emits a destruction op");
+
+        // blowtorch's op-emission is covered more rigorously below (short 3.2m range makes
+        // this eye position, chosen for long-range weapon tests 12m above the mall roof, an
+        // unreliable fit for it specifically)
+        CHECK((int)TOOL_COUNT == 13, "tool roster has all 13 implemented tools");
         as.shutdown();
+    }
+
+    // ---- blowtorch can cut heavy material that the sledgehammer cannot
+    {
+        World w;
+        w.init();
+        uint8_t bedrock = w.addPal(50, 50, 50, M_BEDROCK);
+        uint8_t heavy = w.addPal(150, 150, 155, M_HEAVY);
+        for (int x = 0; x < 10; x++) for (int z = 0; z < 10; z++) w.setRaw(x, 0, z, bedrock);
+        for (int x = 3; x < 7; x++) for (int y = 1; y < 5; y++) w.setRaw(x, y, 5, heavy);
+        ParticleSystem ps;
+        WeaponContext ctx; ctx.world = &w; ctx.particles = &ps;
+        ctx.emitOp = [&](const DestructionOp& op) { applyDestructionOp(ctx, op, false); };
+        ctx.emitFire = [](const FireEvent&) {};
+        ctx.addShake = [](vec3, float) {};
+        ctx.playSound = [](int) {};
+        ctx.addLight = [](vec3, vec3, float, float) {};
+        WeaponsState ws;
+        // offset off the exact voxel-center grid so the destroy-sphere radius check isn't a
+        // floating-point tie against every candidate voxel (dist^2 == r^2 exactly)
+        vec3 eye(5.3f * VOXEL_SIZE, 3.3f * VOXEL_SIZE, 2 * VOXEL_SIZE);
+        vec3 dir = vnorm(vec3(0, 0, 1));
+        size_t before = w.countSolid();
+        fireSledge(ctx, ws, eye, dir);
+        CHECK(w.countSolid() == before, "sledgehammer cannot dent heavy material");
+        fireBlowtorch(ctx, eye, dir);
+        CHECK(w.countSolid() < before, "blowtorch cuts through heavy material the sledgehammer can't touch");
+    }
+
+    // ---- hunting rifle penetrates through multiple thin walls in one shot
+    {
+        World w;
+        w.init();
+        uint8_t bedrock = w.addPal(50, 50, 50, M_BEDROCK);
+        uint8_t wood = w.addPal(150, 112, 70, M_MED);
+        for (int x = 0; x < 10; x++) for (int z = 0; z < 30; z++) w.setRaw(x, 0, z, bedrock);
+        for (int x = 3; x < 7; x++) for (int y = 1; y < 5; y++) { w.setRaw(x, y, 5, wood); w.setRaw(x, y, 10, wood); }
+        ParticleSystem ps;
+        int opsSeen = 0;
+        WeaponContext ctx; ctx.world = &w; ctx.particles = &ps;
+        ctx.emitOp = [&](const DestructionOp& op) { opsSeen++; applyDestructionOp(ctx, op, false); };
+        ctx.emitFire = [](const FireEvent&) {};
+        ctx.addShake = [](vec3, float) {};
+        ctx.playSound = [](int) {};
+        ctx.addLight = [](vec3, vec3, float, float) {};
+        WeaponsState ws;
+        vec3 eye(5 * VOXEL_SIZE, 3 * VOXEL_SIZE, 2 * VOXEL_SIZE);
+        fireRifle(ctx, ws, eye, vnorm(vec3(0, 0, 1)));
+        CHECK(opsSeen >= 2, "a single rifle shot penetrates and damages both walls in its path");
+    }
+
+    // ---- pipe bomb: thrown, arcs, and detonates on its timer rather than on impact
+    {
+        World w;
+        w.init();
+        uint8_t bedrock = w.addPal(50, 50, 50, M_BEDROCK);
+        for (int x = 0; x < 20; x++) for (int z = 0; z < 20; z++) w.setRaw(x, 0, z, bedrock);
+        ParticleSystem ps;
+        int opsSeen = 0; bool sawBigExplosion = false;
+        WeaponContext ctx; ctx.world = &w; ctx.particles = &ps;
+        ctx.emitOp = [&](const DestructionOp& op) { opsSeen++; if (op.big) sawBigExplosion = true; };
+        ctx.emitFire = [](const FireEvent&) {};
+        ctx.addShake = [](vec3, float) {};
+        ctx.playSound = [](int) {};
+        ctx.addLight = [](vec3, vec3, float, float) {};
+        WeaponsState ws;
+        firePipeBomb(ctx, ws, vec3(2, 3, 2), vnorm(vec3(1, 0.3f, 0)), true);
+        CHECK(ws.rockets.size() == 1 && ws.rockets[0].grenade, "pipe bomb is thrown as a grenade-mode projectile");
+        for (int i = 0; i < 400 && !ws.rockets.empty(); i++) updateRockets(ctx, ws, 1.f / 60.f);
+        CHECK(sawBigExplosion, "pipe bomb eventually detonates via its fuse timer");
+        CHECK(ws.rockets.empty(), "the pipe bomb projectile is cleaned up after detonating");
+    }
+
+    // ---- bomb: placeable, sticks to a surface, detonates after its countdown
+    {
+        World w;
+        w.init();
+        uint8_t bedrock = w.addPal(50, 50, 50, M_BEDROCK);
+        for (int x = 0; x < 20; x++) for (int z = 0; z < 20; z++) w.setRaw(x, 0, z, bedrock);
+        ParticleSystem ps;
+        bool sawBigExplosion = false;
+        WeaponContext ctx; ctx.world = &w; ctx.particles = &ps;
+        ctx.emitOp = [&](const DestructionOp& op) { if (op.big) sawBigExplosion = true; };
+        ctx.emitFire = [](const FireEvent&) {};
+        ctx.addShake = [](vec3, float) {};
+        ctx.playSound = [](int) {};
+        ctx.addLight = [](vec3, vec3, float, float) {};
+        WeaponsState ws;
+        fireBomb(ctx, ws, vec3(3, 3, 3), vec3(0, -1, 0));
+        CHECK(ws.placedBombs.size() == 1, "the bomb sticks to the surface it's placed on");
+        for (int i = 0; i < 300 && !ws.placedBombs.empty(); i++) updatePlacedBombs(ctx, ws, 1.f / 60.f);
+        CHECK(sawBigExplosion, "the placed bomb detonates after its countdown");
+    }
+
+    // ---- nitroglycerin: placed canister reuses the barrel chain-reaction trigger
+    {
+        World w;
+        w.init();
+        uint8_t bedrock = w.addPal(50, 50, 50, M_BEDROCK);
+        for (int x = 0; x < 20; x++) for (int z = 0; z < 20; z++) w.setRaw(x, 0, z, bedrock);
+        ParticleSystem ps;
+        WeaponContext ctx; ctx.world = &w; ctx.particles = &ps;
+        ctx.emitOp = [&](const DestructionOp& op) { applyDestructionOp(ctx, op, false); };
+        ctx.emitFire = [](const FireEvent&) {};
+        ctx.addShake = [](vec3, float) {};
+        ctx.playSound = [](int) {};
+        ctx.addLight = [](vec3, vec3, float, float) {};
+        size_t barrelsBefore = w.barrels.size();
+        fireNitro(ctx, vec3(3, 3, 3), vec3(0, -1, 0));
+        CHECK(w.barrels.size() == barrelsBefore + 1, "placing nitroglycerin adds a barrel-style trigger entity");
+        Barrel& placed = w.barrels.back();
+        DestructionOp nearbyBlast{placed.x, placed.y, placed.z, 1.0f, WeaponsState::MASK_EXPLOSION, 0, 1, 0, 1};
+        applyDestructionOp(ctx, nearbyBlast, false);
+        CHECK(!w.barrels.back().alive, "the nitroglycerin canister chain-detonates when damaged nearby");
+    }
+
+    // ---- spray can: recolors surface voxels without changing their material/destructibility
+    {
+        World w;
+        w.init();
+        uint8_t bedrock = w.addPal(50, 50, 50, M_BEDROCK);
+        uint8_t concrete = w.addPal(180, 176, 168, M_HEAVY);
+        for (int x = 0; x < 10; x++) for (int z = 0; z < 10; z++) w.setRaw(x, 0, z, bedrock);
+        for (int x = 3; x < 7; x++) for (int y = 1; y < 5; y++) w.setRaw(x, y, 5, concrete);
+        ParticleSystem ps;
+        WeaponContext ctx; ctx.world = &w; ctx.particles = &ps;
+        ctx.emitOp = [](const DestructionOp&) {};
+        ctx.emitFire = [](const FireEvent&) {};
+        ctx.addShake = [](vec3, float) {};
+        ctx.playSound = [](int) {};
+        ctx.addLight = [](vec3, vec3, float, float) {};
+        WeaponsState ws;
+        uint8_t before = w.get(5, 3, 5);
+        fireSpraycan(ctx, ws, vec3(5 * VOXEL_SIZE, 3 * VOXEL_SIZE, 2 * VOXEL_SIZE), vnorm(vec3(0, 0, 1)));
+        uint8_t after = w.get(5, 3, 5);
+        CHECK(before != after, "spray can changes the palette index of painted voxels");
+        CHECK(w.palette[after].mat == M_HEAVY, "spray can preserves the underlying material (still concrete, not destructible by hand)");
+    }
+
+    // ---- fire extinguisher kills nearby fire particles; leaf blower pushes debris
+    {
+        ParticleSystem ps;
+        Particle& fireP = ps.spawn();
+        fireP.type = PT_FIRE; fireP.pos = vec3(1, 1, 3); fireP.maxLife = 5.f;
+        WeaponContext ctx; ctx.particles = &ps;
+        ctx.emitFire = [](const FireEvent&) {};
+        ctx.playSound = [](int) {};
+        fireExtinguisher(ctx, vec3(1, 1, 0), vnorm(vec3(0, 0, 1)));
+        CHECK(!fireP.alive, "fire extinguisher extinguishes a fire particle in its cone");
+
+        Particle& debrisP = ps.spawn();
+        debrisP.type = PT_DEBRIS; debrisP.pos = vec3(1, 1, 3); debrisP.vel = vec3(0, 0, 0); debrisP.maxLife = 5.f;
+        vec3 velBefore = debrisP.vel;
+        fireLeafblower(ctx, vec3(1, 1, 0), vnorm(vec3(0, 0, 1)));
+        CHECK(vlen(debrisP.vel - velBefore) > 0.01f, "leaf blower pushes debris particles in its cone");
     }
 
     std::printf("== %s (%d failing check%s) ==\n", fails == 0 ? "ALL CHECKS PASSED" : "SELFTEST FAILED",

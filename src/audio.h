@@ -46,7 +46,7 @@ struct AudioSystem {
 
     void synthAll() {
         Rng rng(777);
-        sounds.resize(9);
+        sounds.resize(14);
         auto& S = sounds;
         // 0 SLEDGE_SWING: whoosh
         {
@@ -173,6 +173,69 @@ struct AudioSystem {
                     lp += 0.4f * (noise(rng) - lp);
                     S[8].samples[off + i] += (lp + noise(rng) * 0.2f) * expf(-t * 12.f) * 0.9f;
                 }
+            }
+        }
+        // 9 TORCH: metal-cutting sizzle (short burst, re-triggered every tick while held)
+        {
+            int n = AUDIO_RATE / 8;
+            S[9].samples.resize(n);
+            float hp = 0;
+            for (int i = 0; i < n; i++) {
+                float t = (float)i / n;
+                float env = 1.f - t * 0.3f;
+                float hiss = noise(rng);
+                hp += 0.5f * (hiss - hp);
+                float whine = sinf(6.28318f * 3200.f * i / AUDIO_RATE) * 0.15f;
+                S[9].samples[i] = ((hiss - hp) * 0.8f + whine) * env * 0.7f;
+            }
+        }
+        // 10 HISS: spray/air hiss, shared by spray can, extinguisher and leaf blower
+        {
+            int n = AUDIO_RATE / 6;
+            S[10].samples.resize(n);
+            float lp = 0;
+            for (int i = 0; i < n; i++) {
+                float t = (float)i / n;
+                float env = 1.f - t * 0.5f;
+                lp += 0.3f * (noise(rng) - lp);
+                S[10].samples[i] = lp * env * 0.9f;
+            }
+        }
+        // 11 GUNSHOT: light pistol crack, shorter/lighter than the shotgun
+        {
+            int n = AUDIO_RATE / 5;
+            S[11].samples.resize(n);
+            float lp = 0;
+            for (int i = 0; i < n; i++) {
+                float t = (float)i / n;
+                float crack = noise(rng) * expf(-t * 40.f);
+                lp += 0.4f * (crack - lp);
+                float pop = sinf(6.28318f * 1400.f * i / AUDIO_RATE) * expf(-t * 35.f) * 0.6f;
+                S[11].samples[i] = clampf((crack * 0.7f + pop) * 1.6f, -1.3f, 1.3f);
+            }
+        }
+        // 12 RIFLESHOT: sharp high-pressure crack with a short tail
+        {
+            int n = AUDIO_RATE / 3;
+            S[12].samples.resize(n);
+            float lp = 0;
+            for (int i = 0; i < n; i++) {
+                float t = (float)i / n;
+                float crack = noise(rng) * expf(-t * 22.f);
+                lp += 0.3f * (crack - lp);
+                float snap = sinf(6.28318f * 2200.f * i / AUDIO_RATE) * expf(-t * 45.f) * 0.5f;
+                float tail = noise(rng) * expf(-t * 6.f) * 0.25f;
+                S[12].samples[i] = clampf((crack * 0.8f + snap + tail) * 1.7f, -1.4f, 1.4f);
+            }
+        }
+        // 13 BEEP: short electronic countdown beep (placed bombs)
+        {
+            int n = AUDIO_RATE / 12;
+            S[13].samples.resize(n);
+            for (int i = 0; i < n; i++) {
+                float t = (float)i / n;
+                float env = t < 0.05f ? t / 0.05f : (1.f - (t - 0.05f) / 0.95f);
+                S[13].samples[i] = sinf(6.28318f * 1500.f * i / AUDIO_RATE) * env * 0.6f;
             }
         }
     }

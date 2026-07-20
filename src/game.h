@@ -190,23 +190,62 @@ struct Game {
         applyDestructionOp(wctx, op, true);
         (void)asRocketExplosion;
     }
+    // Cosmetic-only visual feedback for another player's tool use — the actual world edit
+    // (voxels destroyed, painted, etc.) always arrives separately via MSG_OP and is applied
+    // identically on every peer, so nothing here needs to be gameplay-authoritative.
     void applyRemoteFire(int fromId, const WireFire& w) {
         RemotePlayer* rp = findRemote(fromId);
         vec3 origin(w.ox, w.oy, w.oz), dir(w.dx, w.dy, w.dz);
-        if (w.tool == TOOL_SLEDGE) {
-            particles.smoke(origin + dir * 0.5f, dir * 0.4f, 0.1f, 0.3f, 0.4f);
-        } else if (w.tool == TOOL_SHOTGUN) {
-            particles.flash(origin + dir * 0.6f, 0.4f);
-            for (int i = 0; i < 4; i++) particles.smoke(origin + dir * 0.6f, dir * 1.8f, 0.14f, 0.5f, 0.32f);
-            if (ren.lights.size() < 16) ren.lights.push_back({origin + dir * 0.6f, 5.f, vec3(1.f, 0.75f, 0.4f) * 8.f});
-        } else if (w.tool == TOOL_ROCKET) {
-            Rocket r;
-            r.pos = origin + dir * 0.8f;
-            r.vel = dir * 30.f;
-            r.local = false;
-            weapons.rockets.push_back(r);
+        switch (w.tool) {
+            case TOOL_SLEDGE:
+                particles.smoke(origin + dir * 0.5f, dir * 0.4f, 0.1f, 0.3f, 0.4f);
+                break;
+            case TOOL_SHOTGUN:
+            case TOOL_MINIGUN:
+                particles.flash(origin + dir * 0.6f, 0.4f);
+                for (int i = 0; i < 4; i++) particles.smoke(origin + dir * 0.6f, dir * 1.8f, 0.14f, 0.5f, 0.32f);
+                if (ren.lights.size() < 16) ren.lights.push_back({origin + dir * 0.6f, 5.f, vec3(1.f, 0.75f, 0.4f) * 8.f});
+                break;
+            case TOOL_GUN:
+            case TOOL_RIFLE:
+                particles.flash(origin + dir * 0.6f, 0.25f);
+                particles.smoke(origin + dir * 0.6f, dir * 1.6f, 0.08f, 0.3f, 0.3f);
+                break;
+            case TOOL_BLOWTORCH:
+                particles.fire(origin + dir * 2.f, dir * 0.3f, 0.08f, 0.1f);
+                break;
+            case TOOL_SPRAYCAN:
+                particles.dust(origin + dir * 1.f, dir * 0.3f, 0.06f, 0.4f, 0.8f, 0.4f, 0.6f);
+                break;
+            case TOOL_EXTINGUISHER:
+            case TOOL_LEAFBLOWER:
+                particles.dust(origin + dir * 0.6f, dir * 3.5f, 0.14f, 0.3f, 0.8f, 0.8f, 0.8f);
+                break;
+            case TOOL_PIPEBOMB: {
+                Rocket r;
+                r.pos = origin + dir * 0.6f;
+                r.vel = dir * 16.f + vec3(0, 3.f, 0);
+                r.local = false;
+                r.grenade = true;
+                r.fuse = 2.4f;
+                weapons.rockets.push_back(r);
+                break;
+            }
+            case TOOL_ROCKET: {
+                Rocket r;
+                r.pos = origin + dir * 0.8f;
+                r.vel = dir * 30.f;
+                r.local = false;
+                weapons.rockets.push_back(r);
+                break;
+            }
+            case TOOL_BOMB:
+            case TOOL_NITRO:
+                particles.flash(origin + dir * 0.6f, 0.2f);
+                break;
+            default: break;
         }
-        if (rp) { rp->tool = (Tool)w.tool; }
+        if (rp) rp->tool = (Tool)w.tool;
     }
     RemotePlayer* findRemote(int id) {
         for (auto& r : remotes) if (r.used && r.id == id) return &r;
@@ -414,20 +453,38 @@ struct Game {
             weapons.current = (Tool)t;
             audio.play(SND_CLICK, 0.5f);
         }
-        if (in.keyPressed['1']) { weapons.current = TOOL_SLEDGE; audio.play(SND_CLICK, 0.5f); }
-        if (in.keyPressed['2']) { weapons.current = TOOL_SHOTGUN; audio.play(SND_CLICK, 0.5f); }
-        if (in.keyPressed['3']) { weapons.current = TOOL_ROCKET; audio.play(SND_CLICK, 0.5f); }
+        for (int k = 0; k < 10 && k < TOOL_COUNT; k++) {
+            char key = (char)(k < 9 ? '1' + k : '0');
+            if (in.keyPressed[(unsigned char)key]) { weapons.current = (Tool)k; audio.play(SND_CLICK, 0.5f); }
+        }
 
         // fire
         weapons.cooldown = std::max(0.f, weapons.cooldown - dt);
         vec3 eye = player.eye();
         vec3 dir = player.forward();
         static Rng shotRng(9001);
+        if (weapons.current == TOOL_SPRAYCAN && in.mousePressed[1]) {
+            weapons.cycleSprayColor();
+            audio.play(SND_CLICK, 0.4f);
+        }
         if (in.mouseDown[0] && weapons.cooldown <= 0.f) {
             weapons.cooldown = weapons.cooldownFor(weapons.current);
-            if (weapons.current == TOOL_SLEDGE) fireSledge(wctx, weapons, eye, dir);
-            else if (weapons.current == TOOL_SHOTGUN) fireShotgun(wctx, weapons, eye, dir, shotRng.next());
-            else fireRocket(wctx, weapons, eye, dir, true);
+            switch (weapons.current) {
+                case TOOL_SLEDGE: fireSledge(wctx, weapons, eye, dir); break;
+                case TOOL_SPRAYCAN: fireSpraycan(wctx, weapons, eye, dir); break;
+                case TOOL_EXTINGUISHER: fireExtinguisher(wctx, eye, dir); break;
+                case TOOL_LEAFBLOWER: fireLeafblower(wctx, eye, dir); break;
+                case TOOL_BLOWTORCH: fireBlowtorch(wctx, eye, dir); break;
+                case TOOL_SHOTGUN: fireShotgun(wctx, weapons, eye, dir, shotRng.next()); break;
+                case TOOL_GUN: fireGun(wctx, weapons, eye, dir); break;
+                case TOOL_RIFLE: fireRifle(wctx, weapons, eye, dir); break;
+                case TOOL_PIPEBOMB: firePipeBomb(wctx, weapons, eye, dir, true); break;
+                case TOOL_BOMB: fireBomb(wctx, weapons, eye, dir); break;
+                case TOOL_NITRO: fireNitro(wctx, eye, dir); break;
+                case TOOL_ROCKET: fireRocket(wctx, weapons, eye, dir, true); break;
+                case TOOL_MINIGUN: fireMinigun(wctx, weapons, eye, dir, shotRng.next()); break;
+                default: break;
+            }
         }
 
         // anim decay
@@ -438,6 +495,7 @@ struct Game {
         shakeT += dt;
 
         updateRockets(wctx, weapons, dt);
+        updatePlacedBombs(wctx, weapons, dt);
         particles.update(dt, world);
 
         // falling clusters
@@ -547,22 +605,71 @@ struct Game {
 
         mat4 model = mat4_translate(base) * mat4_roty(-player.yaw) * mat4_rotx(-player.pitch);
         ren.modelBegin();
-        if (weapons.current == TOOL_SLEDGE) {
-            float swing = weapons.swingAnim;
-            float ang = -swing * 1.5f;
-            ren.modelBox(vec3(0, -0.02f, 0.05f), vec3(0.025f, 0.22f, 0.025f), 120, 84, 52);
-            vec3 headC(0, -0.02f - 0.24f * cosf(ang * 0.4f), 0.05f + 0.24f * sinf(ang * 0.4f));
-            ren.modelBox(headC, vec3(0.09f, 0.045f, 0.045f), 90, 92, 96);
-        } else if (weapons.current == TOOL_SHOTGUN) {
-            float rec = weapons.recoilAnim;
-            ren.modelBox(vec3(0, -0.01f, -0.05f - rec * 0.05f), vec3(0.03f, 0.03f, 0.28f), 60, 46, 34);
-            ren.modelBox(vec3(0, -0.05f, 0.05f - rec * 0.05f), vec3(0.02f, 0.05f, 0.10f), 30, 30, 32);
-            ren.modelBox(vec3(0, 0.0f, -0.30f - rec * 0.05f), vec3(0.022f, 0.022f, 0.10f), 40, 40, 44);
-        } else {
-            float rec = weapons.recoilAnim;
-            ren.modelBox(vec3(0, -0.01f, -0.05f - rec * 0.08f), vec3(0.06f, 0.06f, 0.34f), 60, 66, 58);
-            ren.modelBox(vec3(0, -0.08f, 0.02f - rec * 0.08f), vec3(0.025f, 0.06f, 0.10f), 30, 30, 32);
-            ren.modelBox(vec3(0, 0.02f, -0.36f - rec * 0.08f), vec3(0.08f, 0.08f, 0.03f), 200, 60, 40);
+        float rec = weapons.recoilAnim;
+        switch (weapons.current) {
+            case TOOL_SLEDGE: {
+                float ang = -weapons.swingAnim * 1.5f;
+                ren.modelBox(vec3(0, -0.02f, 0.05f), vec3(0.025f, 0.22f, 0.025f), 120, 84, 52);
+                vec3 headC(0, -0.02f - 0.24f * cosf(ang * 0.4f), 0.05f + 0.24f * sinf(ang * 0.4f));
+                ren.modelBox(headC, vec3(0.09f, 0.045f, 0.045f), 90, 92, 96);
+                break;
+            }
+            case TOOL_SPRAYCAN:
+                ren.modelBox(vec3(0, -0.02f, -0.02f), vec3(0.035f, 0.09f, 0.035f), 40, 40, 44);
+                ren.modelBox(vec3(0, 0.07f, -0.02f), vec3(0.038f, 0.015f, 0.038f),
+                             (uint8_t)(weapons.sprayR * 255), (uint8_t)(weapons.sprayG * 255), (uint8_t)(weapons.sprayB * 255));
+                break;
+            case TOOL_EXTINGUISHER:
+                ren.modelBox(vec3(0, -0.03f, -0.02f), vec3(0.045f, 0.13f, 0.045f), 190, 40, 30);
+                ren.modelBox(vec3(0.02f, 0.03f, -0.15f), vec3(0.012f, 0.012f, 0.08f), 40, 40, 44);
+                break;
+            case TOOL_LEAFBLOWER:
+                ren.modelBox(vec3(0, -0.02f, -0.05f), vec3(0.05f, 0.05f, 0.22f), 220, 160, 40);
+                ren.modelBox(vec3(0, -0.09f, 0.05f), vec3(0.02f, 0.06f, 0.03f), 40, 40, 44);
+                break;
+            case TOOL_BLOWTORCH:
+                ren.modelBox(vec3(0, -0.02f, 0.02f), vec3(0.03f, 0.03f, 0.16f), 60, 120, 150);
+                ren.modelBox(vec3(0, -0.06f, -0.10f), vec3(0.035f, 0.08f, 0.05f), 200, 200, 60);
+                ren.modelBox(vec3(0, -0.01f, 0.16f), vec3(0.012f, 0.012f, 0.05f), 90, 92, 96);
+                break;
+            case TOOL_SHOTGUN:
+                ren.modelBox(vec3(0, -0.01f, -0.05f - rec * 0.05f), vec3(0.03f, 0.03f, 0.28f), 60, 46, 34);
+                ren.modelBox(vec3(0, -0.05f, 0.05f - rec * 0.05f), vec3(0.02f, 0.05f, 0.10f), 30, 30, 32);
+                ren.modelBox(vec3(0, 0.0f, -0.30f - rec * 0.05f), vec3(0.022f, 0.022f, 0.10f), 40, 40, 44);
+                break;
+            case TOOL_GUN:
+                ren.modelBox(vec3(0, -0.01f, -0.03f - rec * 0.03f), vec3(0.025f, 0.03f, 0.14f), 50, 52, 58);
+                ren.modelBox(vec3(0, -0.07f, 0.02f - rec * 0.03f), vec3(0.02f, 0.05f, 0.05f), 40, 32, 28);
+                break;
+            case TOOL_RIFLE:
+                ren.modelBox(vec3(0, 0.0f, -0.10f - rec * 0.06f), vec3(0.025f, 0.025f, 0.34f), 70, 60, 45);
+                ren.modelBox(vec3(0, -0.03f, 0.14f - rec * 0.06f), vec3(0.03f, 0.05f, 0.12f), 90, 70, 50);
+                ren.modelBox(vec3(0, 0.045f, -0.05f - rec * 0.06f), vec3(0.018f, 0.018f, 0.08f), 30, 30, 34);
+                break;
+            case TOOL_PIPEBOMB:
+                ren.modelBox(vec3(0, -0.02f, -0.02f), vec3(0.03f, 0.03f, 0.11f), 70, 72, 66);
+                ren.modelBox(vec3(0, 0.02f, 0.06f), vec3(0.006f, 0.05f, 0.006f), 200, 60, 40);
+                break;
+            case TOOL_BOMB:
+                ren.modelBox(vec3(0, -0.02f, -0.02f), vec3(0.06f, 0.05f, 0.07f), 40, 42, 46);
+                ren.modelBox(vec3(0, 0.04f, -0.02f), vec3(0.015f, 0.01f, 0.015f), 200, 40, 30, 3);
+                break;
+            case TOOL_NITRO:
+                ren.modelBox(vec3(0, -0.02f, -0.02f), vec3(0.04f, 0.09f, 0.04f), 230, 120, 20);
+                ren.modelBox(vec3(0, 0.05f, -0.02f), vec3(0.042f, 0.012f, 0.042f), 222, 168, 30);
+                break;
+            case TOOL_MINIGUN:
+                ren.modelBox(vec3(0, -0.02f, -0.05f - rec * 0.03f), vec3(0.06f, 0.06f, 0.30f), 60, 62, 66);
+                ren.modelBox(vec3(0.02f, 0.0f, 0.20f - rec * 0.03f), vec3(0.012f, 0.012f, 0.08f), 90, 92, 96);
+                ren.modelBox(vec3(-0.02f, 0.0f, 0.20f - rec * 0.03f), vec3(0.012f, 0.012f, 0.08f), 90, 92, 96);
+                ren.modelBox(vec3(0, -0.08f, 0.02f - rec * 0.03f), vec3(0.025f, 0.06f, 0.06f), 40, 40, 44);
+                break;
+            case TOOL_ROCKET:
+            default:
+                ren.modelBox(vec3(0, -0.01f, -0.05f - rec * 0.08f), vec3(0.06f, 0.06f, 0.34f), 60, 66, 58);
+                ren.modelBox(vec3(0, -0.08f, 0.02f - rec * 0.08f), vec3(0.025f, 0.06f, 0.10f), 30, 30, 32);
+                ren.modelBox(vec3(0, 0.02f, -0.36f - rec * 0.08f), vec3(0.08f, 0.08f, 0.03f), 200, 60, 40);
+                break;
         }
         ren.modelDraw(model, mapInfo, 1.0f);
 

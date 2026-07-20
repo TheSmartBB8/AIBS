@@ -213,9 +213,14 @@ struct World {
         float dx = fabsf(dir.x) > 1e-8f ? fabsf(1.f / dir.x) : 1e30f;
         float dy = fabsf(dir.y) > 1e-8f ? fabsf(1.f / dir.y) : 1e30f;
         float dz = fabsf(dir.z) > 1e-8f ? fabsf(1.f / dir.z) : 1e30f;
-        float tx = (dir.x > 0 ? (x + 1 - o.x) : (o.x - x)) * dx;
-        float ty = (dir.y > 0 ? (y + 1 - o.y) : (o.y - y)) * dy;
-        float tz = (dir.z > 0 ? (z + 1 - o.z) : (o.z - z)) * dz;
+        // when a direction component is exactly zero, its initial t must be unambiguously
+        // huge (not derived from a possibly-zero offset) — otherwise an origin that also
+        // happens to land exactly on that axis's voxel boundary produces tx/ty == 0, which
+        // ties with (or beats) a legitimately small tz and spuriously steps an axis the ray
+        // never actually moves along.
+        float tx = fabsf(dir.x) > 1e-8f ? (dir.x > 0 ? (x + 1 - o.x) : (o.x - x)) * dx : 1e30f;
+        float ty = fabsf(dir.y) > 1e-8f ? (dir.y > 0 ? (y + 1 - o.y) : (o.y - y)) * dy : 1e30f;
+        float tz = fabsf(dir.z) > 1e-8f ? (dir.z > 0 ? (z + 1 - o.z) : (o.z - z)) * dz : 1e30f;
         float t = 0; int lastAxis = -1;
         for (int i = 0; i < 2048; i++) {
             if (inBounds(x, y, z)) {

@@ -1,0 +1,60 @@
+name: Build VoxWreck
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run logic selftest
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wno-unused-parameter -pthread \
+              src/main.cpp src/glapi.cpp -o /tmp/voxwreck_selftest
+          /tmp/voxwreck_selftest
+
+  shader-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install glslang
+        run: sudo apt-get update && sudo apt-get install -y glslang-tools
+      - name: Validate every GLSL shader stage (GLSL 3.30 core, no GPU required)
+        run: |
+          mkdir -p /tmp/shaders && cd /tmp/shaders
+          g++ -std=c++17 -O0 -I "$GITHUB_WORKSPACE/src" "$GITHUB_WORKSPACE/src/glapi.cpp" \
+              "$GITHUB_WORKSPACE/tools/dump_shaders.cpp" -o /tmp/dump_shaders
+          /tmp/dump_shaders
+          fail=0
+          for f in *.vert; do
+            out=$(glslangValidator -S vert "$f" 2>&1)
+            if [ $? -ne 0 ] || echo "$out" | grep -qi error; then echo "FAIL: $f"; echo "$out"; fail=1; fi
+          done
+          for f in *.frag; do
+            out=$(glslangValidator -S frag "$f" 2>&1)
+            if [ $? -ne 0 ] || echo "$out" | grep -qi error; then echo "FAIL: $f"; echo "$out"; fail=1; fi
+          done
+          exit $fail
+
+  windows-exe:
+    runs-on: ubuntu-latest
+    needs: [selftest, shader-validation]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install MinGW-w64
+        run: sudo apt-get update && sudo apt-get install -y g++-mingw-w64-x86-64-posix
+      - name: Cross-compile Windows executable
+        run: |
+          mkdir -p dist
+          x86_64-w64-mingw32-g++ -std=c++17 -O2 -DNDEBUG -Wall -Wno-unused-parameter -Wno-unused-variable \
+              -municode -mwindows -static -static-libgcc -static-libstdc++ \
+              src/main.cpp src/glapi.cpp -o dist/VoxWreck.exe \
+              -lopengl32 -lgdi32 -luser32 -lwinmm -lws2_32 -lshell32 -lkernel32 -pthread
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VoxWreck-windows
+          path: dist/VoxWreck.exe

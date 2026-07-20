@@ -109,6 +109,10 @@ struct WeaponsState {
 };
 
 // The game supplies these callbacks; ops are applied locally AND queued to the network.
+// Fire/loose-debris hooks are plain callbacks (not a FireSystem*/LooseVoxelSystem* pointer)
+// so this header stays fully decoupled from props.h — weapons.h has no idea those systems
+// exist, it just calls the hook if the caller (game.h) wired one up. All are optional: an
+// unset std::function is fine to leave uncalled, used by tests that don't need fire/debris.
 struct WeaponContext {
     World* world;
     ParticleSystem* particles;
@@ -117,6 +121,9 @@ struct WeaponContext {
     std::function<void(vec3, float)> addShake;             // pos, amount
     std::function<void(int)> playSound;                    // sound id
     std::function<void(vec3, vec3, float, float)> addLight; // pos, color, radius, life
+    std::function<void(int, int, int)> tryIgnite;                     // voxel coords
+    std::function<void(vec3, vec3, float, float)> extinguishFireCone; // eye, dir, range, cosHalfAngle
+    std::function<void(vec3, uint8_t, vec3)> spawnLooseDebris;        // pos, palette index, initial vel
 };
 
 // sound ids (must match audio.h)
@@ -161,6 +168,14 @@ static void applyDestructionOp(WeaponContext& ctx, const DestructionOp& op, bool
             if (ctx.addShake) ctx.addShake(c, 1.0f);
             if (ctx.playSound) ctx.playSound(SND_EXPLOSION);
             if (ctx.addLight) ctx.addLight(c, vec3(1.f, 0.6f, 0.25f) * 30.f, op.radius * 6.f, 0.4f);
+            // explosions "sometimes" start fires (per Teardown's own tool documentation)
+            if (ctx.tryIgnite) {
+                for (int i = 0; i < 4; i++) {
+                    if (fxRng.uf() > 0.35f) continue;
+                    vec3 jp = c + vec3(fxRng.sf(), fxRng.uf(), fxRng.sf()) * op.radius;
+                    ctx.tryIgnite((int)floorf(jp.x / VOXEL_SIZE), (int)floorf(jp.y / VOXEL_SIZE), (int)floorf(jp.z / VOXEL_SIZE));
+                }
+            }
         } else if (destroyed > 0) {
             if (ctx.playSound) ctx.playSound(glassCount > destroyed / 3 ? SND_GLASS : SND_DEBRIS);
         }
@@ -174,6 +189,8 @@ static void applyDestructionOp(WeaponContext& ctx, const DestructionOp& op, bool
             vec3 vp((x + 0.5f) * VOXEL_SIZE, (y + 0.5f) * VOXEL_SIZE, (z + 0.5f) * VOXEL_SIZE);
             if (fxRng.uf() < 0.4f)
                 ps->voxelDebris(vp, pe.r, pe.g, pe.b, vec3(0, -0.3f, 0), 1.2f);
+            if (ctx.spawnLooseDebris && fxRng.uf() < 0.15f)
+                ctx.spawnLooseDebris(vp, pal, vec3(fxRng.sf(), fxRng.uf() * 0.5f, fxRng.sf()) * 1.5f);
         });
         // mesh any new clusters
         for (auto& fc : w.clusters)
@@ -269,6 +286,7 @@ static void fireExtinguisher(WeaponContext& ctx, vec3 eye, vec3 dir) {
         p.alive = false;
         ctx.particles->dust(p.pos, vec3(0, 0.5f, 0), 0.12f, 0.4f, 0.85f, 0.87f, 0.9f);
     }
+    if (ctx.extinguishFireCone) ctx.extinguishFireCone(eye, dir, 6.f, 0.85f);
 }
 
 // Leaf blower: pushes nearby debris/dust/smoke particles away in a forward cone.
@@ -306,6 +324,13 @@ static void fireBlowtorch(WeaponContext& ctx, vec3 eye, vec3 dir) {
     if (ctx.addLight) ctx.addLight(tip, vec3(1.f, 0.6f, 0.25f) * 3.f, 2.5f, 0.06f);
     if (ctx.playSound) ctx.playSound(SND_TORCH);
     if (!h.hit) return;
+    // the blowtorch consistently starts fires on flammable material — try the touched voxel
+    // and its immediate neighbors just past it, so a spreading fire can take hold even
+    // though this same touch also chips a small amount of material away below
+    if (ctx.tryIgnite) {
+        ctx.tryIgnite(h.x, h.y, h.z);
+        ctx.tryIgnite(h.x - (int)h.normal.x, h.y - (int)h.normal.y, h.z - (int)h.normal.z);
+    }
     DestructionOp op;
     vec3 p = h.pos - h.normal * 0.05f;
     op.x = p.x; op.y = p.y; op.z = p.z;

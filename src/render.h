@@ -1235,6 +1235,7 @@ struct Renderer {
     void uiFlush() {
         if (uiBatch.empty()) return;
         glDisable(GL_DEPTH_TEST);
+        glDisable(GL_CULL_FACE);
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         glUseProgram(progUI);
@@ -1245,6 +1246,7 @@ struct Renderer {
         glDrawArraysInstanced(GL_TRIANGLES, 0, 6, (GLsizei)uiBatch.size());
         glBindVertexArray(0);
         glDisable(GL_BLEND);
+        glEnable(GL_CULL_FACE);
         glEnable(GL_DEPTH_TEST);
         uiBatch.clear();
     }

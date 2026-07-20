@@ -155,11 +155,16 @@ static void placeTree(MapBuilder& B, const Pals& P, int x, int groundY, int z) {
 
 static void placeCar(MapBuilder& B, const Pals& P, int x, int y, int z, int alongX) {
     // car: 20 long, 9 wide, 7 tall. alongX=1: length runs +x, else +z.
+    // taxi yellow and police white are weighted extra-common to match a busy city parking lot.
     static const int bodyCols[][3] = {
         {188, 52, 44}, {52, 96, 168}, {186, 188, 192}, {40, 42, 46},
         {56, 140, 130}, {210, 168, 60}, {230, 230, 228}, {120, 60, 130},
+        {248, 202, 40}, {248, 202, 40}, {235, 238, 240}, {235, 238, 240},
     };
-    const int* c = bodyCols[B.rng.ri(0, 7)];
+    int colIdx = B.rng.ri(0, 11);
+    bool isTaxi = colIdx == 8 || colIdx == 9;
+    bool isPolice = colIdx == 10 || colIdx == 11;
+    const int* c = bodyCols[colIdx];
     uint8_t body = B.w.addPal(c[0], c[1], c[2], M_MED);
     uint8_t glass = P.glassBlue, wheel = P.black, trim = P.metalDark;
     uint8_t headlight = B.w.addPal(255, 240, 200, M_LIGHT, 0.8f);
@@ -188,6 +193,18 @@ static void placeCar(MapBuilder& B, const Pals& P, int x, int y, int z, int alon
     for (int lz = 1; lz < 8; lz++) { put(0, 2, lz, trim); put(19, 2, lz, trim); }
     put(0, 3, 1, headlight); put(0, 3, 7, headlight);
     put(19, 3, 1, taillight); put(19, 3, 7, taillight);
+    if (isPolice) {
+        uint8_t stripe = B.w.addPal(30, 60, 180, M_MED);
+        uint8_t lightRed = B.w.addPal(230, 40, 30, M_LIGHT, 1.4f);
+        uint8_t lightBlue = B.w.addPal(40, 90, 230, M_LIGHT, 1.4f);
+        for (int lx = 2; lx < 18; lx++) { put(lx, 2, 0, stripe); put(lx, 2, 8, stripe); }
+        put(9, 7, 3, lightRed);
+        put(9, 7, 5, lightBlue);
+    } else if (isTaxi) {
+        uint8_t sign = B.w.addPal(30, 30, 32, M_MED);
+        uint8_t signGlow = B.w.addPal(255, 220, 60, M_LIGHT, 1.2f);
+        put(9, 7, 3, sign); put(9, 7, 4, signGlow); put(9, 7, 5, sign);
+    }
 }
 
 static void placeBarrel(MapBuilder& B, const Pals& P, int x, int y, int z) {
@@ -243,6 +260,49 @@ static void placeContainer(MapBuilder& B, const Pals& P, int x, int y, int z, in
     else        { for (int i = 2; i < L; i += 4) B.fill(x, y, z + i, x + lx - 1, y + H - 1, z + i, rib); }
 }
 
+// A blocky residential highrise used as background scenery around a mall map — gives the
+// lot the "surrounded by the city" backdrop a real mall parking lot sits in, without being
+// walkable/enterable content of its own.
+static void placeApartmentBlock(MapBuilder& B, int groundY, int x0, int z0, int w, int d, int floors, int colorIdx) {
+    static const int cols[][3] = {
+        {176, 92, 70},    // red brick
+        {212, 188, 108},  // pale yellow
+        {150, 152, 156},  // gray concrete
+    };
+    const int* c = cols[colorIdx % 3];
+    uint8_t wall = B.w.addPal(c[0], c[1], c[2], M_HEAVY);
+    uint8_t wallDark = B.w.addPal(c[0] * 3 / 4, c[1] * 3 / 4, c[2] * 3 / 4, M_HEAVY);
+    uint8_t winGlow = B.w.addPal(255, 244, 200, M_LIGHT, 1.0f);
+    int h = floors * 4;
+    int x1 = x0 + w - 1, z1 = z0 + d - 1;
+    B.fill(x0, groundY, z0, x1, groundY + h, z1, wall);
+    for (int fl = 0; fl < floors; fl++) {
+        int wy = groundY + 2 + fl * 4;
+        for (int wx = x0 + 2; wx < x1 - 1; wx += 3) {
+            uint8_t win = B.rng.uf() < 0.45f ? winGlow : wallDark;
+            B.w.setRaw(wx, wy, z0, win);
+            B.w.setRaw(wx, wy, z1, win);
+        }
+        for (int wz = z0 + 2; wz < z1 - 1; wz += 3) {
+            uint8_t win = B.rng.uf() < 0.45f ? winGlow : wallDark;
+            B.w.setRaw(x0, wy, wz, win);
+            B.w.setRaw(x1, wy, wz, win);
+        }
+    }
+    B.fill(x0, groundY + h, z0, x1, groundY + h + 1, z1, wallDark);
+}
+
+// a roadside advertisement billboard on two posts
+static void placeBillboard(MapBuilder& B, const Pals& P, int x, int groundY, int z, int facing) {
+    static const int cols[][3] = {{60, 140, 220}, {230, 70, 60}, {240, 190, 40}, {70, 190, 110}};
+    const int* c = cols[B.rng.ri(0, 3)];
+    uint8_t board = B.w.addPal(c[0], c[1], c[2], M_LIGHT, 0.5f);
+    uint8_t frame = P.metalDark;
+    for (int px : {x, x + 8}) B.fill(px, groundY, z, px, groundY + 10, z, frame);
+    if (facing) B.fill(x, groundY + 10, z, x + 8, groundY + 16, z + 1, board);
+    else B.fill(x, groundY + 10, z - 1, x + 8, groundY + 16, z, board);
+}
+
 // ---------------------------------------------------------------- MAP 1: EVERMORE MALL
 static MapInfo genMall(World& w, uint32_t seed = 1337) {
     w.init();
@@ -274,7 +334,7 @@ static MapInfo genMall(World& w, uint32_t seed = 1337) {
         for (int x = 44; x <= 272; x += 12)
             B.fill(x, G - 1, z0, x, G - 1, z0 + 20, P.paintWhite);
         for (int x = 44; x <= 260; x += 12)
-            if (B.rng.uf() < 0.42f)
+            if (B.rng.uf() < 0.72f)
                 placeCar(B, P, x + 2, G, z0 + 1, 0);
     }
     for (int x = 60; x <= 260; x += 66) {
@@ -537,6 +597,17 @@ static MapInfo genMall(World& w, uint32_t seed = 1337) {
         B.clear(0, G, 34, 4, G + 4, 54);
         B.clear(WX - 5, G, 34, WX - 1, G + 4, 54);
     }
+
+    // ---- background city skyline: blocky residential highrises around the lot, plus a
+    // couple of roadside ad billboards and a shipping container behind the mall, matching
+    // the "big box store ringed by apartment blocks" backdrop of a real mall parking lot
+    placeApartmentBlock(B, G, 6, 6, 20, 16, 11, 0);
+    placeApartmentBlock(B, G, 294, 6, 20, 16, 13, 1);
+    placeApartmentBlock(B, G, 64, 292, 24, 20, 9, 2);
+    placeApartmentBlock(B, G, 236, 292, 22, 20, 10, 0);
+    placeBillboard(B, P, 50, G, 96, 1);
+    placeBillboard(B, P, 200, G, 96, 1);
+    placeContainer(B, P, 196, G, 300, 1, 2);
 
     MapInfo mi;
     mi.name = "EVERMORE MALL";

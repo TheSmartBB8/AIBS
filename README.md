@@ -12,7 +12,7 @@ OpenGL 3.3-capable GPU — any NVIDIA, AMD, or Intel card from the last ~15 year
 ## Features
 
 - **Voxel world, fully destructible.** Every wall, column, shelf and vehicle is made of
-  0.2 m voxels. Blow chunks out with the sledgehammer, shotgun or rocket launcher.
+  0.2 m voxels. Blow chunks out with any of the 13 tools below.
 - **Ray-traced lighting, modeled directly on Teardown's own documented technique** (per its
   developer and independent GPU-debugger breakdowns of the shipped renderer): no baked
   lightmaps and no global illumination — instead, every frame marches rays through a
@@ -39,12 +39,30 @@ OpenGL 3.3-capable GPU — any NVIDIA, AMD, or Intel card from the last ~15 year
   map boundary finds anything left unsupported. Small debris crumbles instantly; large
   disconnected sections become physics-driven falling clusters that crash down and shatter
   on impact.
-- **Three tools**, each with real destruction physics and effects:
-  - **Sledgehammer** — melee smash, short range, chews through wood/glass/barrels.
-  - **Pump shotgun** — 8-pellet spread, punches through light/medium material, sparks off
-    metal and concrete.
-  - **Rocket launcher** — explosive projectile, large-radius destruction, chains barrel
-    explosions, screen shake, fireball + smoke.
+- **Fire that spreads.** The Blowtorch reliably ignites flammable (wood) material; explosions
+  sometimes do too. Fire spreads voxel-to-voxel over time and burns through what it touches
+  — via the same networked destruction path as every other tool, so it stays in sync across
+  multiplayer clients. Capped at 100 concurrent fires (matching the base game's default
+  limit). Put it out by destroying the burning voxel, the Fire Extinguisher, or water.
+- **Loose voxel pickup.** Crumbled debris becomes physical, grabbable props with real
+  settle-under-gravity physics. Hold right-click while aiming at one (a corner-bracket
+  reticle shows when it's grabbable) to pick it up and carry it; release to drop. Despawns
+  after a timer once settled, or never — toggle in Options.
+- **13 tools**, matching Teardown's own tool categories, each with real destruction physics:
+  - *Unlimited:* **Sledgehammer** (melee smash), **Spray Can** (cosmetic paint — recolors
+    voxels without changing what they're made of), **Fire Extinguisher**, **Leaf Blower**
+    (pushes loose debris/dust/smoke around).
+  - *Utility:* **Blowtorch** — the only unlimited tool that cuts metal, and the primary
+    fire-starter.
+  - *Firearms:* **Shotgun** (8-pellet spread), **Pistol** (precise, fast follow-up),
+    **Hunting Rifle** (penetrates through multiple thin obstacles in one shot).
+  - *Explosives:* **Pipe Bomb** (thrown, arcs, bounces, detonates on a timed fuse rather
+    than on impact), **Bomb** (placeable, sticks to surfaces, ~3s timer), **Nitroglycerin**
+    (placeable, detonates only when damaged nearby — chain-reacts with map barrels and other
+    nitro canisters), **Rocket Launcher** (large-radius explosive projectile).
+  - *Bonus:* **Minigun** (automatic, weak per-shot, high fire rate).
+  - Not implemented: **Plank** and **Cable**, Teardown's two constructive tools — both need
+    a rigid-body constraint physics system this engine doesn't have.
 - **Two full Teardown-style sandbox maps:**
   - **Evermore Mall** — two-storey shopping mall with a skylit atrium, open stairwells,
     8 storefronts, a food court, a fountain, a parking lot full of cars, a loading dock.
@@ -66,7 +84,7 @@ OpenGL 3.3-capable GPU — any NVIDIA, AMD, or Intel card from the last ~15 year
   across a persistent worker-thread pool sized to the CPU core count — destruction never
   stalls the main thread on a single core.
 - **First-person Teardown-style controls**: WASD movement, mouse look, scroll wheel or
-  1/2/3 to switch weapons, space to jump, shift to sprint, ctrl to crouch.
+  number keys to switch tools, space to jump, shift to sprint, ctrl to crouch.
 
 ## Controls
 
@@ -74,8 +92,10 @@ OpenGL 3.3-capable GPU — any NVIDIA, AMD, or Intel card from the last ~15 year
 |---|---|
 | W A S D | Move |
 | Mouse | Look |
-| Left click | Fire / swing |
-| Scroll wheel, 1/2/3 | Switch weapon |
+| Left click | Fire / swing / use tool |
+| Scroll wheel, 1-9, 0 | Switch tool (1-9 and 0 select the first 10 directly) |
+| Right click (hold) | Grab and carry a loose voxel prop you're aiming at |
+| Right click | Cycle Spray Can color (while Spray Can is equipped) |
 | Space | Jump |
 | Shift | Sprint |
 | Ctrl | Crouch |
@@ -123,7 +143,8 @@ To build directly on Windows with MSVC or MinGW, compile `src/main.cpp` and
 | `src/render.h` | GL 3.3 renderer: ray-traced lighting shaders, sky, water, particles, HDR bloom |
 | `src/particles.h` | Multi-threaded particle system |
 | `src/player.h` | First-person controller with voxel AABB collision |
-| `src/weapons.h` | Tool implementations, explosions, barrel chain reactions |
+| `src/weapons.h` | All 13 tool implementations, explosions, barrel chain reactions |
+| `src/props.h` | Fire spread simulation, loose/grabbable voxel debris |
 | `src/audio.h` | Procedural sound synthesis + Windows `waveOut` mixer |
 | `src/net.h` | Cross-platform TCP framing, P2P host/client |
 | `src/platform.h` | Win32 window, WGL context creation, input |
@@ -137,3 +158,11 @@ over TCP) rather than NAT-punching mesh P2P — this is the same practical appro
 most direct-connect indie multiplayer games and requires no third-party matchmaking
 service. Host and clients must be reachable on the same network or have the host's port
 forwarded.
+
+Fire and loose-voxel pickup are simulated **locally per client** rather than fully
+networked: whichever peer's action starts a fire or detaches debris runs that simulation,
+but the actual voxel destruction it causes always flows through the same networked
+destruction path everything else uses, so world state still converges identically across
+every client. Loose-voxel despawn is a flat timer after the object settles, rather than
+tracking how long each individual player has had it out of view — a simplification in
+favor of a system that's actually verifiable without a GPU to test on.

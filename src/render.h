@@ -265,6 +265,31 @@ void main() {
     vec3 N = vNormal;
     vec3 albedo = vColor.rgb;
     float emis = vColor.a * 8.0;
+
+    // ---- procedural surface detail: this renderer ships no texture assets, so without this
+    // every voxel face would be a single flat baked color -- the "looks flat/plastic" problem.
+    // Voxel faces are always axis-aligned, so a straight per-axis UV stands in for triplanar
+    // mapping with no seams to hide. A fine grain + a coarser blotch/weathering pattern modulate
+    // albedo, scaled by the per-material roughness proxy so glass/polished metal stay cleaner
+    // than rough concrete, bedrock or wood. A matching fake-bump shading normal (derived the
+    // same way, from the noise gradient rather than real geometry) lets the sun's diffuse term
+    // pick up the same detail instead of every face lighting as a perfectly flat plane.
+    vec2 uvTex = abs(N.x) > 0.5 ? vWorld.zy : (abs(N.y) > 0.5 ? vWorld.xz : vWorld.xy);
+    float roughness = 1.0 - vSmooth;
+    float fine = fbm(uvTex * 46.0) - 0.5;
+    float coarse = fbm(uvTex * 5.0 + 19.0) - 0.5;
+    albedo *= 1.0 + (fine * 0.5 + coarse * 0.8) * roughness * 0.4;
+    albedo *= mix(0.92, 1.05, fbm(uvTex * 1.6 + 5.0));
+
+    vec3 Tt, Bt;
+    if (abs(N.x) > 0.5) { Tt = vec3(0.0, 0.0, 1.0); Bt = vec3(0.0, 1.0, 0.0); }
+    else if (abs(N.y) > 0.5) { Tt = vec3(1.0, 0.0, 0.0); Bt = vec3(0.0, 0.0, 1.0); }
+    else { Tt = vec3(1.0, 0.0, 0.0); Bt = vec3(0.0, 1.0, 0.0); }
+    float bumpC = vnoise(uvTex * 46.0);
+    float bumpX = vnoise(uvTex * 46.0 + vec2(0.6, 0.0));
+    float bumpY = vnoise(uvTex * 46.0 + vec2(0.0, 0.6));
+    vec3 Nb = normalize(N - (Tt * (bumpX - bumpC) + Bt * (bumpY - bumpC)) * roughness * 0.5);
+
     // voxel-space position, biased off the surface
     vec3 vp = vWorld / uVoxelSize + N * 0.55;
     vec3 toSun = -uSunDir;
@@ -320,11 +345,13 @@ void main() {
         ao *= mix(1.0, rayAO, 0.85);
     }
 
-    // ---- lighting
-    float ndl = max(dot(N, toSun), 0.0);
+    // ---- lighting (uses the bumped shading normal Nb so the surface detail above actually
+    // catches light instead of every face shading as a perfectly flat plane; ray directions
+    // stay on the true geometric N since Nb is a shading-only fake)
+    float ndl = max(dot(Nb, toSun), 0.0);
     vec3 direct = uSunColor * ndl * sunVis;
-    vec3 skyAmb = mix(uSkyHorizon, uSkyZenith, N.y * 0.5 + 0.5) * uAmbient * 1.6;
-    vec3 bounce = uSunColor * 0.06 * max(dot(N, vec3(-toSun.x, 0.4, -toSun.z)), 0.0);
+    vec3 skyAmb = mix(uSkyHorizon, uSkyZenith, Nb.y * 0.5 + 0.5) * uAmbient * 1.6;
+    vec3 bounce = uSunColor * 0.06 * max(dot(Nb, vec3(-toSun.x, 0.4, -toSun.z)), 0.0);
     vec3 light = direct + (skyAmb + bounce) * ao;
 
     // dynamic lights (explosions, muzzle flash): raytraced visibility so light no longer
@@ -341,7 +368,7 @@ void main() {
             float d = length(Lp);
             vec3 Ldir = Lp / max(d, 0.01);
             float att = pow(clamp(1.0 - dCenter / r, 0.0, 1.0), 2.0);
-            float diff = max(dot(N, Ldir), 0.12);
+            float diff = max(dot(Nb, Ldir), 0.12);
             float lvis = traceRay(vp, Ldir, d / uVoxelSize);
             light += uLightCol[i] * att * diff * lvis;
         }
@@ -357,7 +384,6 @@ void main() {
     if (uShadowQuality > 0 && vRefl > 0.05) {
         vec3 V = normalize(uCamPos - vWorld);
         vec3 R = reflect(-V, N);
-        float roughness = 1.0 - vSmooth;
         vec3 jp2 = vWorld * 71.0 + 3.1;
         vec3 jitter2 = vec3(hash13(jp2), hash13(jp2 + 6.2), hash13(jp2 + 12.4)) * 2.0 - 1.0;
         vec3 Rj = normalize(R + jitter2 * roughness * 0.6);
@@ -573,6 +599,13 @@ void main() {
     c += texture(uBloom, vUV).rgb * uBloomStrength;
     c = aces(c * 0.85);
     c = pow(c, vec3(1.0 / 2.2));
+    // final grade: a mild S-curve contrast around mid-gray plus a small saturation lift.
+    // Cheap, display-referred polish pass -- the flat ACES+gamma output on its own reads as
+    // washed out compared to the punchier grade most references (Teardown included) ship with.
+    c = mix(vec3(0.5), c, 1.10);
+    float lum = dot(c, vec3(0.2126, 0.7152, 0.0722));
+    c = mix(vec3(lum), c, 1.15);
+    c = clamp(c, 0.0, 1.0);
     vec2 d = vUV - 0.5;
     c *= 1.0 - uVignette * dot(d, d) * 1.6;
     FragColor = vec4(c, 1.0);

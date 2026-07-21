@@ -35,6 +35,14 @@ OpenGL 3.3-capable GPU — any NVIDIA, AMD, or Intel card from the last ~15 year
   - Every shader is validated offline against real GLSL 3.30 core semantics
     (`glslangValidator`, the Khronos reference compiler) as part of every build — see
     `tools/dump_shaders.cpp`.
+- **Procedural surface texturing.** No texture assets ship (or need to — everything here is
+  generated from code, same philosophy as the synthesized audio). Since every voxel face is
+  axis-aligned, a straight per-axis UV substitutes for triplanar mapping with no seams:
+  a fine grain layer plus a coarser blotch/weathering pattern break up what would otherwise be
+  a single flat baked color per face, scaled by each material's roughness so glass and polished
+  metal stay cleaner than bedrock or wood. A matching fake-bump shading normal, derived from the
+  same noise field, lets direct sunlight actually catch that detail instead of every face lighting
+  as a perfectly flat plane.
 - **Structural integrity.** After every destructive edit, a flood-fill from the ground and
   map boundary finds anything left unsupported. Small debris crumbles instantly; large
   disconnected sections become physics-driven falling clusters that crash down and shatter

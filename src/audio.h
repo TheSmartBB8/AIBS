@@ -46,7 +46,7 @@ struct AudioSystem {
 
     void synthAll() {
         Rng rng(777);
-        sounds.resize(14);
+        sounds.resize(15);
         auto& S = sounds;
         // 0 SLEDGE_SWING: whoosh
         {
@@ -236,6 +236,21 @@ struct AudioSystem {
                 float t = (float)i / n;
                 float env = t < 0.05f ? t / 0.05f : (1.f - (t - 0.05f) / 0.95f);
                 S[13].samples[i] = sinf(6.28318f * 1500.f * i / AUDIO_RATE) * env * 0.6f;
+            }
+        }
+        // 14 SPLASH: watery plunk (falling pitch tone) + a burst of filtered noise foam
+        {
+            int n = (int)(AUDIO_RATE * 0.5f);
+            S[14].samples.resize(n);
+            float lp = 0;
+            for (int i = 0; i < n; i++) {
+                float t = (float)i / n;
+                float env = expf(-t * 7.f) * (t < 0.01f ? t / 0.01f : 1.f);
+                float f = 420.f * expf(-t * 9.f) + 90.f;
+                float plunk = sinf(6.28318f * f * i / AUDIO_RATE) * expf(-t * 5.5f);
+                lp += (0.22f - t * 0.15f) * (noise(rng) - lp);
+                float foam = lp * expf(-t * 6.f) * 0.8f;
+                S[14].samples[i] = clampf((plunk * 0.9f + foam) * env * 1.5f, -1.3f, 1.3f);
             }
         }
     }

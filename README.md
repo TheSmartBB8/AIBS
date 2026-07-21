@@ -48,6 +48,11 @@ OpenGL 3.3-capable GPU — any NVIDIA, AMD, or Intel card from the last ~15 year
   settle-under-gravity physics. Hold right-click while aiming at one (a corner-bracket
   reticle shows when it's grabbable) to pick it up and carry it; release to drop. Despawns
   after a timer once settled, or never — toggle in Options.
+- **Water reacts to impacts.** Firearms, the sledgehammer, explosions, and flying rockets/pipe
+  bombs all splash when they cross the water's surface, even when there's no voxel there to hit
+  — a shot into open water isn't silently swallowed. Rockets detonate right at the surface
+  instead of sailing through it, and pipe bombs settle and float rather than sinking out of
+  view. Diving in or surfacing yourself triggers the same splash.
 - **13 tools**, matching Teardown's own tool categories, each with real destruction physics:
   - *Unlimited:* **Sledgehammer** (melee smash), **Spray Can** (cosmetic paint — recolors
     voxels without changing what they're made of), **Fire Extinguisher**, **Leaf Blower**

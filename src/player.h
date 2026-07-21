@@ -9,6 +9,7 @@ struct Player {
     float yaw = 0, pitch = 0;
     bool onGround = false;
     bool flying = false;
+    bool inWater = false;
     float halfW = 0.32f, halfH = 0.88f;
     float eyeOffset = 0.72f;
     float bobPhase = 0, bobAmp = 0;
@@ -18,7 +19,9 @@ struct Player {
         return {sinf(yaw) * cosf(pitch), sinf(pitch), cosf(yaw) * cosf(pitch)};
     }
     vec3 forwardFlat() const { return {sinf(yaw), 0, cosf(yaw)}; }
-    vec3 rightFlat() const { return {cosf(yaw), 0, -sinf(yaw)}; }
+    // must equal cross(forwardFlat(), worldUp) to match the camera's actual right vector
+    // (render.h's camRight) -- getting this backwards silently mirrors strafe input.
+    vec3 rightFlat() const { return {-cosf(yaw), 0, sinf(yaw)}; }
 
     bool boxSolid(const World& w, vec3 c, float hw, float hh) const {
         int x0 = (int)floorf((c.x - hw) / VOXEL_SIZE), x1 = (int)floorf((c.x + hw) / VOXEL_SIZE);
@@ -39,7 +42,7 @@ struct Player {
         float speed = sprint ? 8.6f : 5.4f;
         if (crouch) speed *= 0.5f;
 
-        bool inWater = hasWater && (pos.y - halfH) < waterLevel - 0.15f;
+        inWater = hasWater && (pos.y - halfH) < waterLevel - 0.15f;
 
         if (flying) {
             vec3 want = wish * speed * 2.2f;

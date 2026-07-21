@@ -142,6 +142,31 @@ static int selftestMain() {
               "axis-aligned raycast from a grid-boundary origin hits the exact target voxel, no drift");
     }
 
+    // ---- player camera basis: strafe direction and viewmodel aim must track the camera's
+    // actual forward/right vectors (render.h's camFwd/camRight), or movement and the gun both
+    // visibly diverge from where the crosshair is pointing.
+    {
+        Player p;
+        for (float yaw : {0.f, 0.7f, 1.9f, -1.2f, 3.0f}) {
+            p.yaw = yaw;
+            vec3 fwd = p.forwardFlat();
+            vec3 right = p.rightFlat();
+            // the true camera-right vector, computed exactly as render.h's setCamera() does
+            vec3 camRight = vnorm(vcross(fwd, vec3(0, 1, 0)));
+            CHECK(vlen(right - camRight) < 1e-4f, "rightFlat() matches the camera's true right vector (strafe direction)");
+        }
+        for (float yaw : {0.f, 0.7f, -2.1f}) {
+            for (float pitch : {0.f, 0.5f, -0.9f}) {
+                p.yaw = yaw; p.pitch = pitch;
+                vec3 trueFwd = p.forward();
+                // exactly the matrix drawViewmodel() builds: translate * roty(yaw) * rotx(-pitch)
+                mat4 model = mat4_roty(p.yaw) * mat4_rotx(-p.pitch);
+                vec3 gunFwd = mat4_mulpoint(model, vec3(0, 0, 1));
+                CHECK(vlen(gunFwd - trueFwd) < 1e-4f, "viewmodel rotation matrix points the gun exactly where the camera looks");
+            }
+        }
+    }
+
     // ---- destruction + structural integrity: a floating platform detaches and falls
     {
         World w;
@@ -567,6 +592,70 @@ static int selftestMain() {
         bool spawnedOneMore = cap.spawn(vec3(1, 3, 1), wood, vec3(0, 0, 0));
         CHECK(spawnedOneMore && (int)cap.props.size() == MAX_LOOSE_VOXELS,
               "spawning past the cap recycles an old settled prop instead of growing unbounded");
+    }
+
+    // ---- water splashes: shooting into open water (no voxel there to hit at all) still
+    // produces a reaction instead of the shot silently doing nothing
+    {
+        World w;
+        w.init();
+        // no solid geometry anywhere below the shot: a downward ray crosses the water
+        // plane with nothing solid to stop it first
+        ParticleSystem ps;
+        int opsSeen = 0, splashSounds = 0;
+        WeaponContext ctx; ctx.world = &w; ctx.particles = &ps;
+        ctx.hasWater = true;
+        ctx.waterLevel = 2.5f * VOXEL_SIZE;
+        ctx.emitOp = [&](const DestructionOp&) { opsSeen++; };
+        ctx.emitFire = [](const FireEvent&) {};
+        ctx.addShake = [](vec3, float) {};
+        ctx.playSound = [&](int id) { if (id == SND_SPLASH) splashSounds++; };
+        ctx.addLight = [](vec3, vec3, float, float) {};
+        WeaponsState ws;
+        vec3 eye(5 * VOXEL_SIZE, 8 * VOXEL_SIZE, 5 * VOXEL_SIZE);
+        fireGun(ctx, ws, eye, vec3(0, -1, 0));
+        CHECK(splashSounds == 1, "shooting straight down into open water plays a splash sound");
+        CHECK(opsSeen == 0, "a shot that only hits water (no voxel below it) emits no destruction op");
+        bool sawSplashParticle = std::any_of(ps.pool.begin(), ps.pool.end(),
+            [](const Particle& p) { return p.alive && p.type == PT_SPLASH; });
+        CHECK(sawSplashParticle, "a splash particle is spawned at the water surface");
+
+        // a solid voxel between the muzzle and the water must take priority: no splash
+        uint8_t wood = w.addPal(150, 112, 70, M_MED);
+        for (int x = 3; x < 7; x++) for (int z = 3; z < 7; z++) w.setRaw(x, 3, z, wood);
+        splashSounds = 0; opsSeen = 0;
+        fireGun(ctx, ws, eye, vec3(0, -1, 0));
+        CHECK(splashSounds == 0, "a solid voxel above the water line blocks the shot before it reaches the water");
+        CHECK(opsSeen > 0, "that shot instead hits the voxel it actually struck");
+
+        // an explosion detonating at/under the water line also splashes
+        ParticleSystem ps2;
+        WeaponContext ectx; ectx.world = &w; ectx.particles = &ps2;
+        ectx.hasWater = true; ectx.waterLevel = 2.5f * VOXEL_SIZE;
+        int explosionSplashes = 0;
+        ectx.emitOp = [](const DestructionOp&) {};
+        ectx.emitFire = [](const FireEvent&) {};
+        ectx.addShake = [](vec3, float) {};
+        ectx.playSound = [&](int id) { if (id == SND_SPLASH) explosionSplashes++; };
+        ectx.addLight = [](vec3, vec3, float, float) {};
+        DestructionOp boom;
+        boom.x = 1.f; boom.y = ectx.waterLevel - 0.1f; boom.z = 1.f;
+        boom.radius = 2.f; boom.matMask = WeaponsState::MASK_EXPLOSION;
+        boom.px = 0; boom.py = 1; boom.pz = 0; boom.big = 1;
+        applyDestructionOp(ectx, boom, true);
+        CHECK(explosionSplashes == 1, "an explosion detonating at/under the water line also splashes");
+
+        // no water on the map: never splashes, regardless of what's below the shot
+        WeaponContext dctx; dctx.world = &w; dctx.particles = &ps2;
+        dctx.hasWater = false;
+        int drySplashes = 0;
+        dctx.emitOp = [](const DestructionOp&) {};
+        dctx.emitFire = [](const FireEvent&) {};
+        dctx.addShake = [](vec3, float) {};
+        dctx.playSound = [&](int id) { if (id == SND_SPLASH) drySplashes++; };
+        dctx.addLight = [](vec3, vec3, float, float) {};
+        fireGun(dctx, ws, vec3(1 * VOXEL_SIZE, 8 * VOXEL_SIZE, 1 * VOXEL_SIZE), vec3(0, -1, 0));
+        CHECK(drySplashes == 0, "maps without water never produce a splash");
     }
 
     std::printf("== %s (%d failing check%s) ==\n", fails == 0 ? "ALL CHECKS PASSED" : "SELFTEST FAILED",

@@ -6,7 +6,7 @@
 #include "threadpool.h"
 #include <vector>
 
-enum PartType : uint8_t { PT_SMOKE, PT_FIRE, PT_SPARK, PT_DEBRIS, PT_DUST, PT_FLASH, PT_TRAIL };
+enum PartType : uint8_t { PT_SMOKE, PT_FIRE, PT_SPARK, PT_DEBRIS, PT_DUST, PT_FLASH, PT_TRAIL, PT_SPLASH };
 
 struct Particle {
     vec3 pos, vel;
@@ -104,6 +104,28 @@ struct ParticleSystem {
         p.r = 0.85f; p.g = 0.82f; p.b = 0.78f;
     }
 
+    // water impact: a crown of droplets kicked up and out, plus a low mist of foam puffs
+    // drifting along the surface. scale ~1 for a bullet/melee hit, larger for explosions.
+    void splash(vec3 pos, float scale = 1.f) {
+        Rng& R = rng;
+        for (int i = 0; i < (int)(14 * scale); i++) {
+            vec3 d = vnorm(vec3(R.sf(), R.uf() * 1.4f + 0.5f, R.sf()));
+            Particle& p = spawn();
+            p.type = PT_SPLASH;
+            p.pos = pos;
+            p.vel = d * (2.2f + R.uf() * 3.4f) * (0.6f + scale * 0.4f);
+            p.maxLife = 0.4f + R.uf() * 0.4f;
+            p.size = (0.045f + R.uf() * 0.05f) * (0.7f + scale * 0.3f);
+            p.r = 0.62f; p.g = 0.76f; p.b = 0.92f;
+        }
+        for (int i = 0; i < (int)(7 * scale); i++) {
+            vec3 d = vnorm(vec3(R.sf(), R.uf() * 0.25f, R.sf()));
+            dust(pos + d * 0.15f * scale, d * (1.0f + R.uf() * 1.6f) * scale + vec3(0, 0.5f, 0),
+                 (0.3f + R.uf() * 0.35f) * (0.6f + scale * 0.4f), 0.55f + R.uf() * 0.45f,
+                 0.80f, 0.87f, 0.94f);
+        }
+    }
+
     // big boom visual
     void explosionBurst(vec3 pos, float radius) {
         Rng& R = rng;
@@ -156,6 +178,11 @@ struct ParticleSystem {
                         p.vel.y += 0.6f * dt;
                         break;
                     case PT_FLASH:
+                        break;
+                    case PT_SPLASH:
+                        p.vel.y -= 13.f * dt;
+                        p.vel.x *= (1.f - 0.6f * dt);
+                        p.vel.z *= (1.f - 0.6f * dt);
                         break;
                 }
                 vec3 np = p.pos + p.vel * dt;
@@ -232,6 +259,12 @@ struct ParticleSystem {
                 case PT_TRAIL:
                     in.r = p.r; in.g = p.g; in.b = p.b;
                     in.a = (1.f - t) * 0.4f;
+                    in.shape = 0;
+                    alphaOut.push_back(in);
+                    break;
+                case PT_SPLASH:
+                    in.r = p.r; in.g = p.g; in.b = p.b;
+                    in.a = (1.f - t) * 0.85f;
                     in.shape = 0;
                     alphaOut.push_back(in);
                     break;

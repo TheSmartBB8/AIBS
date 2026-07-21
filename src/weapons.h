@@ -124,12 +124,31 @@ struct WeaponContext {
     std::function<void(int, int, int)> tryIgnite;                     // voxel coords
     std::function<void(vec3, vec3, float, float)> extinguishFireCone; // eye, dir, range, cosHalfAngle
     std::function<void(vec3, uint8_t, vec3)> spawnLooseDebris;        // pos, palette index, initial vel
+    bool hasWater = false;
+    float waterLevel = -1e9f;
 };
 
 // sound ids (must match audio.h)
 enum : int { SND_SLEDGE_SWING = 0, SND_SLEDGE_HIT, SND_SHOTGUN, SND_ROCKET_FIRE, SND_EXPLOSION,
              SND_GLASS, SND_DEBRIS, SND_CLICK, SND_RELOAD,
-             SND_TORCH, SND_HISS, SND_GUNSHOT, SND_RIFLESHOT, SND_BEEP, SND_COUNT };
+             SND_TORCH, SND_HISS, SND_GUNSHOT, SND_RIFLESHOT, SND_BEEP, SND_SPLASH, SND_COUNT };
+
+// ---------------- water splashes ----------------
+// True if a ray crosses the flat water plane before it would otherwise stop (either a solid
+// voxel hit, given as solidHitDist, or maxDist if nothing was hit at all). Used so shooting at
+// open water -- where World::raycast finds no voxel at all -- still produces a reaction instead
+// of the shot silently vanishing.
+static bool raySplashesWater(const WeaponContext& ctx, vec3 eye, vec3 dir, float maxDist, float solidHitDist, vec3& outPos) {
+    if (!ctx.hasWater || fabsf(dir.y) < 1e-5f) return false;
+    float t = (ctx.waterLevel - eye.y) / dir.y;
+    if (t <= 0.05f || t > maxDist || t >= solidHitDist) return false;
+    outPos = eye + dir * t;
+    return true;
+}
+static void spawnSplashFx(WeaponContext& ctx, vec3 pos, float scale = 1.f) {
+    if (ctx.particles) ctx.particles->splash(pos, scale);
+    if (ctx.playSound) ctx.playSound(SND_SPLASH);
+}
 
 // ---------------- destruction application (shared by local actions and network ops)
 // Applies the op to the world with particles/fx; runs integrity; chains barrels via emitOp.
@@ -165,6 +184,10 @@ static void applyDestructionOp(WeaponContext& ctx, const DestructionOp& op, bool
     if (withFx && ps) {
         if (op.big) {
             ps->explosionBurst(c, op.radius);
+            if (ctx.hasWater && c.y <= ctx.waterLevel + 0.3f) {
+                ps->splash(vec3(c.x, ctx.waterLevel, c.z), op.radius * 0.9f);
+                if (ctx.playSound) ctx.playSound(SND_SPLASH);
+            }
             if (ctx.addShake) ctx.addShake(c, 1.0f);
             if (ctx.playSound) ctx.playSound(SND_EXPLOSION);
             if (ctx.addLight) ctx.addLight(c, vec3(1.f, 0.6f, 0.25f) * 30.f, op.radius * 6.f, 0.4f);
@@ -220,6 +243,9 @@ static void fireSledge(WeaponContext& ctx, WeaponsState& ws, vec3 eye, vec3 dir)
     if (ctx.playSound) ctx.playSound(SND_SLEDGE_SWING);
     if (ctx.emitFire) ctx.emitFire({TOOL_SLEDGE, eye.x, eye.y, eye.z, dir.x, dir.y, dir.z});
     World::RayHit h = ctx.world->raycast(eye, dir, 3.6f);
+    vec3 splashPos;
+    if (raySplashesWater(ctx, eye, dir, 3.6f, h.hit ? h.dist : 3.6f, splashPos))
+        spawnSplashFx(ctx, splashPos, 0.6f);
     if (!h.hit) return;
     if (ctx.playSound) ctx.playSound(SND_SLEDGE_HIT);
     DestructionOp op;
@@ -364,6 +390,9 @@ static void fireShotgun(WeaponContext& ctx, WeaponsState& ws, vec3 eye, vec3 dir
         float a = rng.uf() * 6.28318f, r = rng.uf() * 0.055f;
         vec3 pd = vnorm(dir + right * cosf(a) * r + up * sinf(a) * r);
         World::RayHit h = ctx.world->raycast(eye, pd, 60.f);
+        vec3 splashPos;
+        if (raySplashesWater(ctx, eye, pd, 60.f, h.hit ? h.dist : 60.f, splashPos))
+            spawnSplashFx(ctx, splashPos, 0.5f);
         if (!h.hit) continue;
         const PalEntry& pe = ctx.world->palette[h.pal];
         if (pe.mat == M_HEAVY || pe.mat == M_BEDROCK) {
@@ -397,6 +426,9 @@ static void fireGun(WeaponContext& ctx, WeaponsState& ws, vec3 eye, vec3 dir) {
     if (ctx.addLight) ctx.addLight(muzzle, vec3(1.f, 0.8f, 0.5f) * 5.f, 3.f, 0.05f);
     if (ctx.addShake) ctx.addShake(eye, 0.08f);
     World::RayHit h = ctx.world->raycast(eye, dir, 80.f);
+    vec3 splashPos;
+    if (raySplashesWater(ctx, eye, dir, 80.f, h.hit ? h.dist : 80.f, splashPos))
+        spawnSplashFx(ctx, splashPos, 0.4f);
     if (!h.hit) return;
     DestructionOp op;
     vec3 p = h.pos - h.normal * 0.04f;
@@ -426,6 +458,9 @@ static void fireRifle(WeaponContext& ctx, WeaponsState& ws, vec3 eye, vec3 dir) 
     float remaining = 55.f;
     for (int i = 0; i < 6 && remaining > 0.5f; i++) {
         World::RayHit h = ctx.world->raycast(pos, dir, remaining);
+        vec3 splashPos;
+        if (raySplashesWater(ctx, pos, dir, remaining, h.hit ? h.dist : remaining, splashPos))
+            spawnSplashFx(ctx, splashPos, 0.45f);
         if (!h.hit) break;
         const PalEntry& pe = ctx.world->palette[h.pal];
         DestructionOp op;
@@ -458,6 +493,9 @@ static void fireMinigun(WeaponContext& ctx, WeaponsState& ws, vec3 eye, vec3 dir
     if (ctx.addLight) ctx.addLight(muzzle, vec3(1.f, 0.8f, 0.5f) * 4.f, 2.5f, 0.04f);
     if (ctx.addShake) ctx.addShake(eye, 0.05f);
     World::RayHit h = ctx.world->raycast(eye, spread, 70.f);
+    vec3 splashPos;
+    if (raySplashesWater(ctx, eye, spread, 70.f, h.hit ? h.dist : 70.f, splashPos))
+        spawnSplashFx(ctx, splashPos, 0.35f);
     if (!h.hit) return;
     DestructionOp op;
     vec3 p = h.pos - h.normal * 0.04f;
@@ -556,6 +594,13 @@ static void updateRockets(WeaponContext& ctx, WeaponsState& ws, float dt) {
                     r.vel = reflected * 0.35f;
                     r.pos = h.pos + h.normal * 0.05f;
                     if (vlen(r.vel) < 2.f) r.resting = true;
+                } else if (ctx.hasWater && np.y <= ctx.waterLevel && r.pos.y > ctx.waterLevel) {
+                    // splashes down and floats at the surface rather than sinking out of sight;
+                    // the fuse still ticks down from here as normal.
+                    spawnSplashFx(ctx, vec3(np.x, ctx.waterLevel, np.z), 0.6f);
+                    r.pos = vec3(np.x, ctx.waterLevel - 0.03f, np.z);
+                    r.vel = vec3(0, 0, 0);
+                    r.resting = true;
                 } else if (np.y < -2.f) { r.resting = true; r.pos = np; }
                 else r.pos = np;
             }
@@ -587,6 +632,10 @@ static void updateRockets(WeaponContext& ctx, WeaponsState& ws, float dt) {
         bool boom = false;
         vec3 bp;
         if (h.hit) { boom = true; bp = h.pos + h.normal * 0.1f; }
+        else if (ctx.hasWater && np.y <= ctx.waterLevel && r.pos.y > ctx.waterLevel) {
+            // detonate at the surface instead of sailing on through the water plane forever
+            boom = true; bp = vec3(np.x, ctx.waterLevel, np.z);
+        }
         else if (np.y < -2.f) { boom = true; bp = np; }
         if (boom) {
             r.alive = false;

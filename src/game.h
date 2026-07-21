@@ -50,6 +50,7 @@ struct Game {
     WeaponContext wctx;
     int grabbedProp = -1;     // index into loose.props, or -1 if not carrying anything
     bool despawnLooseProps = true;
+    bool wasInWater = false;  // edge-detects water entry/exit for splash fx
 
     GameState state = ST_MAIN_MENU;
     int selectedMap = 0;
@@ -103,6 +104,9 @@ struct Game {
     // ---------------------------------------------------------------- map lifecycle
     void loadMap(int id) {
         mapInfo = generateMap(world, id);
+        wctx.hasWater = mapInfo.hasWater;
+        wctx.waterLevel = mapInfo.waterLevel;
+        wasInWater = false;
         world.markAllDirty();
         // full remesh across all cores before first frame
         while (world.anyDirty()) world.remeshDirty(NUM_CHUNKS);
@@ -457,6 +461,12 @@ struct Game {
         bool sprint = in.keyDown[VK_SHIFT];
         bool crouch = in.keyDown[VK_CONTROL];
         player.update(world, dt, mx, mz, jump, sprint, crouch, mapInfo.waterLevel, mapInfo.hasWater);
+        if (player.inWater != wasInWater) {
+            float speed = vlen(player.vel);
+            particles.splash(vec3(player.pos.x, mapInfo.waterLevel, player.pos.z), clampf(0.4f + speed * 0.12f, 0.4f, 1.6f));
+            audio.play(SND_SPLASH, 0.6f);
+            wasInWater = player.inWater;
+        }
 
         // weapon switch: scroll wheel + number keys
         if (in.wheelDelta != 0) {
@@ -663,7 +673,10 @@ struct Game {
         float bobX = sinf(player.bobPhase) * 0.008f * player.bobAmp;
         vec3 base = eye + fwd * 0.42f + right * 0.20f + up * (-0.20f + bob) + right * bobX;
 
-        mat4 model = mat4_translate(base) * mat4_roty(-player.yaw) * mat4_rotx(-player.pitch);
+        // roty(yaw)*rotx(-pitch) maps local +Z to exactly player.forward() -- using -yaw here
+        // (as this used to) rotates the gun the opposite way from the camera on turns, so the
+        // barrel visibly swings away from the crosshair instead of tracking it.
+        mat4 model = mat4_translate(base) * mat4_roty(player.yaw) * mat4_rotx(-player.pitch);
         ren.modelBegin();
 
         if (grabbedProp >= 0 && grabbedProp < (int)loose.props.size()) {

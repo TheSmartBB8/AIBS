@@ -36,9 +36,22 @@ if command -v x86_64-w64-mingw32-g++ >/dev/null 2>&1; then
     echo
     echo "== Windows exe build (MinGW-w64) =="
     mkdir -p dist
+
+    icon_obj=()
+    if [ ! -f assets/icon.ico ] && command -v python3 >/dev/null 2>&1; then
+        echo "generating assets/icon.ico (tools/gen_icon.py)..."
+        python3 tools/gen_icon.py assets/icon.ico
+    fi
+    if [ -f assets/icon.ico ] && command -v x86_64-w64-mingw32-windres >/dev/null 2>&1; then
+        x86_64-w64-mingw32-windres assets/icon.rc -O coff -o /tmp/voxwreck_icon.o
+        icon_obj=(/tmp/voxwreck_icon.o)
+    else
+        echo "assets/icon.ico or windres not found; building without an app icon."
+    fi
+
     x86_64-w64-mingw32-g++ -std=c++17 -O2 -DNDEBUG -Wall -Wno-unused-parameter -Wno-unused-variable \
         -municode -mwindows -static -static-libgcc -static-libstdc++ \
-        src/main.cpp src/glapi.cpp -o dist/VoxWreck.exe \
+        src/main.cpp src/glapi.cpp "${icon_obj[@]}" -o dist/VoxWreck.exe \
         -lopengl32 -lgdi32 -luser32 -lwinmm -lws2_32 -lshell32 -lkernel32 -pthread
     echo "Built dist/VoxWreck.exe"
     ls -la dist/VoxWreck.exe

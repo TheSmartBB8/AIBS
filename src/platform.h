@@ -115,13 +115,16 @@ struct Platform {
         instance() = this;
         st.width = w; st.height = h;
         HINSTANCE hi = GetModuleHandleA(nullptr);
-        WNDCLASSA wc = {};
+        WNDCLASSEXA wc = {};
+        wc.cbSize = sizeof(wc);
         wc.style = CS_OWNDC | CS_HREDRAW | CS_VREDRAW;
         wc.lpfnWndProc = wndProc;
         wc.hInstance = hi;
         wc.hCursor = LoadCursorA(nullptr, (LPCSTR)IDC_ARROW);
+        wc.hIcon = LoadIconA(hi, MAKEINTRESOURCEA(101));
+        wc.hIconSm = wc.hIcon;
         wc.lpszClassName = "VoxWreckWnd";
-        RegisterClassA(&wc);
+        RegisterClassExA(&wc);
         RECT r = {0, 0, w, h};
         DWORD style = WS_OVERLAPPEDWINDOW;
         AdjustWindowRect(&r, style, FALSE);

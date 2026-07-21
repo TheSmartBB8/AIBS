@@ -45,7 +45,12 @@ OpenGL 3.3-capable GPU — any NVIDIA, AMD, or Intel card from the last ~15 year
   grass/foliage, mortar/panel grid lines for tile, and fine brushed streaks for metal — so
   different materials actually look different, not just differently tinted. A matching
   fake-bump shading normal, derived from the same noise field, lets direct sunlight actually
-  catch that detail instead of every face lighting as a perfectly flat plane.
+  catch that detail instead of every face lighting as a perfectly flat plane. An additional
+  high-frequency detail layer (albedo + a second bump octave + sunlit aggregate sparkle on
+  rough stone/concrete) adds the crispness a texture-resolution bump would otherwise buy —
+  computed analytically instead of sampled from a bitmap, so it never blurs or pixelates no
+  matter how close the camera gets, and fades out by distance to avoid shimmering the way
+  undersampled high-frequency noise (or an unfiltered texture) would from far away.
 - **Structural integrity.** After every destructive edit, a flood-fill from the ground and
   map boundary finds anything left unsupported. Small debris crumbles instantly; large
   disconnected sections become physics-driven falling clusters that crash down and shatter

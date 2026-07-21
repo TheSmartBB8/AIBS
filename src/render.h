@@ -265,6 +265,7 @@ void main() {
     vec3 N = vNormal;
     vec3 albedo = vColor.rgb;
     float emis = vColor.a * 8.0;
+    float dist = length(vWorld - uCamPos);
 
     // ---- procedural surface detail: this renderer ships no texture assets, so without this
     // every voxel face would be a single flat baked color -- the "looks flat/plastic" problem.
@@ -280,6 +281,15 @@ void main() {
     float coarse = fbm(uvTex * 5.0 + 19.0) - 0.5;
     albedo *= 1.0 + (fine * 0.5 + coarse * 0.8) * roughness * 0.4;
     albedo *= mix(0.92, 1.05, fbm(uvTex * 1.6 + 5.0));
+
+    // extra high-frequency micro-detail layer, well above voxel resolution -- this is the
+    // "sharper/more detailed surface" a texture resolution bump would otherwise buy, done
+    // analytically instead of with a bitmap so it never blurs or pixelates up close. Faded out
+    // by distance since undersampled high-frequency noise aliases/shimmers once a screen pixel
+    // covers many texture cycles, the same reason bitmap texture filtering uses mipmaps.
+    float detailFade = smoothstep(28.0, 6.0, dist);
+    float micro = fbm(uvTex * 240.0) - 0.5;
+    albedo *= 1.0 + micro * roughness * 0.16 * detailFade;
 
     // ---- material variety: the layer above is a universal micro-grain that applies equally
     // everywhere; this second layer picks a distinct *pattern shape* per material instead of
@@ -328,7 +338,15 @@ void main() {
     float bumpC = vnoise(uvTex * 46.0);
     float bumpX = vnoise(uvTex * 46.0 + vec2(0.6, 0.0));
     float bumpY = vnoise(uvTex * 46.0 + vec2(0.0, 0.6));
-    vec3 Nb = normalize(N - (Tt * (bumpX - bumpC) + Bt * (bumpY - bumpC)) * roughness * 0.5);
+    vec2 gradLo = vec2(bumpX - bumpC, bumpY - bumpC);
+    // finer second bump octave, layered like a detail normal map; distance-faded for the same
+    // aliasing reason as the micro albedo layer above
+    float bumpC2 = vnoise(uvTex * 240.0);
+    float bumpX2 = vnoise(uvTex * 240.0 + vec2(0.15, 0.0));
+    float bumpY2 = vnoise(uvTex * 240.0 + vec2(0.0, 0.15));
+    vec2 gradHi = vec2(bumpX2 - bumpC2, bumpY2 - bumpC2) * detailFade;
+    vec2 grad = gradLo + gradHi * 0.5;
+    vec3 Nb = normalize(N - (Tt * grad.x + Bt * grad.y) * roughness * 0.5);
 
     // voxel-space position, biased off the surface
     vec3 vp = vWorld / uVoxelSize + N * 0.55;
@@ -416,6 +434,11 @@ void main() {
 
     vec3 col = albedo * light + albedo * emis;
 
+    // tiny sunlit sparkle on rough aggregate-like surfaces (concrete/stone/asphalt) where the
+    // fine speckle noise peaks -- the same "catches the light" cue real aggregate has, and
+    // another cheap way to read as higher surface detail without an actual high-res texture
+    col += wSpeckle * smoothstep(0.86, 0.99, nSpeckle + 0.5) * detailFade * uSunColor * sunVis * 0.5;
+
     // ---- raytraced specular reflections / specular occlusion (Teardown-style): the
     // reflection ray (jittered by roughness, so rough materials get blurrier reflections)
     // is traced against the same occupancy volume used for shadows. Unblocked -> sample the
@@ -437,7 +460,6 @@ void main() {
     }
 
     // fog
-    float dist = length(vWorld - uCamPos);
     float f = 1.0 - exp(-pow(dist * uFogDensity, 1.5));
     vec3 fogCol = mix(uFogColor, uSunColor * 0.25 + uFogColor, 0.0);
     col = mix(col, fogCol, clamp(f, 0.0, 1.0));

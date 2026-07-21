@@ -281,6 +281,46 @@ void main() {
     albedo *= 1.0 + (fine * 0.5 + coarse * 0.8) * roughness * 0.4;
     albedo *= mix(0.92, 1.05, fbm(uvTex * 1.6 + 5.0));
 
+    // ---- material variety: the layer above is a universal micro-grain that applies equally
+    // everywhere; this second layer picks a distinct *pattern shape* per material instead of
+    // just varying intensity. There's no per-voxel material ID in the vertex data (only the
+    // baked color and the refl/smooth proxy), so classification runs on those -- continuous
+    // blend weights rather than a hard switch, so two adjacent voxels of a slightly different
+    // shade never show a seam between pattern styles.
+    float maxc = max(albedo.r, max(albedo.g, albedo.b));
+    float minc = min(albedo.r, min(albedo.g, albedo.b));
+    float sat = maxc - minc;
+    float warmth = albedo.r - albedo.b;
+    float greenness = albedo.g - max(albedo.r, albedo.b);
+    float value = maxc;
+
+    float wOrganic = smoothstep(0.02, 0.10, greenness);                              // grass/leaves
+    float wGrain = smoothstep(0.06, 0.16, warmth) * smoothstep(0.05, 0.14, sat)
+                 * (1.0 - wOrganic);                                                 // wood/brick/dirt
+    float wGrid = (1.0 - smoothstep(0.02, 0.10, sat)) * smoothstep(0.55, 0.75, value)
+                * (1.0 - wOrganic) * (1.0 - wGrain);                                 // tile/paneling
+    float wSpeckle = (1.0 - wOrganic) * (1.0 - wGrain) * (1.0 - wGrid);              // stone/concrete/asphalt
+    // refl/smooth alone can't tell metal apart from concrete/asphalt/tile (materialSpecular
+    // gives every M_HEAVY voxel the same values), so also gate on hue: this palette's metals
+    // read cool/blue-gray while its concrete and tile read warm-neutral gray.
+    float coolness = 1.0 - smoothstep(-0.06, 0.01, warmth);
+    float wMetal = coolness * smoothstep(0.30, 0.55, vRefl) * smoothstep(0.35, 0.65, vSmooth)
+                 * (1.0 - smoothstep(0.78, 0.92, vSmooth));                          // brushed metal (additive)
+
+    float nSpeckle = fbm(uvTex * 70.0) - 0.5;
+    nSpeckle = sign(nSpeckle) * pow(abs(nSpeckle) * 2.0, 0.7) * 0.5;                 // punchier, isolated speckle
+    float nGrainStreak = fbm(vec2(uvTex.x * 3.0, uvTex.y * 26.0)) - 0.5;             // anisotropic grain lines
+    float nGrainRing = sin(uvTex.y * 40.0 + nGrainStreak * 6.0) * 0.5;
+    float nGrain = nGrainStreak * 0.65 + nGrainRing * 0.35;
+    float nOrganic = (fbm(uvTex * 10.0) - 0.5) * 0.8 + (fbm(uvTex * 26.0 + 5.0) - 0.5) * 0.4;
+    vec2 gridCell = fract(uvTex * 3.0) - 0.5;
+    float nGrid = -(1.0 - smoothstep(0.0, 0.06, min(abs(gridCell.x), abs(gridCell.y)))) * 0.55;
+    float nBrushed = (fbm(vec2(uvTex.x * 90.0, uvTex.y * 6.0)) - 0.5) * 0.35;
+
+    float pattern = wSpeckle * nSpeckle + wGrain * nGrain + wOrganic * nOrganic
+                  + wGrid * nGrid + wMetal * nBrushed;
+    albedo *= 1.0 + clamp(pattern, -0.6, 0.6) * roughness;
+
     vec3 Tt, Bt;
     if (abs(N.x) > 0.5) { Tt = vec3(0.0, 0.0, 1.0); Bt = vec3(0.0, 1.0, 0.0); }
     else if (abs(N.y) > 0.5) { Tt = vec3(1.0, 0.0, 0.0); Bt = vec3(0.0, 0.0, 1.0); }

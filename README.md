@@ -53,8 +53,10 @@ OpenGL 3.3-capable GPU — any NVIDIA, AMD, or Intel card from the last ~15 year
   undersampled high-frequency noise (or an unfiltered texture) would from far away.
 - **Structural integrity.** After every destructive edit, a flood-fill from the ground and
   map boundary finds anything left unsupported. Small debris crumbles instantly; large
-  disconnected sections become physics-driven falling clusters that crash down and shatter
-  on impact.
+  disconnected sections become physics-driven falling clusters that crash down and resettle
+  as real solid rubble — only the layer that actually hits the ground shatters into flying
+  debris on a hard landing, not the whole structure, so a collapsed wall stays looking like a
+  collapsed wall instead of dissolving into dust.
 - **Fire that spreads.** The Blowtorch reliably ignites flammable (wood) material; explosions
   sometimes do too. Fire spreads voxel-to-voxel over time and burns through what it touches
   — via the same networked destruction path as every other tool, so it stays in sync across

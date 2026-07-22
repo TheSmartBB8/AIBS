@@ -411,10 +411,18 @@ struct World {
     void landCluster(FallingCluster& fc, const std::function<void(int, int, int, uint8_t)>& onCrumble) {
         int minx = WX, miny = WY, minz = WZ, maxx = 0, maxy = 0, maxz = 0;
         bool hardImpact = fc.drop >= 8;
+        // only the voxels right at the cluster's own bottom shatter on a hard landing, like
+        // Teardown's debris staying mostly intact as a broken chunk rather than the whole
+        // structure vaporizing into particles. Comparing against lowestOrigY directly (not
+        // adjusted for fc.drop) was the bug: for any cluster that fell farther than its own
+        // height -- true for nearly every real drop -- that condition was satisfied by every
+        // voxel, so the *entire* cluster crumbled into short-lived debris particles instead of
+        // resettling as solid rubble.
+        int lowestOrigY = lowestClusterY(fc);
         for (auto& v : fc.voxels) {
             int y = v.y - fc.drop;
             if (y < 0) continue;
-            bool crumbleThis = hardImpact && (v.y - fc.drop <= lowestClusterY(fc) + 0);
+            bool crumbleThis = hardImpact && ((int)v.y <= lowestOrigY + 1);
             if (!inBounds(v.x, y, v.z) || vox[vidx(v.x, y, v.z)] != 0 ||
                 (crumbleThis && palette[v.pal].mat != M_HEAVY)) {
                 if (onCrumble) onCrumble(v.x, y, v.z, v.pal);

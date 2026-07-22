@@ -206,6 +206,33 @@ static int selftestMain() {
         CHECK(w.countSolid() < before, "total solid voxel count decreased after destruction");
     }
 
+    // ---- landCluster: a hard impact should only shatter voxels near the cluster's own
+    // bottom, not the entire structure (regression test for a reference-frame bug: the
+    // crumble check compared the landed height against the cluster's *original* lowest y
+    // without adjusting for the drop distance, so for any cluster that fell farther than its
+    // own height -- true for nearly every real drop -- every single voxel satisfied the
+    // condition and the whole thing turned into short-lived debris particles instead of
+    // resettling as solid rubble)
+    {
+        World w;
+        w.init();
+        uint8_t wood = w.addPal(150, 112, 70, M_MED);
+        // a 5x5x6 solid block, well clear of the ground, dropped from far higher than its own
+        // 6-voxel height
+        FallingCluster fc;
+        for (int y = 20; y < 26; y++)
+            for (int z = 5; z < 10; z++)
+                for (int x = 5; x < 10; x++)
+                    fc.voxels.push_back({(int16_t)x, (int16_t)y, (int16_t)z, wood});
+        fc.drop = 20;
+        int total = (int)fc.voxels.size();
+        int crumbled = 0;
+        w.landCluster(fc, [&](int, int, int, uint8_t) { crumbled++; });
+        CHECK(crumbled > 0 && crumbled < total / 2,
+              "a hard landing shatters only the bottom of a tall cluster, not the whole thing");
+        CHECK(w.countSolid() > 0, "the surviving part of the cluster resettles as real solid geometry");
+    }
+
     // ---- barrel chain reaction via weapons.h destruction op path
     {
         World w;

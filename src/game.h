@@ -450,10 +450,7 @@ struct Game {
         if (paused) return;
 
         // mouse look
-        float sens = 0.0022f;
-        player.yaw += in.mouseDX * sens;
-        player.pitch -= in.mouseDY * sens;
-        player.pitch = clampf(player.pitch, -1.5f, 1.5f);
+        player.applyMouseLook(in.mouseDX, in.mouseDY, 0.0022f);
 
         float mz = (in.keyDown['W'] ? 1.f : 0.f) - (in.keyDown['S'] ? 1.f : 0.f);
         float mx = (in.keyDown['D'] ? 1.f : 0.f) - (in.keyDown['A'] ? 1.f : 0.f);

@@ -165,6 +165,17 @@ static int selftestMain() {
                 CHECK(vlen(gunFwd - trueFwd) < 1e-4f, "viewmodel rotation matrix points the gun exactly where the camera looks");
             }
         }
+        // mouse look: moving the mouse right (dx > 0, platform.h's screen-X-increases-
+        // rightward convention) must turn the camera toward its own right side, not left
+        for (float startYaw : {0.f, 1.1f, -2.4f}) {
+            Player mp; mp.yaw = startYaw;
+            vec3 camRightBefore = vnorm(vcross(mp.forwardFlat(), vec3(0, 1, 0)));
+            vec3 fwdBefore = mp.forwardFlat();
+            mp.applyMouseLook(6.f, 0.f, 0.01f);
+            vec3 fwdAfter = mp.forwardFlat();
+            CHECK(vdot(fwdAfter - fwdBefore, camRightBefore) > 0.f,
+                  "moving the mouse right turns the camera toward its own right vector, not left");
+        }
     }
 
     // ---- destruction + structural integrity: a floating platform detaches and falls

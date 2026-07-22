@@ -23,6 +23,15 @@ struct Player {
     // (render.h's camRight) -- getting this backwards silently mirrors strafe input.
     vec3 rightFlat() const { return {-cosf(yaw), 0, sinf(yaw)}; }
 
+    // dx/dy: raw mouse delta in screen pixels (dx > 0 = mouse moved right, dy > 0 = moved
+    // down -- platform.h's convention). yaw must DEcrease as dx increases: forward(yaw)
+    // rotates away from cross(forward, up) as yaw increases, so +yaw turns the camera left.
+    void applyMouseLook(float dx, float dy, float sens) {
+        yaw -= dx * sens;
+        pitch -= dy * sens;
+        pitch = clampf(pitch, -1.5f, 1.5f);
+    }
+
     bool boxSolid(const World& w, vec3 c, float hw, float hh) const {
         int x0 = (int)floorf((c.x - hw) / VOXEL_SIZE), x1 = (int)floorf((c.x + hw) / VOXEL_SIZE);
         int y0 = (int)floorf((c.y - hh) / VOXEL_SIZE), y1 = (int)floorf((c.y + hh) / VOXEL_SIZE);

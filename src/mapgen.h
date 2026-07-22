@@ -503,18 +503,37 @@ static MapInfo genMall(World& w, uint32_t seed = 1337) {
                 B.fill(wallX, fy + 9, z0, wallX, fy + 15, z1, P.signBack);
                 int dz = (z0 + z1) / 2;
                 B.clear(wallX, fy, dz - 3, wallX, fy + 8, dz + 3);
-                const char* nm = shopNames[shopIdx % 8];
-                uint8_t sc = signCols[shopIdx % 8];
+                // one ground-floor bay (east side, third slot -- directly facing the atrium
+                // cafe tables) is the food court instead of a generic retail shop: an open
+                // service counter up front, a kitchen line at the back, and a couple of extra
+                // tables of its own.
+                bool isFoodCourt = (floor == 0 && side == 1 && s == 2);
+                const char* nm = isFoodCourt ? "FOOD COURT" : shopNames[shopIdx % 8];
+                uint8_t sc = isFoodCourt ? signOrange : signCols[shopIdx % 8];
                 shopIdx++;
                 int tw = B.textLen(nm, 1);
                 int tz = dz - tw / 2;
                 if (side == 0) B.text3d(nm, wallX + 1, fy + 15, tz, 1, 1, sc, 1);
                 else B.text3d(nm, wallX, fy + 15, tz, 3, 1, sc, 1);
-                // shelves + counter
                 int sx0 = std::min(inX0, inX1), sx1 = std::max(inX0, inX1);
-                for (int sz = z0 + 6; sz < z1 - 8; sz += 10)
-                    placeShelf(B, P, sx0 + 10, fy, sz, std::min(40, sx1 - sx0 - 20), 1);
-                B.fill(side == 0 ? 128 : 184, fy, z0 + 3, side == 0 ? 136 : 192, fy + 4, z0 + 6, P.woodDark);
+                if (isFoodCourt) {
+                    B.fill(200, fy, dz - 12, 210, fy + 3, dz - 10, P.woodDark);   // counter A
+                    B.fill(200, fy, dz + 10, 210, fy + 3, dz + 12, P.woodDark);   // counter B
+                    B.fill(200, fy + 3, dz - 12, 210, fy + 10, dz + 12, P.signBack);
+                    B.text3d("EAT", 202, fy + 9, dz - 2, 1, 1, signOrange, 1);
+                    B.fill(250, fy, z0 + 2, 251, fy + 4, z1 - 2, P.metalDark);    // kitchen line
+                    B.fill(250, fy, z0 + 2, 256, fy + 4, z1 - 2, P.tileWhite);
+                    for (int tx : {220, 238}) {
+                        B.cylY(tx, dz, fy + 4, fy + 4, 3.0f, P.woodLight);
+                        B.fill(tx, fy, dz, tx, fy + 3, dz, P.metalDark);
+                        for (int ddz : {-4, 4}) B.fill(tx, fy, dz + ddz, tx, fy + 2, dz + ddz, P.woodDark);
+                    }
+                } else {
+                    // shelves + counter
+                    for (int sz = z0 + 6; sz < z1 - 8; sz += 10)
+                        placeShelf(B, P, sx0 + 10, fy, sz, std::min(40, sx1 - sx0 - 20), 1);
+                    B.fill(side == 0 ? 128 : 184, fy, z0 + 3, side == 0 ? 136 : 192, fy + 4, z0 + 6, P.woodDark);
+                }
             }
         }
     }
@@ -556,8 +575,9 @@ static MapInfo genMall(World& w, uint32_t seed = 1337) {
         B.fill(168, F1, z, 170, F1 + 1, z + 1, P.metalDark);
         B.fill(168, F1, z + 7, 170, F1 + 1, z + 8, P.metalDark);
     }
-    // cafe tables mid-south atrium (z 224..244)
-    for (int z : {228, 240})
+    // food court seating, mid-south atrium (z 220..248), facing the food court storefront
+    // at x=180 directly across from it
+    for (int z : {222, 232, 242})
         for (int x : {150, 166}) {
             B.cylY(x, z, F1 + 4, F1 + 4, 3.2f, P.woodLight);
             B.fill(x, F1, z, x, F1 + 3, z, P.metalDark);

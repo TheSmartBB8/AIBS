@@ -86,9 +86,10 @@ OpenGL 3.3-capable GPU — any NVIDIA, AMD, or Intel card from the last ~15 year
     a rigid-body constraint physics system this engine doesn't have.
 - **Two full Teardown-style sandbox maps:**
   - **Evermore Mall** — two-storey shopping mall with a skylit atrium, an anchor department
-    store, open stairwells, 8 storefronts, a food court, a fountain, a densely-packed parking
-    lot (taxis and police cars mixed in among the regular traffic), a loading dock with a
-    delivery truck, and a background skyline of apartment highrises ringing the lot.
+    store, open stairwells, 8 storefronts, a real food court (service counter, open kitchen,
+    and its own seating facing the atrium tables across from it), a fountain, a densely-packed
+    parking lot (taxis and police cars mixed in among the regular traffic), a loading dock with
+    a delivery truck, and a background skyline of apartment highrises ringing the lot.
   - **Sandpoint Marina** — sunset harbor with a corrugated-metal warehouse, container yard
     with a gantry crane holding a container over your head, an explosive fuel tank depot,
     a lighthouse, docks, and sailboats on real animated water.

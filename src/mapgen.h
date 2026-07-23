@@ -882,7 +882,258 @@ static MapInfo genMarina(World& w, uint32_t seed = 4242) {
     return mi;
 }
 
+// ---------------------------------------------------------------- MAP 3: WRECKER HQ (the hub)
+// The "default map" home base, modeled on Teardown's hub: an old two-storey wooden company
+// house you can burn to the ground, a corrugated-metal workshop, a working yard (truck,
+// pallets, log pile, crates), a forest edge, and a shoreline with a dock out back.
+static MapInfo genHub(World& w, uint32_t seed = 777) {
+    w.init();
+    w.mapId = 2;
+    MapBuilder B(w, seed);
+    Pals P = makeCommonPalette(w);
+    uint8_t siding    = w.addPal(214, 186, 112, M_MED);    // pale-yellow painted wood
+    uint8_t roofDark  = w.addPal(70, 62, 58, M_MED);
+    uint8_t signOrange = w.addPal(255, 150, 40, M_LIGHT, 5.0f);
+    uint8_t signWhite  = w.addPal(240, 245, 255, M_LIGHT, 4.0f);
+    uint8_t hullRed    = w.addPal(170, 60, 46, M_MED);
+
+    const int G = 12;     // stand level on grass (top voxel at G-1)
+    const int SEA = 7;    // water surface height in voxels
+
+    // ---- terrain: grassland sloping down to a sandy shore on the east edge
+    B.fill(0, 0, 0, WX - 1, 2, WZ - 1, P.bedrock);
+    B.fill(0, 3, 0, WX - 1, 3, WZ - 1, P.sand);            // seabed base
+    B.fill(0, 4, 0, 248, G - 2, WZ - 1, P.dirt);
+    B.fill(0, G - 1, 0, 248, G - 1, WZ - 1, P.grass);
+    for (int x = 249; x <= 276; x++) {
+        int h = 11 - (x - 248) / 2;
+        if (h < 4) h = 4;
+        if (h - 1 >= 4) B.fill(x, 4, 0, x, h - 1, WZ - 1, P.dirt);
+        B.fill(x, h, 0, x, h, WZ - 1, h >= 8 ? P.grass : P.sand);
+    }
+
+    // ---- gravel driveway from the south edge to the yard, widening into an apron
+    B.fill(120, G - 1, 0, 152, G - 1, 176, P.asphaltLight);
+    B.fill(152, G - 1, 140, 250, G - 1, 175, P.asphaltLight);
+
+    // ---- the HQ house: two-storey wooden company house
+    const int HX0 = 104, HX1 = 164, HZ0 = 172, HZ1 = 236;
+    // foundation + interior floors
+    B.fill(HX0, G - 1, HZ0, HX1, G - 1, HZ1, P.concreteDark);
+    B.fill(HX0 + 1, G - 1, HZ0 + 1, HX1 - 1, G - 1, HZ1 - 1, P.woodLight);
+    // exterior walls, both storeys
+    B.shell(HX0, G, HZ0, HX1, 43, HZ1, siding, 1);
+    // white trim bands at the floor line and the eaves
+    B.shell(HX0, 30, HZ0, HX1, 31, HZ1, P.white, 1);
+    B.shell(HX0, 43, HZ0, HX1, 43, HZ1, P.white, 1);
+    // windows, both floors: white frame ring with glass inside
+    auto windowZ = [&](int wx, int z0, int z1, int y0, int y1) {   // window in an x-facing wall
+        B.fill(wx, y0 - 1, z0 - 1, wx, y1 + 1, z1 + 1, P.white);
+        B.fill(wx, y0, z0, wx, y1, z1, P.glassBlue);
+    };
+    auto windowX = [&](int wz, int x0, int x1, int y0, int y1) {   // window in a z-facing wall
+        B.fill(x0 - 1, y0 - 1, wz, x1 + 1, y1 + 1, wz, P.white);
+        B.fill(x0, y0, wz, x1, y1, wz, P.glassBlue);
+    };
+    for (int f = 0; f < 2; f++) {
+        int y0 = f == 0 ? G + 4 : 34, y1 = f == 0 ? G + 10 : 40;
+        windowX(HZ0, 112, 119, y0, y1);  windowX(HZ0, 148, 155, y0, y1);   // front
+        windowX(HZ1, 112, 119, y0, y1);  windowX(HZ1, 130, 138, y0, y1); windowX(HZ1, 148, 155, y0, y1);
+        for (int z0 : {184, 204, 220}) {
+            windowZ(HX0, z0, z0 + 7, y0, y1);
+            windowZ(HX1, z0, z0 + 7, y0, y1);
+        }
+    }
+    // front door (south facade) + white frame
+    B.fill(129, G, HZ0, 139, G + 12, HZ0, P.white);
+    B.clear(130, G, HZ0, 138, G + 11, HZ0);
+    // porch: deck, posts, small roof
+    B.fill(122, G - 1, 160, 146, G - 1, HZ0 - 1, P.woodDark);
+    for (int px : {122, 145}) B.fill(px, G, 161, px + 1, G + 12, 162, P.white);
+    B.fill(119, G + 13, 158, 149, G + 13, HZ0 - 1, roofDark);
+    // company sign on the facade above the porch roof
+    {
+        const char* t = "VOXWRECK";
+        int tw = B.textLen(t, 1);
+        int sx = 134 - tw / 2;
+        B.fill(sx - 4, 25, HZ0, sx + tw + 3, 35, HZ0, P.signBack);
+        B.text3d(t, sx, 33, HZ0 - 1, 2, 1, signOrange, 1);
+    }
+    // interior, ground floor: partition with two door gaps, kitchen counter, big table
+    B.fill(HX0 + 1, G, 204, HX1 - 1, 29, 204, P.white);
+    B.clear(116, G, 204, 122, G + 10, 204);
+    B.clear(146, G, 204, 152, G + 10, 204);
+    B.fill(HX0 + 2, G, 206, HX0 + 8, G + 3, 232, P.woodDark);
+    B.fill(HX0 + 2, G + 4, 206, HX0 + 8, G + 4, 232, P.white);
+    B.fill(120, G + 4, 184, 140, G + 4, 194, P.woodLight);
+    for (int lx : {120, 139}) for (int lz : {184, 193}) B.fill(lx, G, lz, lx + 1, G + 3, lz + 1, P.metalDark);
+    placeShelf(B, P, HX1 - 6, G, 178, 20, 0);
+    // second-floor slab with a stairwell opening; the stairs are placed AFTER the slab ops,
+    // so the opening's clear() can't eat the top treads (it did, in the first attempt --
+    // caught by the offline walkability probe)
+    B.fill(HX0, 30, HZ0, HX1, 31, HZ1, P.woodDark);
+    B.fill(HX0 + 1, 31, HZ0 + 1, HX1 - 1, 31, HZ1 - 1, P.woodLight);
+    B.clear(HX0 + 1, 30, 181, HX0 + 9, 31, 193);
+    // stairs along the west wall of the south room, ascending toward the front of the house;
+    // the top tread (y=31 at z=181) lands flush against the slab that resumes at z=180
+    for (int i = 0; i < 20; i++)
+        B.fill(HX0 + 2, G + i, 200 - i, HX0 + 8, G + i, 200 - i, P.woodDark);
+    // second floor: partition + bedroom furniture
+    B.fill(HX0 + 1, 32, 204, HX1 - 1, 43, 204, P.white);
+    B.clear(116, 32, 204, 122, 42, 204);
+    B.clear(146, 32, 204, 152, 42, 204);
+    B.fill(HX1 - 14, 32, HZ1 - 12, HX1 - 4, 34, HZ1 - 4, P.white);       // bed
+    B.fill(HX1 - 14, 32, HZ1 - 5, HX1 - 4, 36, HZ1 - 4, P.woodDark);     // headboard
+    B.fill(HX0 + 3, 32, HZ1 - 14, HX0 + 11, 34, HZ1 - 4, P.white);       // second bed
+    B.fill(HX0 + 3, 35, 208, HX0 + 9, 35, 214, P.woodLight);             // desk
+    // ceiling lights on both floors
+    for (int lx : {120, 145})
+        for (int lz : {190, 220}) {
+            B.fill(lx, 29, lz, lx + 2, 29, lz, P.ceilLight);
+            B.fill(lx, 43, lz, lx + 2, 43, lz, P.ceilLight);
+        }
+    // attic ceiling slab, then a hollow pitched roof (ridge along z) with siding gables
+    B.fill(HX0, 44, HZ0, HX1, 45, HZ1, P.woodDark);
+    {
+        int rx0 = HX0 - 2, rx1 = HX1 + 2;
+        for (int i = 0;; i++) {
+            int xa = rx0 + 2 * i, xb = rx1 - 2 * i;
+            if (xb - xa <= 3) { B.fill(xa, 46 + i, HZ0 - 2, xb, 46 + i, HZ1 + 2, roofDark); break; }
+            B.fill(xa, 46 + i, HZ0 - 2, xa + 2, 46 + i, HZ1 + 2, roofDark);
+            B.fill(xb - 2, 46 + i, HZ0 - 2, xb, 46 + i, HZ1 + 2, roofDark);
+            B.fill(xa + 3, 46 + i, HZ0, xb - 3, 46 + i, HZ0, siding);
+            B.fill(xa + 3, 46 + i, HZ1, xb - 3, 46 + i, HZ1, siding);
+        }
+        // small gable windows into the attic
+        B.fill(130, 48, HZ0, 138, 52, HZ0, P.glassBlue);
+        B.fill(130, 48, HZ1, 138, 52, HZ1, P.glassBlue);
+    }
+    // brick chimney punching through the roof
+    B.fill(148, 32, 210, 151, 65, 213, P.brick);
+    B.clear(149, 64, 211, 150, 65, 212);
+
+    // ---- workshop garage: corrugated metal, open front, workbench, car on the lift... floor
+    const int GX0 = 190, GX1 = 246, GZ0 = 176, GZ1 = 224;
+    B.fill(GX0, G - 1, GZ0, GX1, G - 1, GZ1, P.concreteDark);
+    for (int z = GZ0; z <= GZ1; z++) {
+        uint8_t c = ((z / 3) & 1) ? P.metal : P.metalDark;
+        B.fill(GX0, G, z, GX0 + 1, 29, z, c);
+        B.fill(GX1 - 1, G, z, GX1, 29, z, c);
+    }
+    for (int x = GX0; x <= GX1; x++) {
+        uint8_t c = ((x / 3) & 1) ? P.metal : P.metalDark;
+        B.fill(x, G, GZ0, x, 29, GZ0 + 1, c);
+        B.fill(x, G, GZ1 - 1, x, 29, GZ1, c);
+    }
+    B.fill(GX0, 30, GZ0, GX1, 31, GZ1, P.metalDark);                 // flat roof
+    B.clear(196, G, GZ0, 236, G + 13, GZ0 + 1);                      // wide door opening
+    {
+        const char* t = "WORKSHOP";
+        int tw = B.textLen(t, 1);
+        int sx = 216 - tw / 2;
+        B.fill(sx - 3, G + 14, GZ0, sx + tw + 2, G + 23, GZ0, P.signBack);
+        B.text3d(t, sx, G + 21, GZ0 - 1, 2, 1, signWhite, 1);
+    }
+    B.fill(GX0 + 3, G, GZ1 - 8, GX1 - 3, G + 3, GZ1 - 3, P.woodDark);  // workbench
+    B.fill(GX0 + 3, G + 4, GZ1 - 8, GX1 - 3, G + 4, GZ1 - 3, P.white);
+    placeShelf(B, P, GX0 + 4, G, GZ0 + 8, 30, 0);
+    placeCar(B, P, 218, G, 192, 0);                                   // car in the bay
+    for (int z = GZ0 + 10; z < GZ1 - 8; z += 14)
+        B.fill(206, 29, z, 210, 29, z + 1, P.ceilLight);
+    // explosive barrels stacked behind the workshop -- do not weld near these
+    placeBarrel(B, P, 200, G, 232);
+    placeBarrel(B, P, 206, G, 236);
+    placeBarrel(B, P, 196, G, 238);
+
+    // ---- yard props: flatbed truck, pallet stacks, crates, log pile
+    {
+        int tx0 = 142, tx1 = 148, tz0 = 118, tz1 = 128;
+        uint8_t truckWhite = w.addPal(222, 224, 226, M_MED);
+        uint8_t truckCab = w.addPal(150, 60, 44, M_MED);
+        B.fill(tx0, G, tz0, tx1, G + 9, tz1, truckWhite);
+        B.clear(tx0 + 1, G + 1, tz0 + 1, tx1 - 1, G + 8, tz1 - 1);
+        B.fill(tx0, G, tz0 - 5, tx1, G + 7, tz0 - 1, truckCab);
+        B.fill(tx0, G + 4, tz0 - 5, tx1, G + 6, tz0 - 5, P.glassBlue);
+        for (int wz : {tz0 - 4, tz1 - 1})
+            for (int wx : {tx0, tx1}) B.fill(wx, G - 1, wz, wx, G, wz, P.black);
+    }
+    for (int i = 0; i < 6; i++) {
+        int x = B.rng.ri(166, 184), z = B.rng.ri(148, 168);
+        B.fill(x, G, z, x + 5, G + 1, z + 5, P.wood);
+        if (B.rng.uf() < 0.6f) B.fill(x + 1, G + 2, z + 1, x + 4, G + 4, z + 4, P.woodLight);
+    }
+    for (int layer = 0; layer < 3; layer++)
+        for (int r = 0; r < 4 - layer; r++)
+            B.fill(60, G + layer * 2, 148 + layer + r * 3, 78, G + layer * 2 + 1, 149 + layer + r * 3, P.trunk);
+    placeStreetlight(B, P, 156, G, 150, 1);
+    placeStreetlight(B, P, 190, G, 156, -1);
+
+    // ---- wooden rail fence around the yard (gaps for the driveway and the dock path)
+    {
+        auto post = [&](int x, int z) { B.fill(x, G, z, x, G + 3, z, P.woodDark); };
+        for (int x = 56; x <= 248; x++) {
+            if (x < 118 || x > 154) { w.setRaw(x, G + 1, 60, P.wood); w.setRaw(x, G + 3, 60, P.wood); }
+            w.setRaw(x, G + 1, 246, P.wood); w.setRaw(x, G + 3, 246, P.wood);
+        }
+        for (int z = 60; z <= 246; z++) {
+            w.setRaw(56, G + 1, z, P.wood); w.setRaw(56, G + 3, z, P.wood);
+            if (z < 150 || z > 180) { w.setRaw(248, G + 1, z, P.wood); w.setRaw(248, G + 3, z, P.wood); }
+        }
+        for (int x = 56; x <= 248; x += 12) {
+            if (x < 118 || x > 154) post(x, 60);
+            post(x, 246);
+        }
+        for (int z = 60; z <= 246; z += 12) {
+            post(56, z);
+            if (z < 150 || z > 180) post(248, z);
+        }
+    }
+
+    // ---- dock + rowboat on the east shore
+    for (int x = 249; x <= 292; x++)
+        B.fill(x, 10, 160, x, 10, 170, ((x / 2) & 1) ? P.wood : P.woodDark);
+    for (int x : {258, 272, 286})
+        for (int z : {160, 169})
+            B.fill(x, 3, z, x + 1, 9, z + 1, P.woodDark);
+    {
+        int bx0 = 280, bx1 = 292, bz0 = 174, bz1 = 180;
+        B.fill(bx0, 6, bz0, bx1, 8, bz1, hullRed);
+        B.clear(bx0 + 1, 7, bz0 + 1, bx1 - 1, 8, bz1 - 1);
+        B.fill(bx0 + 5, 7, bz0 + 1, bx0 + 6, 7, bz1 - 1, P.woodLight);
+    }
+
+    // ---- forest ring: dense on the west, scattered north and south
+    for (int i = 0; i < 16; i++)
+        placeTree(B, P, B.rng.ri(10, 44), G, B.rng.ri(16, 300));
+    for (int i = 0; i < 7; i++)
+        placeTree(B, P, B.rng.ri(60, 240), G, B.rng.ri(276, 306));
+    for (int i = 0; i < 6; i++) {
+        int x = B.rng.uf() < 0.5f ? B.rng.ri(60, 110) : B.rng.ri(170, 240);
+        placeTree(B, P, x, G, B.rng.ri(12, 40));
+    }
+    placeTree(B, P, 84, G, 200);
+    placeTree(B, P, 182, G, 244);
+
+    MapInfo mi;
+    mi.name = "WRECKER HQ";
+    mi.desc = "HOME BASE: WOODEN HQ HOUSE, WORKSHOP, YARD, SHORE.";
+    mi.spawn = vec3(134 * VOXEL_SIZE, G * VOXEL_SIZE + 0.92f, 130 * VOXEL_SIZE);
+    mi.spawnYaw = 0.0f;   // facing +z toward the house porch
+    mi.sunDir = vnorm(vec3(0.35f, -0.72f, 0.45f));
+    mi.sunColor = vec3(1.30f, 1.20f, 1.02f) * 3.0f;
+    mi.skyHorizon = vec3(0.70f, 0.80f, 0.92f);
+    mi.skyZenith = vec3(0.20f, 0.42f, 0.78f);
+    mi.ambient = 0.55f;
+    mi.hasWater = true;
+    mi.waterLevel = SEA * VOXEL_SIZE;
+    mi.waterColor = vec3(0.10f, 0.24f, 0.28f);
+    mi.fogDensity = 0.0032f;
+    mi.skyStyle = 0;
+    return mi;
+}
+
 static MapInfo generateMap(World& w, int mapId) {
+    if (mapId == 2) return genHub(w);
     return mapId == 0 ? genMall(w) : genMarina(w);
 }
-constexpr int MAP_COUNT = 2;
+constexpr int MAP_COUNT = 3;

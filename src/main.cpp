@@ -101,6 +101,22 @@ static int selftestMain() {
         int sx = (int)(m.spawn.x / VOXEL_SIZE), sy = (int)(m.spawn.y / VOXEL_SIZE), sz = (int)(m.spawn.z / VOXEL_SIZE);
         CHECK(!w.solidClamped(sx, sy, sz), "marina spawn point is not inside solid geometry");
     }
+    {
+        World w1, w2;
+        MapInfo m = generateMap(w1, 2);
+        generateMap(w2, 2);
+        CHECK(MAP_COUNT == 3, "map roster includes the hub map");
+        CHECK(w1.countSolid() == w2.countSolid(), "hub map generation is deterministic");
+        CHECK(w1.countSolid() > 400000, "hub map has substantial geometry");
+        CHECK(std::strcmp(m.name, "WRECKER HQ") == 0, "hub map name set");
+        CHECK(m.hasWater, "hub map has water at its shoreline");
+        CHECK(w1.barrels.size() >= 3, "hub map has explosive barrels placed");
+        int sx = (int)(m.spawn.x / VOXEL_SIZE), sy = (int)(m.spawn.y / VOXEL_SIZE), sz = (int)(m.spawn.z / VOXEL_SIZE);
+        CHECK(!w1.solidClamped(sx, sy, sz) && !w1.solidClamped(sx, sy + 3, sz), "hub spawn point is not inside solid geometry");
+        // the spawn faces the house: a forward raycast must actually hit the HQ building
+        World::RayHit h = w1.raycast(m.spawn + vec3(0, 0.6f, 0), vec3(sinf(m.spawnYaw), 0, cosf(m.spawnYaw)), 30.f);
+        CHECK(h.hit, "hub spawn faces the HQ house (forward raycast hits the building)");
+    }
 
     // ---- multithreaded chunk meshing produces the same result as serial meshing
     {

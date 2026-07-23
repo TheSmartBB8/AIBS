@@ -86,7 +86,11 @@ OpenGL 3.3-capable GPU — any NVIDIA, AMD, or Intel card from the last ~15 year
   - *Bonus:* **Minigun** (automatic, weak per-shot, high fire rate).
   - Not implemented: **Plank** and **Cable**, Teardown's two constructive tools — both need
     a rigid-body constraint physics system this engine doesn't have.
-- **Two full Teardown-style sandbox maps:**
+- **Three full Teardown-style sandbox maps:**
+  - **Wrecker HQ** — the default-map-style home base: a two-storey wooden company house
+    (fully furnished, fully flammable — stairs, bedrooms, brick chimney, pitched roof), a
+    corrugated-metal workshop with a car in the bay, a working yard with a flatbed truck,
+    pallet stacks and a log pile, a forest edge, and a shoreline with a dock and rowboat.
   - **Evermore Mall** — two-storey shopping mall with a skylit atrium, an anchor department
     store, open stairwells, 8 storefronts, a real food court (service counter, open kitchen,
     and its own seating facing the atrium tables across from it), a fountain, a densely-packed

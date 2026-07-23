@@ -827,10 +827,12 @@ struct Game {
         panelBg();
         float cx = plat->st.width * 0.5f;
         ren.uiTextCentered("SELECT MAP", cx, 60, 3.6f, 1, 1, 1, 1);
-        const char* names[MAP_COUNT] = {"EVERMORE MALL", "SANDPOINT MARINA"};
+        const char* names[MAP_COUNT] = {"EVERMORE MALL", "SANDPOINT MARINA", "WRECKER HQ"};
         const char* descs[MAP_COUNT] = {"TWO-STOREY MALL: ATRIUM, SHOPS, PARKING LOT.",
-                                         "SUNSET HARBOR: WAREHOUSE, CRANE, FUEL DEPOT, BOATS."};
-        float cw = 420, ch = 260, gap = 48;
+                                         "SUNSET HARBOR: WAREHOUSE, CRANE, FUEL DEPOT, BOATS.",
+                                         "HOME BASE: WOODEN HQ HOUSE, WORKSHOP, YARD, SHORE."};
+        float gap = 40, ch = 260;
+        float cw = std::min(420.f, (plat->st.width - 120.f - gap * (MAP_COUNT - 1)) / MAP_COUNT);
         float totalW = cw * MAP_COUNT + gap * (MAP_COUNT - 1);
         float startX = cx - totalW * 0.5f;
         for (int i = 0; i < MAP_COUNT; i++) {
@@ -840,7 +842,8 @@ struct Game {
             ren.uiRect(x, y, cw, ch, hover ? 0.13f : 0.09f, hover ? 0.135f : 0.095f, hover ? 0.155f : 0.11f, 0.95f, 2.f);
             vec3 bc = hover ? vec3(UI_ACCENT_R, UI_ACCENT_G, UI_ACCENT_B) : vec3(0.3f, 0.32f, 0.36f);
             ren.uiRect(x, y, cw, 1.5f, bc.x, bc.y, bc.z, hover ? 0.9f : 0.4f);
-            vec3 tint = i == 0 ? vec3(0.35f, 0.55f, 0.9f) : vec3(0.95f, 0.55f, 0.25f);
+            vec3 tint = i == 0 ? vec3(0.35f, 0.55f, 0.9f)
+                      : i == 1 ? vec3(0.95f, 0.55f, 0.25f) : vec3(0.45f, 0.70f, 0.35f);
             ren.uiRect(x + 16, y + 16, cw - 32, 120, tint.x, tint.y, tint.z, 0.35f, 2.f);
             ren.uiTextCentered(names[i], x + cw * 0.5f, y + 152, 2.4f, 1, 1, 1, 1);
             // wrap desc into ~2 lines manually by splitting on spaces roughly
@@ -857,11 +860,11 @@ struct Game {
         ren.uiTextCentered("MULTIPLAYER", cx, 70, 3.4f, 1, 1, 1, 1);
         float bw = 420, bh = 56, x = cx - bw * 0.5f, y = 190, gap = 68;
         ren.uiTextCentered("HOST A GAME", cx, y - 24, 1.6f, 0.7f, 0.75f, 0.85f, 0.8f);
-        const char* mapNames[MAP_COUNT] = {"HOST: EVERMORE MALL", "HOST: SANDPOINT MARINA"};
+        const char* mapNames[MAP_COUNT] = {"HOST: EVERMORE MALL", "HOST: SANDPOINT MARINA", "HOST: WRECKER HQ"};
         for (int i = 0; i < MAP_COUNT; i++)
             if (btn(x, y + i * gap, bw, bh, mapNames[i], true)) { audio.play(SND_CLICK); startHost(i); }
 
-        float jy = y + gap * 2 + 30;
+        float jy = y + gap * MAP_COUNT + 30;
         ren.uiTextCentered("JOIN A GAME (ENTER HOST IP)", cx, jy - 22, 1.6f, 0.7f, 0.75f, 0.85f, 0.8f);
         // IP input box
         PlatformState& in = plat->st;

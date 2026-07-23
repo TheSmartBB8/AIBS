@@ -16,12 +16,14 @@ enum Tool : uint8_t {
     TOOL_SLEDGE = 0, TOOL_SPRAYCAN, TOOL_EXTINGUISHER, TOOL_LEAFBLOWER, TOOL_BLOWTORCH,
     TOOL_SHOTGUN, TOOL_GUN, TOOL_RIFLE,
     TOOL_PIPEBOMB, TOOL_BOMB, TOOL_NITRO, TOOL_ROCKET, TOOL_MINIGUN,
+    TOOL_PLANK, TOOL_CABLE,
     TOOL_COUNT
 };
 static const char* TOOL_NAMES[TOOL_COUNT] = {
     "SLEDGEHAMMER", "SPRAY CAN", "FIRE EXTINGUISHER", "LEAF BLOWER", "BLOWTORCH",
     "SHOTGUN", "PISTOL", "HUNTING RIFLE",
     "PIPE BOMB", "BOMB", "NITROGLYCERIN", "ROCKET LAUNCHER", "MINIGUN",
+    "PLANK", "WINCH CABLE",
 };
 // true for tools meant to be held down (continuous tick) rather than click-once
 static inline bool toolIsContinuous(Tool t) {
@@ -75,6 +77,14 @@ struct WeaponsState {
     std::vector<Rocket> rockets;
     std::vector<PlacedProp> placedBombs;
 
+    // two-click constructive tools: pending first anchors + active winches
+    bool plankPending = false;
+    vec3 plankA;
+    bool cablePending = false;
+    vec3 cableA;
+    struct Winch { vec3 a, b; float timer = 0; bool alive = true; };
+    std::vector<Winch> winches;
+
     float sprayR = 1.f, sprayG = 0.15f, sprayB = 0.6f;
     int sprayColorIdx = 0;
     void cycleSprayColor() {
@@ -103,6 +113,8 @@ struct WeaponsState {
             case TOOL_NITRO: return 1.3f;
             case TOOL_ROCKET: return 1.6f;
             case TOOL_MINIGUN: return 0.09f;
+            case TOOL_PLANK: return 0.35f;
+            case TOOL_CABLE: return 0.45f;
             default: return 0.5f;
         }
     }
@@ -124,6 +136,8 @@ struct WeaponContext {
     std::function<void(int, int, int)> tryIgnite;                     // voxel coords
     std::function<void(vec3, vec3, float, float)> extinguishFireCone; // eye, dir, range, cosHalfAngle
     std::function<void(vec3, uint8_t, vec3)> spawnLooseDebris;        // pos, palette index, initial vel
+    std::function<void(vec3, float, float)> addImpulse;               // blast center, radius, strength:
+                                                                      // knocks back the player + flings loose props
     bool hasWater = false;
     float waterLevel = -1e9f;
 };
@@ -158,6 +172,48 @@ static void applyDestructionOp(WeaponContext& ctx, const DestructionOp& op, bool
     vec3 push = vnorm(vec3(op.px, op.py, op.pz));
     ParticleSystem* ps = ctx.particles;
 
+    // big == 2 is a BUILD op, not destruction: the Plank tool's strut. (px,py,pz) is the
+    // absolute end point, radius is the strut half-thickness. Encoding it as a DestructionOp
+    // reuses the entire network replication + late-joiner replay path unchanged.
+    if (op.big == 2) {
+        vec3 a = c, b = vec3(op.px, op.py, op.pz);
+        uint8_t plankPal = w.addPal(150, 112, 70, M_MED);   // dedupes to the maps' wood entry
+        float len = vlen(b - a);
+        if (len < 0.05f) return;
+        vec3 dirN = (b - a) / len;
+        int minx = WX, miny = WY, minz = WZ, maxx = 0, maxy = 0, maxz = 0;
+        int placed = 0;
+        int rv = std::max(1, (int)ceilf(op.radius / VOXEL_SIZE));
+        for (float t = 0; t <= len; t += VOXEL_SIZE * 0.5f) {
+            vec3 p = a + dirN * t;
+            int cx = (int)floorf(p.x / VOXEL_SIZE), cy = (int)floorf(p.y / VOXEL_SIZE), cz = (int)floorf(p.z / VOXEL_SIZE);
+            for (int dz = -rv; dz <= rv; dz++)
+                for (int dy = -rv; dy <= rv; dy++)
+                    for (int dx = -rv; dx <= rv; dx++) {
+                        if (dx * dx + dy * dy + dz * dz > rv * rv) continue;
+                        int x = cx + dx, y = cy + dy, z = cz + dz;
+                        if (!World::inBounds(x, y, z) || w.vox[World::vidx(x, y, z)] != 0) continue;
+                        w.vox[World::vidx(x, y, z)] = plankPal;
+                        w.markDirty(x, y, z);
+                        placed++;
+                        minx = std::min(minx, x); maxx = std::max(maxx, x);
+                        miny = std::min(miny, y); maxy = std::max(maxy, y);
+                        minz = std::min(minz, z); maxz = std::max(maxz, z);
+                    }
+        }
+        if (placed > 0) {
+            w.addTexDirty(minx - 1, miny - 1, minz - 1, maxx + 1, maxy + 1, maxz + 1);
+            if (withFx && ctx.playSound) ctx.playSound(SND_SLEDGE_HIT);
+            // a plank nailed to nothing (or knocked loose later) must fall: run integrity over
+            // the strut's span so unsupported planks become dynamic clusters immediately
+            vec3 mid = (a + b) * 0.5f;
+            w.checkIntegrity(mid, len * 0.5f + 0.4f, nullptr);
+            for (auto& fc : w.clusters)
+                if (fc.verts.empty() && !fc.landed) w.meshCluster(fc);
+        }
+        return;
+    }
+
     // find barrels triggered before voxels vanish
     std::vector<int> triggered;
     w.findTriggeredBarrels(c, op.radius, op.matMask, triggered);
@@ -190,6 +246,7 @@ static void applyDestructionOp(WeaponContext& ctx, const DestructionOp& op, bool
             }
             if (ctx.addShake) ctx.addShake(c, 1.0f);
             if (ctx.playSound) ctx.playSound(SND_EXPLOSION);
+            if (ctx.addImpulse) ctx.addImpulse(c, op.radius, 9.f);
             if (ctx.addLight) ctx.addLight(c, vec3(1.f, 0.6f, 0.25f) * 30.f, op.radius * 6.f, 0.4f);
             // explosions "sometimes" start fires (per Teardown's own tool documentation)
             if (ctx.tryIgnite) {
@@ -204,8 +261,12 @@ static void applyDestructionOp(WeaponContext& ctx, const DestructionOp& op, bool
         }
     }
 
-    // structural integrity around the edit
+    // structural integrity around the edit; the blast throws whatever detaches
     if (destroyed > 0) {
+        DetachImpulse imp;
+        imp.center = c;
+        imp.pushDir = push;
+        imp.strength = op.big ? 6.5f : 2.0f;
         w.checkIntegrity(c, op.radius, [&](int x, int y, int z, uint8_t pal) {
             if (!ps) return;
             const PalEntry& pe = w.palette[pal];
@@ -214,7 +275,7 @@ static void applyDestructionOp(WeaponContext& ctx, const DestructionOp& op, bool
                 ps->voxelDebris(vp, pe.r, pe.g, pe.b, vec3(0, -0.3f, 0), 1.2f);
             if (ctx.spawnLooseDebris && fxRng.uf() < 0.15f)
                 ctx.spawnLooseDebris(vp, pal, vec3(fxRng.sf(), fxRng.uf() * 0.5f, fxRng.sf()) * 1.5f);
-        });
+        }, imp);
         // mesh any new clusters
         for (auto& fc : w.clusters)
             if (fc.verts.empty() && !fc.landed) w.meshCluster(fc);
@@ -573,6 +634,97 @@ static void fireNitro(WeaponContext& ctx, vec3 eye, vec3 dir) {
                 else if (edgeMid && dyv == 1) w.set(cx + dx, cy + dyv, cz + dz, canBody);
             }
     w.barrels.push_back({(cx + 0.5f) * VOXEL_SIZE, (cy + 1.5f) * VOXEL_SIZE, (cz + 0.5f) * VOXEL_SIZE, true});
+}
+
+// Plank: two-click constructive tool. First click nails anchor A to a surface, second click
+// spans a real wooden strut from A to the new hit point -- actual M_MED voxels welded into
+// the world, so planks genuinely carry load through the structural-integrity system (prop a
+// sagging floor, bridge a gap, splint a cut beam). Networked as a build op (big == 2).
+static void firePlank(WeaponContext& ctx, WeaponsState& ws, vec3 eye, vec3 dir) {
+    World::RayHit h = ctx.world->raycast(eye, dir, 9.f);
+    if (!h.hit) { if (ctx.playSound) ctx.playSound(SND_CLICK); return; }
+    vec3 p = h.pos + h.normal * (VOXEL_SIZE * 0.6f);
+    if (!ws.plankPending) {
+        ws.plankPending = true;
+        ws.plankA = p;
+        if (ctx.playSound) ctx.playSound(SND_CLICK);
+        return;
+    }
+    ws.plankPending = false;
+    if (vlen(p - ws.plankA) > 12.f) { if (ctx.playSound) ctx.playSound(SND_CLICK); return; }
+    if (ctx.emitFire) ctx.emitFire({TOOL_PLANK, eye.x, eye.y, eye.z, dir.x, dir.y, dir.z});
+    DestructionOp op;
+    op.x = ws.plankA.x; op.y = ws.plankA.y; op.z = ws.plankA.z;
+    op.px = p.x; op.py = p.y; op.pz = p.z;
+    op.radius = 0.22f;
+    op.matMask = 0;
+    op.big = 2;
+    if (ctx.emitOp) ctx.emitOp(op);
+}
+
+// Winch cable: two-click attach, then the cable tightens for a beat and YANKS -- it rips
+// material free at the weaker of the two anchors and hurls the freed chunk toward the other
+// anchor (the freed cluster's initial velocity comes from the yank op's push direction via
+// the detach-impulse plumbing). The classic pull-the-wall-down-with-the-winch move.
+static void fireCable(WeaponContext& ctx, WeaponsState& ws, vec3 eye, vec3 dir) {
+    World::RayHit h = ctx.world->raycast(eye, dir, 24.f);
+    if (!h.hit) { if (ctx.playSound) ctx.playSound(SND_CLICK); return; }
+    // bias the anchor slightly INTO the material: the yank's cut sphere must be centered
+    // inside the wall it grips, or a hook on the face of a thin column leaves the far edge
+    // uncut and the piece never tears free (found via the offline probe)
+    vec3 p = h.pos - h.normal * (VOXEL_SIZE * 0.75f);
+    if (!ws.cablePending) {
+        ws.cablePending = true;
+        ws.cableA = p;
+        if (ctx.playSound) ctx.playSound(SND_CLICK);
+        return;
+    }
+    ws.cablePending = false;
+    if (vlen(p - ws.cableA) < 0.4f) { if (ctx.playSound) ctx.playSound(SND_CLICK); return; }
+    if (ctx.emitFire) ctx.emitFire({TOOL_CABLE, eye.x, eye.y, eye.z, dir.x, dir.y, dir.z});
+    WeaponsState::Winch wn;
+    wn.a = ws.cableA;
+    wn.b = p;
+    wn.timer = 1.1f;
+    ws.winches.push_back(wn);
+    if (ctx.playSound) ctx.playSound(SND_HISS);
+}
+
+// count solid voxels near a point -- used to pick the winch's weaker anchor
+static int solidDensityNear(World& w, vec3 p, float r) {
+    int n = 0;
+    int rv = (int)ceilf(r / VOXEL_SIZE);
+    int cx = (int)floorf(p.x / VOXEL_SIZE), cy = (int)floorf(p.y / VOXEL_SIZE), cz = (int)floorf(p.z / VOXEL_SIZE);
+    for (int dz = -rv; dz <= rv; dz++)
+        for (int dy = -rv; dy <= rv; dy++)
+            for (int dx = -rv; dx <= rv; dx++)
+                if (w.solidClamped(cx + dx, cy + dy, cz + dz)) n++;
+    return n;
+}
+
+static void updateWinches(WeaponContext& ctx, WeaponsState& ws, float dt) {
+    for (auto& wn : ws.winches) {
+        if (!wn.alive) continue;
+        wn.timer -= dt;
+        if (wn.timer > 0.f) continue;
+        wn.alive = false;
+        // yank at the weaker anchor, pushing toward the other one
+        int da = solidDensityNear(*ctx.world, wn.a, 0.8f);
+        int db = solidDensityNear(*ctx.world, wn.b, 0.8f);
+        vec3 weak = da <= db ? wn.a : wn.b;
+        vec3 strong = da <= db ? wn.b : wn.a;
+        vec3 pull = vnorm(strong - weak);
+        DestructionOp op;
+        op.x = weak.x; op.y = weak.y; op.z = weak.z;
+        op.radius = 0.8f;
+        op.matMask = (1u << M_LIGHT) | (1u << M_MED) | (1u << M_BARREL);   // can't rip concrete
+        op.px = pull.x; op.py = pull.y + 0.3f; op.pz = pull.z;
+        op.big = 0;
+        if (ctx.emitOp) ctx.emitOp(op);
+        if (ctx.playSound) ctx.playSound(SND_DEBRIS);
+    }
+    ws.winches.erase(std::remove_if(ws.winches.begin(), ws.winches.end(),
+                     [](const WeaponsState::Winch& w) { return !w.alive; }), ws.winches.end());
 }
 
 // projectile simulation: rockets (impact-triggered) and pipe bombs (arc + timed fuse) share

@@ -57,18 +57,36 @@ struct ChunkMesh {
     uint32_t indexCount = 0;
 };
 
-// a detached piece of the world falling under gravity (visual mesh + precomputed landing)
+// a detached piece of the world, simulated as a free-moving dynamic body (translation only:
+// voxel data stays axis-aligned so the piece can weld back into the grid when it comes to
+// rest). Explosions give clusters real lateral velocity; they collide face-by-face with the
+// world, shatter on hard impacts, crush glass/wood they land on, then settle as solid rubble.
 struct FallingCluster {
     struct V { int16_t x, y, z; uint8_t pal; };
-    std::vector<V> voxels;      // original world coordinates
-    int drop = 0;               // voxels to fall
-    float t = 0;                // seconds since detach
-    float fallTime = 0;         // total time to land
+    std::vector<V> voxels;      // original world coordinates (offset stores current motion)
+    vec3 offset;                // current displacement from original position, meters
+    vec3 vel;                   // m/s
+    float settleTimer = 0;      // time spent nearly-at-rest and supported
+    float age = 0;              // total sim time, forces settling eventually
+    float impactSpeed = 0;      // biggest collision speed this step (game layer reads for fx)
     bool landed = false;
+    bool facesDirty = true;     // face lists need (re)building (after detach or shatter)
+    std::vector<int> faceCells[6];   // indices into voxels: exposed cells per axis dir
+                                     // order: +x,-x,+y,-y,+z,-z
+    std::vector<uint32_t> cellKeys;  // sorted packed keys of member cells, for face building
     std::vector<Vertex> verts;  // prebuilt mesh (world space at origin position)
     std::vector<uint32_t> idx;
     uint32_t vao = 0, vbo = 0, ibo = 0; uint32_t indexCount = 0; bool gpuReady = false;
     vec3 center;
+};
+
+// impulse applied to clusters detached by a destruction op (radial from the blast center,
+// blended with the op's push direction) -- this is what throws debris sideways instead of
+// every piece falling straight down
+struct DetachImpulse {
+    vec3 center;
+    vec3 pushDir;
+    float strength = 0;
 };
 
 struct Barrel { float x, y, z; bool alive = true; };
@@ -255,7 +273,8 @@ struct World {
     // Small groups crumble via onCrumble(x, y, z, pal); larger ones become FallingClusters.
     // Returns number of detached voxels. Deterministic.
     int checkIntegrity(vec3 centerMeters, float radiusMeters,
-                       const std::function<void(int, int, int, uint8_t)>& onCrumble = nullptr) {
+                       const std::function<void(int, int, int, uint8_t)>& onCrumble = nullptr,
+                       const DetachImpulse& impulse = {}) {
         int margin = 22;
         int rv = (int)ceilf(radiusMeters / VOXEL_SIZE);
         int cx = (int)floorf(centerMeters.x / VOXEL_SIZE);
@@ -342,14 +361,15 @@ struct World {
                         }
                     }
                     detachedTotal += (int)cl.size();
-                    detachCluster(cl, onCrumble);
+                    detachCluster(cl, onCrumble, impulse);
                 }
         return detachedTotal;
     }
 
-    // remove cluster voxels from the grid; either crumble (small) or spawn FallingCluster
+    // remove cluster voxels from the grid; either crumble (small) or spawn a dynamic FallingCluster
     void detachCluster(std::vector<FallingCluster::V>& cl,
-                       const std::function<void(int, int, int, uint8_t)>& onCrumble) {
+                       const std::function<void(int, int, int, uint8_t)>& onCrumble,
+                       const DetachImpulse& impulse = {}) {
         int minx = WX, miny = WY, minz = WZ, maxx = 0, maxy = 0, maxz = 0;
         for (auto& v : cl) {
             vox[vidx(v.x, v.y, v.z)] = 0;
@@ -367,79 +387,208 @@ struct World {
         }
         FallingCluster fc;
         fc.voxels.assign(cl.begin(), cl.end());
-        // drop distance: min over columns of free fall below the cluster's lowest voxel in that column
-        // build column map of lowest voxel per (x,z)
-        int drop = WY;
-        {
-            // for determinism iterate voxels; use per-column min y
-            std::vector<std::pair<int, int>> colLow; // key = x*WZ+z, val = min y
-            colLow.reserve(cl.size());
-            // simple: use map via sorted vector
-            for (auto& v : cl) {
-                int key = v.x * WZ + v.z;
-                bool found = false;
-                for (auto& c : colLow)
-                    if (c.first == key) { c.second = std::min(c.second, (int)v.y); found = true; break; }
-                if (!found) colLow.push_back({key, v.y});
-            }
-            for (auto& c : colLow) {
-                int x = c.first / WZ, z = c.first % WZ, y = c.second;
-                int d = 0;
-                while (y - 1 - d >= 0 && !solidClamped(x, y - 1 - d, z) && d < drop) d++;
-                drop = std::min(drop, d);
-                if (drop == 0) break;
-            }
-        }
-        if (drop <= 0) {
-            // resting already (e.g., detached sideways onto something): just re-add
-            for (auto& v : cl) {
-                vox[vidx(v.x, v.y, v.z)] = v.pal;
-                markDirty(v.x, v.y, v.z);
-            }
-            addTexDirty(minx - 1, miny - 1, minz - 1, maxx + 1, maxy + 1, maxz + 1);
-            return;
-        }
-        fc.drop = drop;
-        float dropMeters = drop * VOXEL_SIZE;
-        fc.fallTime = sqrtf(2.f * dropMeters / 22.f); // matches gravity used in animation
         fc.center = vec3((minx + maxx + 1) * 0.5f, (miny + maxy + 1) * 0.5f, (minz + maxz + 1) * 0.5f) * VOXEL_SIZE;
+        // initial velocity from the blast: radial from the impulse center, blended with the
+        // op's push direction, with an upward bias -- debris gets THROWN, not dropped
+        if (impulse.strength > 0.01f) {
+            vec3 radial = vnorm(fc.center - impulse.center);
+            vec3 dir = vnorm(radial + impulse.pushDir * 0.6f);
+            fc.vel = dir * impulse.strength + vec3(0, impulse.strength * 0.35f, 0);
+        }
         clusters.push_back(std::move(fc));
     }
 
-    // land a cluster: re-add voxels 'drop' below original position; returns impact info
-    // voxels that can't be placed (now occupied) crumble
-    void landCluster(FallingCluster& fc, const std::function<void(int, int, int, uint8_t)>& onCrumble) {
+    // ---------------- dynamic cluster simulation ----------------
+    static inline uint32_t packCell(int x, int y, int z) {
+        return (uint32_t)x | ((uint32_t)y << 9) | ((uint32_t)z << 16);
+    }
+    static bool hasCell(const std::vector<uint32_t>& keys, uint32_t k) {
+        return std::binary_search(keys.begin(), keys.end(), k);
+    }
+    static void buildClusterFaces(FallingCluster& fc) {
+        fc.cellKeys.clear();
+        fc.cellKeys.reserve(fc.voxels.size());
+        for (auto& v : fc.voxels) fc.cellKeys.push_back(packCell(v.x, v.y, v.z));
+        std::sort(fc.cellKeys.begin(), fc.cellKeys.end());
+        static const int D[6][3] = {{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}};
+        for (int f = 0; f < 6; f++) fc.faceCells[f].clear();
+        for (int i = 0; i < (int)fc.voxels.size(); i++) {
+            auto& v = fc.voxels[i];
+            for (int f = 0; f < 6; f++)
+                if (!hasCell(fc.cellKeys, packCell(v.x + D[f][0], v.y + D[f][1], v.z + D[f][2])))
+                    fc.faceCells[f].push_back(i);
+        }
+        fc.facesDirty = false;
+    }
+
+    // weld a cluster back into the grid at its current integer offset; blocked cells crumble
+    void settleCluster(FallingCluster& fc, const std::function<void(int, int, int, uint8_t)>& onCrumble) {
+        int ox = (int)lroundf(fc.offset.x / VOXEL_SIZE);
+        int oy = (int)lroundf(fc.offset.y / VOXEL_SIZE);
+        int oz = (int)lroundf(fc.offset.z / VOXEL_SIZE);
         int minx = WX, miny = WY, minz = WZ, maxx = 0, maxy = 0, maxz = 0;
-        bool hardImpact = fc.drop >= 8;
-        // only the voxels right at the cluster's own bottom shatter on a hard landing, like
-        // Teardown's debris staying mostly intact as a broken chunk rather than the whole
-        // structure vaporizing into particles. Comparing against lowestOrigY directly (not
-        // adjusted for fc.drop) was the bug: for any cluster that fell farther than its own
-        // height -- true for nearly every real drop -- that condition was satisfied by every
-        // voxel, so the *entire* cluster crumbled into short-lived debris particles instead of
-        // resettling as solid rubble.
-        int lowestOrigY = lowestClusterY(fc);
         for (auto& v : fc.voxels) {
-            int y = v.y - fc.drop;
-            if (y < 0) continue;
-            bool crumbleThis = hardImpact && ((int)v.y <= lowestOrigY + 1);
-            if (!inBounds(v.x, y, v.z) || vox[vidx(v.x, y, v.z)] != 0 ||
-                (crumbleThis && palette[v.pal].mat != M_HEAVY)) {
-                if (onCrumble) onCrumble(v.x, y, v.z, v.pal);
+            int x = v.x + ox, y = v.y + oy, z = v.z + oz;
+            if (!inBounds(x, y, z) || vox[vidx(x, y, z)] != 0) {
+                if (onCrumble) onCrumble(x, y, z, v.pal);
                 continue;
             }
-            vox[vidx(v.x, y, v.z)] = v.pal;
-            markDirty(v.x, y, v.z);
-            minx = std::min(minx, (int)v.x); maxx = std::max(maxx, (int)v.x);
+            vox[vidx(x, y, z)] = v.pal;
+            markDirty(x, y, z);
+            minx = std::min(minx, x); maxx = std::max(maxx, x);
             miny = std::min(miny, y); maxy = std::max(maxy, y);
-            minz = std::min(minz, (int)v.z); maxz = std::max(maxz, (int)v.z);
+            minz = std::min(minz, z); maxz = std::max(maxz, z);
         }
         if (minx <= maxx) addTexDirty(minx - 1, miny - 1, minz - 1, maxx + 1, maxy + 1, maxz + 1);
+        fc.landed = true;
     }
-    int lowestClusterY(const FallingCluster& fc) const {
-        int m = WY;
-        for (auto& v : fc.voxels) m = std::min(m, (int)v.y);
-        return m;
+
+    // advance all in-flight clusters. Fixed 120 Hz substeps so the result is deterministic
+    // for every client regardless of frame rate (clusters originate from synced ops, so a
+    // deterministic sim keeps multiplayer worlds converged).
+    // onCrumble(x,y,z,pal): a cluster voxel shattered at world position (fx + loose debris).
+    // onCrush(x,y,z,pal):   a WORLD voxel was smashed by debris landing on it.
+    // Returns true if any cluster settled this call (mesh cleanup needed).
+    float clusterSimAccum = 0;
+    bool stepClusters(float dt,
+                      const std::function<void(int, int, int, uint8_t)>& onCrumble,
+                      const std::function<void(int, int, int, uint8_t)>& onCrush = nullptr) {
+        bool anySettled = false;
+        clusterSimAccum += dt;
+        const float H = 1.f / 120.f;
+        int steps = (int)(clusterSimAccum / H);
+        if (steps > 60) steps = 60;    // avoid spiral-of-death after a hitch
+        clusterSimAccum -= steps * H;
+        for (int s = 0; s < steps; s++) {
+            for (auto& fc : clusters) {
+                if (fc.landed) continue;
+                if (fc.facesDirty) buildClusterFaces(fc);
+                fc.age += H;
+                // fc.impactSpeed accumulates the max collision speed; the game layer
+                // reads it for impact fx and clears it once consumed
+                fc.vel.y -= 22.f * H;
+                // clamp: keeps single-substep movement below one voxel per axis
+                fc.vel.x = clampf(fc.vel.x, -20.f, 20.f);
+                fc.vel.y = clampf(fc.vel.y, -23.f, 20.f);
+                fc.vel.z = clampf(fc.vel.z, -20.f, 20.f);
+                bool shattered = false;
+                // axis-separated move with face collision at voxel granularity
+                for (int axis = 0; axis < 3; axis++) {
+                    float* off = axis == 0 ? &fc.offset.x : axis == 1 ? &fc.offset.y : &fc.offset.z;
+                    float* vv = axis == 0 ? &fc.vel.x : axis == 1 ? &fc.vel.y : &fc.vel.z;
+                    if (*vv == 0.f) continue;
+                    float want = *off + *vv * H;
+                    int curCell = (int)lroundf(*off / VOXEL_SIZE);
+                    int wantCell = (int)lroundf(want / VOXEL_SIZE);
+                    int dir = wantCell > curCell ? 1 : -1;
+                    bool blocked = false;
+                    while (wantCell != curCell) {
+                        int face = axis == 0 ? (dir > 0 ? 0 : 1) : axis == 1 ? (dir > 0 ? 2 : 3) : (dir > 0 ? 4 : 5);
+                        int ox = (int)lroundf(fc.offset.x / VOXEL_SIZE);
+                        int oy = (int)lroundf(fc.offset.y / VOXEL_SIZE);
+                        int oz = (int)lroundf(fc.offset.z / VOXEL_SIZE);
+                        if (axis == 0) ox = curCell + dir; else if (axis == 1) oy = curCell + dir; else oz = curCell + dir;
+                        float speed = fabsf(*vv);
+                        int crushes = 0;
+                        blocked = false;
+                        for (int fi : fc.faceCells[face]) {
+                            auto& v = fc.voxels[fi];
+                            int x = v.x + ox, y = v.y + oy, z = v.z + oz;
+                            if (y < 0) { blocked = true; break; }
+                            if (!inBounds(x, y, z)) continue;    // moving out over the map edge: free
+                            uint8_t wp = vox[vidx(x, y, z)];
+                            if (wp == 0) continue;
+                            uint8_t wm = palette[wp].mat;
+                            // heavy debris crushes glass at speed, wood only when really moving
+                            bool crushable = (wm == M_LIGHT && speed > 4.f) || (wm == M_MED && speed > 11.f);
+                            if (crushable && crushes < 300) {
+                                if (onCrush) onCrush(x, y, z, wp);
+                                vox[vidx(x, y, z)] = 0;
+                                markDirty(x, y, z);
+                                addTexDirty(x - 1, y - 1, z - 1, x + 1, y + 1, z + 1);
+                                crushes++;
+                                continue;
+                            }
+                            blocked = true;
+                            break;
+                        }
+                        if (blocked) {
+                            float speed2 = fabsf(*vv);
+                            fc.impactSpeed = std::max(fc.impactSpeed, speed2);
+                            // hard impact: the cluster's own leading face shatters (except
+                            // heavy material), like debris chipping apart when it slams down
+                            if (speed2 > 6.f && !shattered) {
+                                std::vector<int> gone;
+                                for (int fi : fc.faceCells[face])
+                                    if (palette[fc.voxels[fi].pal].mat != M_HEAVY) gone.push_back(fi);
+                                if (!gone.empty() && (int)gone.size() < (int)fc.voxels.size()) {
+                                    int cox = (int)lroundf(fc.offset.x / VOXEL_SIZE);
+                                    int coy = (int)lroundf(fc.offset.y / VOXEL_SIZE);
+                                    int coz = (int)lroundf(fc.offset.z / VOXEL_SIZE);
+                                    std::sort(gone.begin(), gone.end(), std::greater<int>());
+                                    for (int fi : gone) {
+                                        auto& v = fc.voxels[fi];
+                                        if (onCrumble) onCrumble(v.x + cox, v.y + coy, v.z + coz, v.pal);
+                                        fc.voxels[fi] = fc.voxels.back();
+                                        fc.voxels.pop_back();
+                                    }
+                                    fc.facesDirty = true;
+                                    shattered = true;
+                                }
+                            }
+                            *vv = speed2 > 6.f ? -*vv * 0.12f : 0.f;
+                            break;
+                        }
+                        curCell += dir;
+                    }
+                    if (!blocked) *off = want;
+                    else *off = curCell * VOXEL_SIZE;
+                    if (fc.facesDirty) buildClusterFaces(fc);
+                }
+                if (shattered) {
+                    // the render mesh no longer matches the voxel set: rebuild it (the
+                    // renderer frees the stale GPU buffers when it sees gpuReady drop)
+                    meshCluster(fc);
+                    fc.gpuReady = false;
+                }
+                if ((int)fc.voxels.size() < 16) {
+                    // too shattered to stay a body: crumble the remains
+                    int ox = (int)lroundf(fc.offset.x / VOXEL_SIZE);
+                    int oy = (int)lroundf(fc.offset.y / VOXEL_SIZE);
+                    int oz = (int)lroundf(fc.offset.z / VOXEL_SIZE);
+                    for (auto& v : fc.voxels)
+                        if (onCrumble) onCrumble(v.x + ox, v.y + oy, v.z + oz, v.pal);
+                    fc.voxels.clear();
+                    fc.landed = true;
+                    anySettled = true;
+                    continue;
+                }
+                // ground contact: friction kills the slide (without this a thrown chunk
+                // skates along the floor forever and never comes to rest), then settle
+                // detection welds it back into the grid once it's still and supported
+                bool supported = false;
+                if (fc.vel.y <= 0.5f) {
+                    int ox = (int)lroundf(fc.offset.x / VOXEL_SIZE);
+                    int oy = (int)lroundf(fc.offset.y / VOXEL_SIZE);
+                    int oz = (int)lroundf(fc.offset.z / VOXEL_SIZE);
+                    for (int fi : fc.faceCells[3]) {
+                        auto& v = fc.voxels[fi];
+                        if (solidClamped(v.x + ox, v.y + oy - 1, v.z + oz)) { supported = true; break; }
+                    }
+                }
+                if (supported) {
+                    fc.vel.x *= (1.f - 7.f * H);
+                    fc.vel.z *= (1.f - 7.f * H);
+                }
+                if (vlen(fc.vel) < 0.6f && supported) fc.settleTimer += H;
+                else fc.settleTimer = 0;
+                if (fc.settleTimer > 0.2f || fc.age > 12.f) {
+                    settleCluster(fc, onCrumble);
+                    anySettled = true;
+                }
+            }
+        }
+        return anySettled;
     }
 
     // ---------------- meshing ----------------

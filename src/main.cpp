@@ -194,7 +194,8 @@ static int selftestMain() {
         }
     }
 
-    // ---- destruction + structural integrity: a floating platform detaches and falls
+    // ---- destruction + structural integrity: a floating platform detaches and falls,
+    // then the dynamic sim brings it to rest as solid rubble
     {
         World w;
         w.init();
@@ -205,48 +206,156 @@ static int selftestMain() {
         for (int y = 1; y <= 10; y++) w.setRaw(10, y, 10, heavy);
         for (int x = 5; x < 15; x++) for (int z = 5; z < 15; z++) w.setRaw(x, 11, z, heavy);
         size_t before = w.countSolid();
-        DestructionOp op{}; (void)op;
         int destroyed = w.destroySphere(vec3(10 * VOXEL_SIZE, 5 * VOXEL_SIZE, 10 * VOXEL_SIZE), 0.9f, 0xffffffffu);
         CHECK(destroyed > 0, "sledgehammer-radius sphere destroys the support pillar");
         int detached = w.checkIntegrity(vec3(10 * VOXEL_SIZE, 5 * VOXEL_SIZE, 10 * VOXEL_SIZE), 0.9f);
         CHECK(detached > 50, "the now-unsupported platform is detected as detached");
         CHECK(w.clusters.size() == 1, "the detached platform became exactly one falling cluster");
         if (!w.clusters.empty()) {
-            CHECK(w.clusters[0].drop > 0, "the falling cluster has a positive drop distance");
             w.meshCluster(w.clusters[0]);
             CHECK(!w.clusters[0].verts.empty(), "the falling cluster has a renderable mesh");
-            // simulate landing
-            FallingCluster fc = w.clusters[0];
-            w.landCluster(fc, nullptr);
         }
+        size_t midair = w.countSolid();
+        for (int i = 0; i < 15 * 120 && !w.clusters.empty(); i++) {
+            w.stepClusters(1.f / 120.f, nullptr, nullptr);
+            w.clusters.erase(std::remove_if(w.clusters.begin(), w.clusters.end(),
+                             [](const FallingCluster& fc) { return fc.landed; }), w.clusters.end());
+        }
+        CHECK(w.clusters.empty(), "the dynamic sim brings the falling platform to rest");
+        CHECK(w.countSolid() > midair, "the platform resettled into the grid as solid rubble");
         CHECK(w.countSolid() < before, "total solid voxel count decreased after destruction");
     }
 
-    // ---- landCluster: a hard impact should only shatter voxels near the cluster's own
-    // bottom, not the entire structure (regression test for a reference-frame bug: the
-    // crumble check compared the landed height against the cluster's *original* lowest y
-    // without adjusting for the drop distance, so for any cluster that fell farther than its
-    // own height -- true for nearly every real drop -- every single voxel satisfied the
-    // condition and the whole thing turned into short-lived debris particles instead of
-    // resettling as solid rubble)
+    // ---- dynamic clusters: an explosion THROWS detached debris sideways (radial impulse),
+    // it doesn't just drop straight down
     {
         World w;
         w.init();
         uint8_t wood = w.addPal(150, 112, 70, M_MED);
-        // a 5x5x6 solid block, well clear of the ground, dropped from far higher than its own
-        // 6-voxel height
-        FallingCluster fc;
-        for (int y = 20; y < 26; y++)
+        FallingCluster::V dummy{};
+        (void)dummy;
+        std::vector<FallingCluster::V> cl;
+        for (int y = 20; y < 25; y++)
+            for (int z = 40; z < 45; z++)
+                for (int x = 40; x < 45; x++)
+                    cl.push_back({(int16_t)x, (int16_t)y, (int16_t)z, wood});
+        for (auto& v : cl) w.setRaw(v.x, v.y, v.z, wood);
+        DetachImpulse imp;
+        imp.center = vec3(30 * VOXEL_SIZE, 22 * VOXEL_SIZE, 42 * VOXEL_SIZE);  // blast west of the block
+        imp.pushDir = vec3(1, 0, 0);
+        imp.strength = 7.f;
+        w.detachCluster(cl, nullptr, imp);
+        CHECK(w.clusters.size() == 1 && w.clusters[0].vel.x > 2.f,
+              "explosion impulse gives detached debris real lateral velocity (thrown, not dropped)");
+        // and the thrown cluster travels sideways before it lands
+        for (int i = 0; i < 15 * 120 && !w.clusters.empty(); i++) {
+            if (!w.clusters.empty() && w.clusters[0].landed) break;
+            w.stepClusters(1.f / 120.f, nullptr, nullptr);
+        }
+        bool movedSideways = false;
+        for (int x = 46; x < WX; x++)
+            for (int y = 0; y < 26; y++)
+                for (int z = 40; z < 45; z++)
+                    if (w.solidClamped(x, y, z)) movedSideways = true;
+        CHECK(movedSideways, "the thrown cluster lands displaced sideways from where it broke off");
+    }
+
+    // ---- dynamic clusters: hard landings shatter only part of the debris (the impact face),
+    // and the rest resettles as solid geometry -- debris must not vaporize entirely
+    {
+        World w;
+        w.init();
+        uint8_t bedrock = w.addPal(50, 50, 50, M_BEDROCK);
+        uint8_t wood = w.addPal(150, 112, 70, M_MED);
+        for (int x = 0; x < 30; x++) for (int z = 0; z < 30; z++) w.setRaw(x, 0, z, bedrock);
+        std::vector<FallingCluster::V> cl;
+        for (int y = 40; y < 46; y++)
             for (int z = 5; z < 10; z++)
                 for (int x = 5; x < 10; x++)
-                    fc.voxels.push_back({(int16_t)x, (int16_t)y, (int16_t)z, wood});
-        fc.drop = 20;
-        int total = (int)fc.voxels.size();
+                    cl.push_back({(int16_t)x, (int16_t)y, (int16_t)z, wood});
+        for (auto& v : cl) w.setRaw(v.x, v.y, v.z, wood);
+        int total = (int)cl.size();
+        w.detachCluster(cl, nullptr);
         int crumbled = 0;
-        w.landCluster(fc, [&](int, int, int, uint8_t) { crumbled++; });
-        CHECK(crumbled > 0 && crumbled < total / 2,
-              "a hard landing shatters only the bottom of a tall cluster, not the whole thing");
-        CHECK(w.countSolid() > 0, "the surviving part of the cluster resettles as real solid geometry");
+        for (int i = 0; i < 15 * 120 && !w.clusters.empty(); i++) {
+            w.stepClusters(1.f / 120.f, [&](int, int, int, uint8_t) { crumbled++; }, nullptr);
+            w.clusters.erase(std::remove_if(w.clusters.begin(), w.clusters.end(),
+                             [](const FallingCluster& fc) { return fc.landed; }), w.clusters.end());
+        }
+        CHECK(crumbled > 0, "a hard landing shatters some of the falling debris");
+        CHECK(crumbled < total / 2, "most of the debris survives the landing intact");
+        size_t resettled = w.countSolid() - (size_t)(30 * 30);
+        CHECK(resettled > 0, "the surviving debris resettled into the grid as solid rubble");
+    }
+
+    // ---- dynamic clusters: heavy debris CRUSHES a glass pane it lands on and keeps going
+    {
+        World w;
+        w.init();
+        uint8_t bedrock = w.addPal(50, 50, 50, M_BEDROCK);
+        uint8_t heavy = w.addPal(200, 200, 200, M_HEAVY);
+        uint8_t glass = w.addPal(178, 216, 226, M_LIGHT);
+        for (int x = 0; x < 30; x++) for (int z = 0; z < 30; z++) w.setRaw(x, 0, z, bedrock);
+        // a thin glass skylight at y=10 under the falling block's path
+        for (int x = 3; x < 12; x++) for (int z = 3; z < 12; z++) w.setRaw(x, 10, z, glass);
+        std::vector<FallingCluster::V> cl;
+        for (int y = 40; y < 45; y++)
+            for (int z = 5; z < 10; z++)
+                for (int x = 5; x < 10; x++)
+                    cl.push_back({(int16_t)x, (int16_t)y, (int16_t)z, heavy});
+        for (auto& v : cl) w.setRaw(v.x, v.y, v.z, heavy);
+        w.detachCluster(cl, nullptr);
+        int crushed = 0;
+        for (int i = 0; i < 15 * 120 && !w.clusters.empty(); i++) {
+            w.stepClusters(1.f / 120.f, nullptr, [&](int, int, int, uint8_t) { crushed++; });
+            w.clusters.erase(std::remove_if(w.clusters.begin(), w.clusters.end(),
+                             [](const FallingCluster& fc) { return fc.landed; }), w.clusters.end());
+        }
+        CHECK(crushed > 0, "heavy falling debris smashes through the glass pane beneath it");
+        bool blockNearGround = false;
+        for (int y = 1; y < 9; y++)
+            for (int z = 5; z < 10; z++)
+                for (int x = 5; x < 10; x++)
+                    if (w.solidClamped(x, y, z)) blockNearGround = true;
+        CHECK(blockNearGround, "the block continued through the glass and settled near the ground");
+    }
+
+    // ---- dynamic clusters: the fixed-substep sim gives the same final world regardless of
+    // how frame time is sliced (multiplayer determinism across different frame rates)
+    {
+        auto runSim = [](float sliceA) {
+            World w;
+            w.init();
+            uint8_t bedrock = w.addPal(50, 50, 50, M_BEDROCK);
+            uint8_t wood = w.addPal(150, 112, 70, M_MED);
+            for (int x = 0; x < 30; x++) for (int z = 0; z < 30; z++) w.setRaw(x, 0, z, bedrock);
+            std::vector<FallingCluster::V> cl;
+            for (int y = 30; y < 34; y++)
+                for (int z = 8; z < 13; z++)
+                    for (int x = 8; x < 13; x++)
+                        cl.push_back({(int16_t)x, (int16_t)y, (int16_t)z, wood});
+            for (auto& v : cl) w.setRaw(v.x, v.y, v.z, wood);
+            DetachImpulse imp;
+            imp.center = vec3(4 * VOXEL_SIZE, 31 * VOXEL_SIZE, 10 * VOXEL_SIZE);
+            imp.pushDir = vec3(1, 0, 0);
+            imp.strength = 6.f;
+            w.detachCluster(cl, nullptr, imp);
+            float t = 0;
+            while (t < 14.f && !w.clusters.empty()) {
+                w.stepClusters(sliceA, nullptr, nullptr);
+                w.clusters.erase(std::remove_if(w.clusters.begin(), w.clusters.end(),
+                                 [](const FallingCluster& fc) { return fc.landed; }), w.clusters.end());
+                t += sliceA;
+            }
+            // hash the final voxel grid
+            uint64_t h = 1469598103934665603ull;
+            for (uint8_t v : w.vox) { h ^= v; h *= 1099511628211ull; }
+            return h;
+        };
+        uint64_t hFast = runSim(1.f / 144.f);
+        uint64_t hSlow = runSim(1.f / 31.f);
+        CHECK(hFast == hSlow,
+              "cluster physics is frame-rate independent: 144fps and 31fps produce identical worlds");
     }
 
     // ---- barrel chain reaction via weapons.h destruction op path
@@ -385,7 +494,7 @@ static int selftestMain() {
         // blowtorch's op-emission is covered more rigorously below (short 3.2m range makes
         // this eye position, chosen for long-range weapon tests 12m above the mall roof, an
         // unreliable fit for it specifically)
-        CHECK((int)TOOL_COUNT == 13, "tool roster has all 13 implemented tools");
+        CHECK((int)TOOL_COUNT == 15, "tool roster has all 15 Teardown tools (incl. plank + winch cable)");
         as.shutdown();
     }
 
@@ -501,6 +610,150 @@ static int selftestMain() {
         DestructionOp nearbyBlast{placed.x, placed.y, placed.z, 1.0f, WeaponsState::MASK_EXPLOSION, 0, 1, 0, 1};
         applyDestructionOp(ctx, nearbyBlast, false);
         CHECK(!w.barrels.back().alive, "the nitroglycerin canister chain-detonates when damaged nearby");
+    }
+
+    // ---- plank: two clicks span a real wooden strut between two surfaces; it carries load
+    // via the integrity system, and a plank nailed to nothing falls as a dynamic cluster
+    {
+        World w;
+        w.init();
+        uint8_t bedrock = w.addPal(50, 50, 50, M_BEDROCK);
+        uint8_t heavy = w.addPal(200, 200, 200, M_HEAVY);
+        for (int x = 0; x < 40; x++) for (int z = 0; z < 40; z++) w.setRaw(x, 0, z, bedrock);
+        // two pillars with a gap between them
+        for (int y = 1; y <= 12; y++) { w.setRaw(8, y, 10, heavy); w.setRaw(24, y, 10, heavy); }
+        ParticleSystem ps;
+        WeaponContext ctx; ctx.world = &w; ctx.particles = &ps;
+        ctx.emitOp = [&](const DestructionOp& op) { applyDestructionOp(ctx, op, false); };
+        ctx.emitFire = [](const FireEvent&) {};
+        ctx.addShake = [](vec3, float) {};
+        ctx.playSound = [](int) {};
+        ctx.addLight = [](vec3, vec3, float, float) {};
+        WeaponsState ws;
+        // aim at the west pillar's top, then the east pillar's top
+        vec3 eye(16 * VOXEL_SIZE, 20 * VOXEL_SIZE, 10.5f * VOXEL_SIZE);
+        firePlank(ctx, ws, eye, vnorm(vec3(8.4f * VOXEL_SIZE, 12 * VOXEL_SIZE, 10.5f * VOXEL_SIZE) - eye));
+        CHECK(ws.plankPending, "first plank click anchors point A");
+        size_t before = w.countSolid();
+        firePlank(ctx, ws, eye, vnorm(vec3(23.6f * VOXEL_SIZE, 12 * VOXEL_SIZE, 10.5f * VOXEL_SIZE) - eye));
+        CHECK(!ws.plankPending, "second plank click completes the strut");
+        CHECK(w.countSolid() > before + 20, "the plank op placed real wood voxels bridging the gap");
+        // the strut must actually connect: walk the straight line between the pillar tops
+        bool connected = true;
+        for (int x = 10; x <= 22; x++) {
+            bool anyHere = false;
+            for (int y = 8; y <= 15; y++)
+                for (int z = 8; z <= 13; z++)
+                    if (w.solidClamped(x, y, z)) anyHere = true;
+            connected &= anyHere;
+        }
+        CHECK(connected, "the plank forms an unbroken bridge between the two pillars");
+        // a plank fired into two points on nothing (floating) must fall: place one between
+        // two spots high in the air above open ground
+        World w2;
+        w2.init();
+        uint8_t bedrock2 = w2.addPal(50, 50, 50, M_BEDROCK);
+        for (int x = 0; x < 40; x++) for (int z = 0; z < 40; z++) w2.setRaw(x, 0, z, bedrock2);
+        WeaponContext ctx2 = ctx; ctx2.world = &w2;
+        ctx2.emitOp = [&](const DestructionOp& op) { applyDestructionOp(ctx2, op, false); };
+        DestructionOp floatOp;
+        floatOp.x = 10 * VOXEL_SIZE; floatOp.y = 30 * VOXEL_SIZE; floatOp.z = 10 * VOXEL_SIZE;
+        floatOp.px = 20 * VOXEL_SIZE; floatOp.py = 30 * VOXEL_SIZE; floatOp.pz = 10 * VOXEL_SIZE;
+        floatOp.radius = 0.22f; floatOp.matMask = 0; floatOp.big = 2;
+        applyDestructionOp(ctx2, floatOp, false);
+        CHECK(!w2.clusters.empty(), "a free-floating plank immediately becomes a falling cluster");
+    }
+
+    // ---- winch cable: attach to a weak pillar and a strong wall; the yank rips the pillar
+    // free and the freed cluster flies toward the other anchor
+    {
+        World w;
+        w.init();
+        uint8_t bedrock = w.addPal(50, 50, 50, M_BEDROCK);
+        uint8_t wood = w.addPal(150, 112, 70, M_MED);
+        uint8_t heavy = w.addPal(200, 200, 200, M_HEAVY);
+        for (int x = 0; x < 60; x++) for (int z = 0; z < 60; z++) w.setRaw(x, 0, z, bedrock);
+        // a big solid heavy block (strong anchor) and a thin free-standing wood chimney (weak)
+        for (int x = 40; x < 50; x++) for (int y = 1; y < 14; y++) for (int z = 5; z < 15; z++) w.setRaw(x, y, z, heavy);
+        for (int y = 1; y < 24; y++) for (int dx = 0; dx < 3; dx++) for (int dz = 0; dz < 3; dz++)
+            w.setRaw(10 + dx, y, 9 + dz, wood);
+        ParticleSystem ps;
+        WeaponContext ctx; ctx.world = &w; ctx.particles = &ps;
+        ctx.emitOp = [&](const DestructionOp& op) { applyDestructionOp(ctx, op, false); };
+        ctx.emitFire = [](const FireEvent&) {};
+        ctx.addShake = [](vec3, float) {};
+        ctx.playSound = [](int) {};
+        ctx.addLight = [](vec3, vec3, float, float) {};
+        WeaponsState ws;
+        vec3 eye(25 * VOXEL_SIZE, 12 * VOXEL_SIZE, 30 * VOXEL_SIZE);
+        // hook the chimney low (so the yank cut leaves a big top section to rip free), then
+        // the heavy block
+        fireCable(ctx, ws, eye, vnorm(vec3(11.5f * VOXEL_SIZE, 7 * VOXEL_SIZE, 10.5f * VOXEL_SIZE) - eye));
+        CHECK(ws.cablePending, "first cable click hooks point A");
+        fireCable(ctx, ws, eye, vnorm(vec3(44 * VOXEL_SIZE, 8 * VOXEL_SIZE, 10 * VOXEL_SIZE) - eye));
+        CHECK(!ws.cablePending && ws.winches.size() == 1, "second cable click creates an active winch");
+        // run the winch to its yank
+        for (int i = 0; i < 40; i++) updateWinches(ctx, ws, 0.05f);
+        CHECK(ws.winches.empty(), "the winch yanks and releases");
+        CHECK(!w.clusters.empty(), "the yank rips the weak chimney free as a dynamic cluster");
+        if (!w.clusters.empty())
+            CHECK(w.clusters[0].vel.x > 0.5f,
+                  "the freed chunk is pulled toward the other anchor, not just dropped");
+    }
+
+    // ---- throwing a carried prop: a hard glass impact fires the hook (game breaks glass there)
+    {
+        World w;
+        w.init();
+        uint8_t bedrock = w.addPal(50, 50, 50, M_BEDROCK);
+        uint8_t glass = w.addPal(178, 216, 226, M_LIGHT);
+        for (int x = 0; x < 30; x++) for (int z = 0; z < 30; z++) w.setRaw(x, 0, z, bedrock);
+        for (int y = 1; y < 12; y++) for (int x = 4; x < 16; x++) w.setRaw(x, y, 15, glass);
+        LooseVoxelSystem lvs;
+        lvs.spawn(vec3(10 * VOXEL_SIZE, 6 * VOXEL_SIZE, 5 * VOXEL_SIZE), glass, vec3(0, 0, 0));
+        lvs.props[0].thrown = true;
+        lvs.props[0].vel = vec3(0, 0, 14.f);   // hurled straight at the glass wall
+        int hardImpacts = 0;
+        for (int i = 0; i < 240; i++)
+            lvs.update(1.f / 60.f, w, [&](vec3, vec3) { hardImpacts++; });
+        CHECK(hardImpacts == 1, "a thrown prop fires exactly one hard-impact event when it slams the wall");
+    }
+
+    // ---- explosion knockback: the blast impulse pushes the player and flings loose props
+    {
+        World w;
+        w.init();
+        uint8_t bedrock = w.addPal(50, 50, 50, M_BEDROCK);
+        for (int x = 0; x < 30; x++) for (int z = 0; z < 30; z++) w.setRaw(x, 0, z, bedrock);
+        ParticleSystem ps;
+        Player pl;
+        pl.pos = vec3(4.f, 1.2f, 3.f);
+        LooseVoxelSystem lvs;
+        lvs.spawn(vec3(3.f, 1.0f, 3.5f), 1, vec3(0, 0, 0));
+        lvs.props[0].resting = true;
+        WeaponContext ctx; ctx.world = &w; ctx.particles = &ps;
+        ctx.emitOp = [&](const DestructionOp& op) { applyDestructionOp(ctx, op, false); };
+        ctx.emitFire = [](const FireEvent&) {};
+        ctx.addShake = [](vec3, float) {};
+        ctx.playSound = [](int) {};
+        ctx.addLight = [](vec3, vec3, float, float) {};
+        ctx.addImpulse = [&](vec3 c, float radius, float strength) {
+            float pr = radius * 1.7f;
+            vec3 dp = pl.pos - c; float dd = vlen(dp);
+            if (dd < pr) { float fall = 1.f - dd / pr; pl.vel += (dp / dd) * strength * fall; }
+            for (auto& lv : lvs.props) {
+                vec3 d = lv.pos - c; float dl = vlen(d);
+                if (dl < pr && dl > 0.01f) { lv.vel += d / dl * strength * (1.f - dl / pr); lv.resting = false; }
+            }
+        };
+        DestructionOp boom;
+        boom.x = 2.f; boom.y = 1.f; boom.z = 3.f;
+        boom.radius = 2.f; boom.matMask = WeaponsState::MASK_EXPLOSION;
+        boom.px = 0; boom.py = 1; boom.pz = 0; boom.big = 1;
+        applyDestructionOp(ctx, boom, true);
+        CHECK(vlen(pl.vel) > 1.f, "an explosion knocks the player back");
+        CHECK(!lvs.props.empty() && !lvs.props[0].resting && vlen(lvs.props[0].vel) > 1.f,
+              "an explosion flings nearby loose props");
     }
 
     // ---- spray can: recolors surface voxels without changing their material/destructibility

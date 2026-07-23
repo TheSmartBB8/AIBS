@@ -12,7 +12,7 @@ OpenGL 3.3-capable GPU — any NVIDIA, AMD, or Intel card from the last ~15 year
 ## Features
 
 - **Voxel world, fully destructible.** Every wall, column, shelf and vehicle is made of
-  0.2 m voxels. Blow chunks out with any of the 13 tools below.
+  0.2 m voxels. Blow chunks out with any of the 15 tools below.
 - **Ray-traced lighting, modeled directly on Teardown's own documented technique** (per its
   developer and independent GPU-debugger breakdowns of the shipped renderer): no baked
   lightmaps and no global illumination — instead, every frame marches rays through a
@@ -51,27 +51,37 @@ OpenGL 3.3-capable GPU — any NVIDIA, AMD, or Intel card from the last ~15 year
   computed analytically instead of sampled from a bitmap, so it never blurs or pixelates no
   matter how close the camera gets, and fades out by distance to avoid shimmering the way
   undersampled high-frequency noise (or an unfiltered texture) would from far away.
-- **Structural integrity.** After every destructive edit, a flood-fill from the ground and
-  map boundary finds anything left unsupported. Small debris crumbles instantly; large
-  disconnected sections become physics-driven falling clusters that crash down and resettle
-  as real solid rubble — only the layer that actually hits the ground shatters into flying
-  debris on a hard landing, not the whole structure, so a collapsed wall stays looking like a
-  collapsed wall instead of dissolving into dust.
+- **Structural integrity + dynamic debris physics.** After every destructive edit, a
+  flood-fill from the ground and map boundary finds anything left unsupported. Small debris
+  crumbles instantly; large disconnected sections become **free-moving dynamic bodies**:
+  explosions throw them sideways with a real radial impulse (not a straight-down drop), they
+  collide face-by-face with the world as they tumble out, **crush glass and wood they land
+  on** and keep going, shatter at the impact face on a hard landing (only the impact face —
+  the rest survives as a recognizable chunk), slide with ground friction, and finally weld
+  back into the voxel grid as solid rubble you can walk on, grab, or blow up again. The sim
+  runs on fixed 120 Hz substeps, so it's frame-rate independent and multiplayer-deterministic
+  — verified by a selftest that runs the same collapse at simulated 144 fps and 31 fps and
+  requires bit-identical final worlds.
+- **Explosions push everything.** Blasts knock the player back, fling loose debris props,
+  and hurl detached structure chunks — the whole scene reacts, not just the voxels inside
+  the blast radius.
 - **Fire that spreads.** The Blowtorch reliably ignites flammable (wood) material; explosions
   sometimes do too. Fire spreads voxel-to-voxel over time and burns through what it touches
   — via the same networked destruction path as every other tool, so it stays in sync across
   multiplayer clients. Capped at 100 concurrent fires (matching the base game's default
   limit). Put it out by destroying the burning voxel, the Fire Extinguisher, or water.
-- **Loose voxel pickup.** Crumbled debris becomes physical, grabbable props with real
-  settle-under-gravity physics. Hold right-click while aiming at one (a corner-bracket
-  reticle shows when it's grabbable) to pick it up and carry it; release to drop. Despawns
-  after a timer once settled, or never — toggle in Options.
+- **Loose voxel pickup — and throwing.** Crumbled debris becomes physical, grabbable props
+  with real settle-under-gravity physics. Hold right-click while aiming at one (a
+  corner-bracket reticle shows when it's grabbable) to pick it up and carry it; release
+  right-click to set it down gently, or **left-click to hurl it** — a hard-thrown chunk
+  smashes glass where it hits. Despawns after a timer once settled, or never — toggle in
+  Options.
 - **Water reacts to impacts.** Firearms, the sledgehammer, explosions, and flying rockets/pipe
   bombs all splash when they cross the water's surface, even when there's no voxel there to hit
   — a shot into open water isn't silently swallowed. Rockets detonate right at the surface
   instead of sailing through it, and pipe bombs settle and float rather than sinking out of
   view. Diving in or surfacing yourself triggers the same splash.
-- **13 tools**, matching Teardown's own tool categories, each with real destruction physics:
+- **15 tools — the complete roster**, each with real destruction physics:
   - *Unlimited:* **Sledgehammer** (melee smash), **Spray Can** (cosmetic paint — recolors
     voxels without changing what they're made of), **Fire Extinguisher**, **Leaf Blower**
     (pushes loose debris/dust/smoke around).
@@ -83,9 +93,13 @@ OpenGL 3.3-capable GPU — any NVIDIA, AMD, or Intel card from the last ~15 year
     than on impact), **Bomb** (placeable, sticks to surfaces, ~3s timer), **Nitroglycerin**
     (placeable, detonates only when damaged nearby — chain-reacts with map barrels and other
     nitro canisters), **Rocket Launcher** (large-radius explosive projectile).
+  - *Constructive:* **Plank** — two clicks span a real wooden strut between any two surfaces;
+    it's made of actual wood voxels, so it genuinely carries load through the structural
+    integrity system (prop up a sagging floor before you cut it, bridge a gap, splint a
+    beam), and a plank nailed to nothing falls as a physical body. **Winch Cable** — hook
+    two points, the cable pulls taut, then *yanks*: it rips material free at the weaker
+    anchor and hurls the freed chunk toward the other one. Pull down that chimney.
   - *Bonus:* **Minigun** (automatic, weak per-shot, high fire rate).
-  - Not implemented: **Plank** and **Cable**, Teardown's two constructive tools — both need
-    a rigid-body constraint physics system this engine doesn't have.
 - **Three full Teardown-style sandbox maps:**
   - **Wrecker HQ** — the default-map-style home base: a two-storey wooden company house
     (fully furnished, fully flammable — stairs, bedrooms, brick chimney, pitched roof), a
@@ -122,10 +136,11 @@ OpenGL 3.3-capable GPU — any NVIDIA, AMD, or Intel card from the last ~15 year
 |---|---|
 | W A S D | Move |
 | Mouse | Look |
-| Left click | Fire / swing / use tool |
+| Left click | Fire / swing / use tool (Plank & Cable: two clicks set the two anchor points) |
+| Left click (while carrying) | Throw the carried prop (smashes glass on a hard hit) |
 | Scroll wheel, 1-9, 0 | Switch tool (1-9 and 0 select the first 10 directly) |
 | Right click (hold) | Grab and carry a loose voxel prop you're aiming at |
-| Right click | Cycle Spray Can color (while Spray Can is equipped) |
+| Right click | Cycle Spray Can color / cancel a pending Plank or Cable anchor |
 | Space | Jump |
 | Shift | Sprint |
 | Ctrl | Crouch |
@@ -173,7 +188,7 @@ To build directly on Windows with MSVC or MinGW, compile `src/main.cpp` and
 | `src/render.h` | GL 3.3 renderer: ray-traced lighting shaders, sky, water, particles, HDR bloom |
 | `src/particles.h` | Multi-threaded particle system |
 | `src/player.h` | First-person controller with voxel AABB collision |
-| `src/weapons.h` | All 13 tool implementations, explosions, barrel chain reactions |
+| `src/weapons.h` | All 15 tool implementations, explosions, winches, barrel chain reactions |
 | `src/props.h` | Fire spread simulation, loose/grabbable voxel debris |
 | `src/audio.h` | Procedural sound synthesis + Windows `waveOut` mixer |
 | `src/net.h` | Cross-platform TCP framing, P2P host/client |

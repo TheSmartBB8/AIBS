@@ -117,6 +117,7 @@ struct LooseVoxel {
     bool resting = false;
     bool held = false;
     bool alive = true;
+    bool thrown = false;    // hurled by the player: fires the hard-impact hook on collision
 };
 
 struct LooseVoxelSystem {
@@ -142,7 +143,10 @@ struct LooseVoxelSystem {
         return true;
     }
 
-    void update(float dt, const World& w) {
+    // onHardImpact(pos, vel): a THROWN prop slammed into something at speed -- the game layer
+    // uses it to break glass at the impact point (via the normal networked op path)
+    void update(float dt, const World& w,
+                const std::function<void(vec3, vec3)>& onHardImpact = nullptr) {
         for (auto& lv : props) {
             if (!lv.alive || lv.held) continue;
             if (!lv.resting) {
@@ -150,8 +154,12 @@ struct LooseVoxelSystem {
                 lv.vel.y -= 18.f * dt;
                 int vx = (int)floorf(np.x / VOXEL_SIZE), vy = (int)floorf(np.y / VOXEL_SIZE), vz = (int)floorf(np.z / VOXEL_SIZE);
                 if (w.solidClamped(vx, vy, vz)) {
+                    if (lv.thrown && vlen(lv.vel) > 7.f && onHardImpact) {
+                        onHardImpact(lv.pos, lv.vel);
+                        lv.thrown = false;
+                    }
                     lv.vel = lv.vel * 0.2f;
-                    if (vlen(lv.vel) < 0.6f) { lv.resting = true; lv.vel = vec3(0, 0, 0); }
+                    if (vlen(lv.vel) < 0.6f) { lv.resting = true; lv.thrown = false; lv.vel = vec3(0, 0, 0); }
                 } else lv.pos = np;
             } else {
                 lv.sinceSettled += dt;

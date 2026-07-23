@@ -51,6 +51,7 @@ struct Game {
     int grabbedProp = -1;     // index into loose.props, or -1 if not carrying anything
     bool despawnLooseProps = true;
     bool wasInWater = false;  // edge-detects water entry/exit for splash fx
+    Rng fxRng{20260722};      // cosmetic-only randomness (particles/loose spawns from cluster fx)
 
     GameState state = ST_MAIN_MENU;
     int selectedMap = 0;
@@ -94,6 +95,29 @@ struct Game {
             fires.extinguishCone(eye, dir, range, cosHalf);
         };
         wctx.spawnLooseDebris = [this](vec3 pos, uint8_t pal, vec3 vel) { loose.spawn(pos, pal, vel); };
+        // explosions push things around: knock the player back and fling loose debris.
+        // (detached clusters get their impulse inside the integrity pass itself.)
+        wctx.addImpulse = [this](vec3 c, float radius, float strength) {
+            float pr = radius * 1.7f;
+            vec3 dp = player.pos - c;
+            float dd = vlen(dp);
+            if (dd < pr) {
+                float fall = 1.f - dd / pr;
+                vec3 dir = dd > 0.05f ? dp / dd : vec3(0, 1, 0);
+                player.vel += dir * strength * fall + vec3(0, strength * 0.45f * fall, 0);
+                player.onGround = false;
+            }
+            for (auto& lv : loose.props) {
+                if (!lv.alive || lv.held) continue;
+                vec3 d = lv.pos - c;
+                float dl = vlen(d);
+                if (dl < pr && dl > 0.01f) {
+                    float fall = 1.f - dl / pr;
+                    lv.vel += d / dl * strength * 1.4f * fall + vec3(0, strength * 0.6f * fall, 0);
+                    lv.resting = false;
+                }
+            }
+        };
     }
 
     void shutdown() {
@@ -260,6 +284,11 @@ struct Game {
             case TOOL_NITRO:
                 particles.flash(origin + dir * 0.6f, 0.2f);
                 break;
+            case TOOL_PLANK:
+            case TOOL_CABLE:
+                // the actual build/yank arrives as a synced op; this is just a little dust
+                particles.dust(origin + dir * 1.f, dir * 0.5f, 0.10f, 0.4f, 0.7f, 0.65f, 0.55f);
+                break;
             default: break;
         }
         if (rp) rp->tool = (Tool)w.tool;
@@ -401,6 +430,16 @@ struct Game {
             applyDestructionOp(wctx, {w.x, w.y, w.z, w.radius, w.matMask, w.px, w.py, w.pz, w.big}, !netSyncing);
         } else if (m.type == MSG_SYNC_DONE) {
             netSyncing = false;
+            // replaying the op log spawned clusters mid-flight; fast-forward the (fixed-step,
+            // deterministic) sim so a late joiner lands in the settled world, not one where
+            // old debris is still raining down
+            for (int i = 0; i < 12 * 120 && !world.clusters.empty(); i++) {
+                world.stepClusters(1.f / 120.f, nullptr, nullptr);
+                for (auto& fc : world.clusters)
+                    if (fc.landed) ren.destroyClusterMesh(fc);
+                world.clusters.erase(std::remove_if(world.clusters.begin(), world.clusters.end(),
+                                     [](const FallingCluster& fc) { return fc.landed; }), world.clusters.end());
+            }
             state = ST_PLAYING;
             player.pos = mapInfo.spawn;
             player.yaw = mapInfo.spawnYaw;
@@ -473,19 +512,29 @@ struct Game {
             weapons.current = (Tool)t;
             audio.play(SND_CLICK, 0.5f);
         }
+        Tool toolBefore = weapons.current;
         for (int k = 0; k < 10 && k < TOOL_COUNT; k++) {
             char key = (char)(k < 9 ? '1' + k : '0');
             if (in.keyPressed[(unsigned char)key]) { weapons.current = (Tool)k; audio.play(SND_CLICK, 0.5f); }
         }
+        // switching tools abandons any half-placed plank/cable anchor
+        if (weapons.current != toolBefore) weapons.plankPending = weapons.cablePending = false;
 
         vec3 eye = player.eye();
         vec3 dir = player.forward();
 
-        // loose-voxel pickup: hold right-click to grab and carry a piece of debris. The
-        // spray can already uses right-click for its own color-cycle, so grabbing is
-        // unavailable while it's the equipped tool — a small, honest simplification rather
-        // than a real per-tool "off-hand" system.
-        if (weapons.current != TOOL_SPRAYCAN) {
+        // right-click cancels a pending plank/cable anchor (and doesn't also grab)
+        bool cancelledPending = false;
+        if ((weapons.plankPending || weapons.cablePending) && in.mousePressed[1]) {
+            weapons.plankPending = weapons.cablePending = false;
+            cancelledPending = true;
+            audio.play(SND_CLICK, 0.4f);
+        }
+
+        // loose-voxel pickup: hold right-click to grab and carry a piece of debris; left-click
+        // while carrying HURLS it (hard enough to smash glass). The spray can already uses
+        // right-click for its own color-cycle, so grabbing is unavailable while it's equipped.
+        if (weapons.current != TOOL_SPRAYCAN && !cancelledPending) {
             if (grabbedProp < 0 && in.mousePressed[1]) {
                 int idx = loose.findGrabbable(eye, dir, 2.5f);
                 if (idx >= 0) {
@@ -495,7 +544,16 @@ struct Game {
                 }
             }
             if (grabbedProp >= 0 && grabbedProp < (int)loose.props.size()) {
-                if (!in.mouseDown[1]) {
+                if (in.mousePressed[0]) {
+                    // throw
+                    LooseVoxel& lv = loose.props[grabbedProp];
+                    lv.held = false;
+                    lv.resting = false;
+                    lv.thrown = true;
+                    lv.vel = dir * 16.f + vec3(0, 2.5f, 0);
+                    grabbedProp = -1;
+                    audio.play(SND_SLEDGE_SWING, 0.8f);
+                } else if (!in.mouseDown[1]) {
                     LooseVoxel& lv = loose.props[grabbedProp];
                     lv.held = false;
                     lv.resting = false;
@@ -507,8 +565,8 @@ struct Game {
                     lv.pos = vlerp(lv.pos, carryPos, clampf(dt * 14.f, 0.f, 1.f));
                     lv.vel = vec3(0, 0, 0);
                 }
-            } else grabbedProp = -1;
-        } else if (grabbedProp >= 0) {
+            } else if (grabbedProp >= 0) grabbedProp = -1;
+        } else if (grabbedProp >= 0 && weapons.current == TOOL_SPRAYCAN) {
             if (grabbedProp < (int)loose.props.size()) loose.props[grabbedProp].held = false;
             grabbedProp = -1;
         }
@@ -536,6 +594,8 @@ struct Game {
                 case TOOL_NITRO: fireNitro(wctx, eye, dir); break;
                 case TOOL_ROCKET: fireRocket(wctx, weapons, eye, dir, true); break;
                 case TOOL_MINIGUN: fireMinigun(wctx, weapons, eye, dir, shotRng.next()); break;
+                case TOOL_PLANK: firePlank(wctx, weapons, eye, dir); break;
+                case TOOL_CABLE: fireCable(wctx, weapons, eye, dir); break;
                 default: break;
             }
         }
@@ -549,32 +609,49 @@ struct Game {
 
         updateRockets(wctx, weapons, dt);
         updatePlacedBombs(wctx, weapons, dt);
+        updateWinches(wctx, weapons, dt);
         particles.update(dt, world);
         fires.update(dt, wctx, mapInfo.waterLevel, mapInfo.hasWater);
-        loose.update(dt, world);
+        // thrown props smash glass where they land (networked via the normal op path)
+        loose.update(dt, world, [&](vec3 p, vec3 v) {
+            DestructionOp op;
+            op.x = p.x; op.y = p.y; op.z = p.z;
+            op.radius = 0.35f;
+            op.matMask = (1u << M_LIGHT);
+            vec3 vn = vnorm(v);
+            op.px = vn.x; op.py = vn.y; op.pz = vn.z;
+            op.big = 0;
+            onLocalOp(op);
+        });
 
-        // falling clusters
+        // dynamic falling clusters: deterministic fixed-step physics (explosion-thrown debris
+        // that tumbles out, crushes glass it lands on, shatters at its impact face, and
+        // settles back into the voxel grid as solid rubble)
+        bool crushedGlass = false;
+        world.stepClusters(dt,
+            [&](int x, int y, int z, uint8_t pal) {   // cluster voxel shattered
+                const PalEntry& pe = world.palette[pal];
+                vec3 vp((x + 0.5f) * VOXEL_SIZE, (y + 0.5f) * VOXEL_SIZE, (z + 0.5f) * VOXEL_SIZE);
+                particles.voxelDebris(vp, pe.r, pe.g, pe.b, vec3(fxRng.sf(), 0.4f, fxRng.sf()), 2.2f);
+                if (fxRng.uf() < 0.10f) loose.spawn(vp, pal, vec3(fxRng.sf(), fxRng.uf() * 0.5f, fxRng.sf()) * 1.8f);
+            },
+            [&](int x, int y, int z, uint8_t pal) {   // world voxel crushed by landing debris
+                const PalEntry& pe = world.palette[pal];
+                vec3 vp((x + 0.5f) * VOXEL_SIZE, (y + 0.5f) * VOXEL_SIZE, (z + 0.5f) * VOXEL_SIZE);
+                particles.voxelDebris(vp, pe.r, pe.g, pe.b, vec3(0, -0.4f, 0), 1.8f);
+                crushedGlass |= (pe.mat == M_LIGHT);
+            });
+        if (crushedGlass) audio.play(SND_GLASS, 0.7f);
         for (auto& fc : world.clusters) {
-            fc.t += dt;
-            float g = 22.f;
-            float d = 0.5f * g * fc.t * fc.t;
-            if (d >= fc.drop * VOXEL_SIZE && !fc.landed) {
-                fc.landed = true;
-                Rng lr((uint32_t)(fc.center.x * 97.f) + (uint32_t)(fc.center.z * 131.f) + 1);
-                world.landCluster(fc, [&](int x, int y, int z, uint8_t pal) {
-                    const PalEntry& pe = world.palette[pal];
-                    vec3 vp((x + 0.5f) * VOXEL_SIZE, (y + 0.5f) * VOXEL_SIZE, (z + 0.5f) * VOXEL_SIZE);
-                    particles.voxelDebris(vp, pe.r, pe.g, pe.b, vec3(lr.sf(), 0.3f, lr.sf()), 2.f);
-                    if (lr.uf() < 0.12f) loose.spawn(vp, pal, vec3(lr.sf(), lr.uf() * 0.5f, lr.sf()) * 1.5f);
-                });
-                if (fc.drop >= 6) {
-                    shakeAmp = std::max(shakeAmp, 0.35f);
-                    audio.playAt(SND_DEBRIS, fc.center, 1.2f);
-                    for (int i = 0; i < 10; i++)
-                        particles.dust(fc.center, vec3(lr.sf(), 0.6f, lr.sf()) * 2.f, 0.9f, 1.4f, 0.5f, 0.48f, 0.44f);
-                }
-                ren.destroyClusterMesh(fc);
+            if (fc.impactSpeed > 5.f) {
+                vec3 at = fc.center + fc.offset;
+                shakeAmp = std::max(shakeAmp, std::min(0.5f, fc.impactSpeed * 0.04f));
+                audio.playAt(SND_DEBRIS, at, std::min(1.4f, fc.impactSpeed * 0.12f));
+                for (int i = 0; i < 8; i++)
+                    particles.dust(at, vec3(fxRng.sf(), 0.6f, fxRng.sf()) * 2.f, 0.9f, 1.4f, 0.5f, 0.48f, 0.44f);
+                fc.impactSpeed = 0;
             }
+            if (fc.landed) ren.destroyClusterMesh(fc);
         }
         world.clusters.erase(std::remove_if(world.clusters.begin(), world.clusters.end(),
                              [](const FallingCluster& fc) { return fc.landed; }), world.clusters.end());
@@ -631,6 +708,28 @@ struct Game {
                 const PalEntry& pe = world.palette[lv.pal];
                 ren.modelBox(lv.pos, vec3(0.11f, 0.11f, 0.11f), pe.r, pe.g, pe.b);
             }
+            ren.modelDraw(mat4::identity(), mapInfo, mapInfo.ambient);
+        }
+
+        // winch cables (sagging rope that pulls taut as the timer runs down) and the marker
+        // for a pending plank/cable first anchor
+        if (!weapons.winches.empty() || weapons.plankPending || weapons.cablePending) {
+            ren.modelBegin();
+            for (auto& wn : weapons.winches) {
+                const int SEGS = 14;
+                float sag = std::max(0.12f, vlen(wn.b - wn.a) * 0.05f) * clampf(wn.timer / 1.1f, 0.f, 1.f);
+                for (int i = 0; i < SEGS; i++) {
+                    float t0 = (float)i / SEGS, t1 = (float)(i + 1) / SEGS;
+                    vec3 p0 = vlerp(wn.a, wn.b, t0); p0.y -= sinf(t0 * 3.14159f) * sag;
+                    vec3 p1 = vlerp(wn.a, wn.b, t1); p1.y -= sinf(t1 * 3.14159f) * sag;
+                    vec3 m = (p0 + p1) * 0.5f, d = (p1 - p0) * 0.5f;
+                    ren.modelBox(m, vec3(std::max(0.03f, fabsf(d.x)), std::max(0.03f, fabsf(d.y)), std::max(0.03f, fabsf(d.z))), 46, 42, 38);
+                }
+                ren.modelBox(wn.a, vec3(0.07f, 0.07f, 0.07f), 200, 160, 60, 1);
+                ren.modelBox(wn.b, vec3(0.07f, 0.07f, 0.07f), 200, 160, 60, 1);
+            }
+            if (weapons.plankPending) ren.modelBox(weapons.plankA, vec3(0.08f, 0.08f, 0.08f), 150, 112, 70, 2);
+            if (weapons.cablePending) ren.modelBox(weapons.cableA, vec3(0.08f, 0.08f, 0.08f), 200, 160, 60, 2);
             ren.modelDraw(mat4::identity(), mapInfo, mapInfo.ambient);
         }
 
@@ -744,6 +843,17 @@ struct Game {
                 ren.modelBox(vec3(0.02f, 0.0f, 0.20f - rec * 0.03f), vec3(0.012f, 0.012f, 0.08f), 90, 92, 96);
                 ren.modelBox(vec3(-0.02f, 0.0f, 0.20f - rec * 0.03f), vec3(0.012f, 0.012f, 0.08f), 90, 92, 96);
                 ren.modelBox(vec3(0, -0.08f, 0.02f - rec * 0.03f), vec3(0.025f, 0.06f, 0.06f), 40, 40, 44);
+                break;
+            case TOOL_PLANK:
+                ren.modelBox(vec3(0, -0.02f, -0.06f), vec3(0.035f, 0.012f, 0.24f), 150, 112, 70);
+                ren.modelBox(vec3(0, -0.035f, -0.06f), vec3(0.035f, 0.004f, 0.24f), 112, 82, 52);
+                ren.modelBox(vec3(0, -0.07f, 0.10f), vec3(0.02f, 0.05f, 0.04f), 40, 40, 44);
+                break;
+            case TOOL_CABLE:
+                ren.modelBox(vec3(0, -0.02f, -0.02f), vec3(0.04f, 0.05f, 0.13f), 96, 100, 106);
+                ren.modelBox(vec3(0, 0.0f, -0.17f), vec3(0.02f, 0.02f, 0.03f), 200, 160, 60, 1);
+                ren.modelBox(vec3(0, 0.045f, 0.02f), vec3(0.028f, 0.028f, 0.05f), 46, 42, 38);
+                ren.modelBox(vec3(0, -0.09f, 0.05f), vec3(0.02f, 0.05f, 0.04f), 40, 40, 44);
                 break;
             case TOOL_ROCKET:
             default:
@@ -1010,9 +1120,15 @@ struct Game {
                 ren.uiRect(cx + bs - bt, cy + bs - bl, bt, bl, gr, gg, gb, 0.9f);
             }
             if (grabbedProp >= 0) {
-                const char* lbl = "CARRYING";
+                const char* lbl = "CARRYING - LMB THROW";
                 ren.uiTextCentered(lbl, cx, cy + 22, 1.4f, UI_ACCENT_R, UI_ACCENT_G, UI_ACCENT_B, 0.85f);
             }
+            if (weapons.plankPending)
+                ren.uiTextCentered("PLANK ANCHORED - CLICK SECOND POINT (RMB CANCEL)",
+                                   cx, cy + 40, 1.4f, UI_ACCENT_R, UI_ACCENT_G, UI_ACCENT_B, 0.9f);
+            if (weapons.cablePending)
+                ren.uiTextCentered("CABLE HOOKED - CLICK SECOND POINT (RMB CANCEL)",
+                                   cx, cy + 40, 1.4f, UI_ACCENT_R, UI_ACCENT_G, UI_ACCENT_B, 0.9f);
         }
         // tool indicator: minimal corner tag, no panel — name + underline + a tick per tool
         {

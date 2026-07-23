@@ -1165,15 +1165,13 @@ struct Renderer {
             glBindVertexArray(c.vao);
             glDrawElements(GL_TRIANGLES, (GLsizei)c.indexCount, GL_UNSIGNED_INT, nullptr);
         }
-        // falling clusters (offset by fall distance)
+        // falling clusters (dynamic bodies: full 3D offset from the physics sim).
+        // a mid-flight shatter re-meshes the cluster: free the stale GPU buffers first.
         for (auto& fc : w.clusters) {
+            if (!fc.gpuReady && fc.vao) destroyClusterMesh(fc);
             if (!fc.gpuReady) uploadClusterMesh(fc);
             if (fc.indexCount == 0) continue;
-            float g = 22.f;
-            float d = 0.5f * g * fc.t * fc.t;
-            float maxD = fc.drop * VOXEL_SIZE;
-            if (d > maxD) d = maxD;
-            glUniform3f(glGetUniformLocation(progChunk, "uOffset"), 0, -d, 0);
+            glUniform3f(glGetUniformLocation(progChunk, "uOffset"), fc.offset.x, fc.offset.y, fc.offset.z);
             glBindVertexArray(fc.vao);
             glDrawElements(GL_TRIANGLES, (GLsizei)fc.indexCount, GL_UNSIGNED_INT, nullptr);
         }

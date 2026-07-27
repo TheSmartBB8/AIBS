@@ -111,7 +111,9 @@ void main() {
   vec3  diffAlb = albedo * (1.0 - metal);
 
   vec3 Pv = P / uVoxel;
-  vec3 ro = Pv + N * 0.03;
+  vec3 ro = Pv + N * 0.25;   // quarter-voxel. At 0.03 (3 mm) the shadow ray's first
+                             // volFetch can land back inside the originating voxel, which
+                             // showed up as isolated black pixels on flat sunlit ground.
 
   seedRng(uvec3(uvec2(gl_FragCoord.xy), uint(uFrameSeed)));
 
@@ -141,8 +143,8 @@ void main() {
     float atten = 1.0 / (1.0 + dm * dm);
     vec3 contrib = uLightColor[i] * (NoL * atten);
     if (max(contrib.r, max(contrib.g, contrib.b)) < 0.002) continue;
-    float d = traceShadow(ro, Ld, dist - uLightRadius[i] * 0.85, 220);
-    if (d >= dist - uLightRadius[i] * 0.85) direct += contrib;
+    float d = traceShadow(ro, Ld, dist - uLightRadius[i] * 0.02, 220);
+    if (d >= dist - uLightRadius[i] * 0.02) direct += contrib;
   }
 
   // ---------------------------------------------------------------- ambient / AO

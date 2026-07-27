@@ -49,35 +49,41 @@ export const DEFAULTS = {
   sunAzimuth: 208,        // degrees; where the sun sits in the sky
   sunElevation: 23,       // degrees above the horizon
   sunColor: [1.0, 0.76, 0.50],
-  sunPower: 3.05,
-  sunAngle: 0.030,        // radians, angular radius -> penumbra width
+  sunPower: 3.9,
+  sunAngle: 0.008,        // angular RADIUS. 0.030 = a 3.4 deg sun disc, ~6x the real sun,
+                          // which smeared every shadow into a shapeless bruise.
   sunSoftness: 1.0,
 
-  skyZenith: [0.075, 0.175, 0.42],
-  skyHorizon: [0.52, 0.60, 0.72],
+  skyZenith: [0.045, 0.12, 0.34],
+  skyHorizon: [0.60, 0.62, 0.66],
   skyGround: [0.16, 0.145, 0.125],
-  skyIntensity: 1.75,
+  skyIntensity: 1.40,
   sunTint: [0.85, 0.55, 0.30],
 
   aoRays: 2,
-  aoRange: 46,            // voxels (4.6 m) — beyond this a ray counts as fully open sky
-  aoStrength: 0.85,
+  aoRange: 12,            // voxels (1.2 m). At 46 the gradient was stretched over 4.6 m,
+                          // so contact darkening under debris was invisible.
+  aoStrength: 1.0,
   bakedAoMix: 0.45,
-  bounce: 0.42,
+  bounce: 0.95,           // albedo-tinted sky bounce. Interiors were collapsing to pure
+                          // black: indoors every AO ray hits, so ambient went to zero and
+                          // nothing but this term lights a room through its openings.
   specRange: 300,
   emissivePower: 1.0,
   lightScale: 0.22,
-  voxelNoise: 0.055,
+  voxelNoise: 0.16,       // per-voxel grain. At 0.055 a greedy-merged wall still read as
+                          // flat painted vinyl; Teardown surfaces always show the cubes.
 
   fogDensity: 0.0075,
   fogHeight: 3.0,
 
-  exposure: 1.0,
+  exposure: 1.18,
   bloom: 0.22,
   bloomThreshold: 1.75,
   bloomKnee: 0.35,
-  vignette: 0.42,
-  saturation: 1.04,
+  vignette: 0.25,
+  saturation: 0.95,       // the sRGB->linear decode already expands chroma; Teardown's
+                          // palette is dusty, not toybox.
   contrast: 1.03,
   lift: 0.0,
 
@@ -179,6 +185,7 @@ export class VoxelRenderer {
       uSunDir: { value: this.sunDir },
       uSunColor: { value: new THREE.Vector3(1, 1, 1) },
       uSunAngle: { value: 0.03 },
+      uTime: { value: 0 },
       uSkyZenith: { value: new THREE.Vector3() },
       uSkyHorizon: { value: new THREE.Vector3() },
       uSkyGround: { value: new THREE.Vector3() },
@@ -491,6 +498,9 @@ export class VoxelRenderer {
     }
 
     const p = this.params;
+    // Clouds drift with wall-clock time, but the value is frozen while a still frame
+    // accumulates — otherwise the sky would smear across the temporal history.
+    if (this.samples === 0) this.shared.uTime.value = performance.now() * 0.001;
     if (this.samples < p.maxSamples) {
       this._renderSample();
       this.samples++;

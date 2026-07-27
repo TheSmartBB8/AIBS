@@ -74,6 +74,7 @@ export const SKY = /* glsl */`
 uniform vec3 uSunDir;         // direction light travels (away from the sun)
 uniform vec3 uSunColor;       // linear radiance of the sun disc
 uniform float uSunAngle;      // angular radius, radians (bigger = softer shadows)
+uniform float uTime;          // seconds, drives cloud drift
 uniform vec3 uSkyZenith;
 uniform vec3 uSkyHorizon;
 uniform vec3 uSkyGround;
@@ -83,6 +84,25 @@ uniform vec3 uSunTint;
 vec3 sunDirTo() { return -uSunDir; }
 
 // Radiance arriving from direction d, *excluding* the sun disc. Used for ambient.
+// Value noise for the cloud layer. Cheap, and only ever evaluated on sky rays.
+float skyHash(vec2 p) {
+  p = fract(p * vec2(127.1, 311.7));
+  p += dot(p, p + 34.23);
+  return fract(p.x * p.y);
+}
+float skyVNoise(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  float a = skyHash(i), b = skyHash(i + vec2(1.0, 0.0));
+  float c = skyHash(i + vec2(0.0, 1.0)), dd = skyHash(i + vec2(1.0, 1.0));
+  return mix(mix(a, b, f.x), mix(c, dd, f.x), f.y);
+}
+float skyFbm(vec2 p) {
+  float v = 0.0, a = 0.5;
+  for (int i = 0; i < 4; i++) { v += a * skyVNoise(p); p *= 2.13; a *= 0.5; }
+  return v;
+}
+
 vec3 skyRadiance(vec3 d) {
   vec3 S = sunDirTo();
   float y = clamp(d.y, -1.0, 1.0);
@@ -94,6 +114,21 @@ vec3 skyRadiance(vec3 d) {
   float cs = max(dot(d, S), 0.0);
   float mie = pow(cs, 5.0) * 0.55 + pow(cs, 30.0) * 0.9;
   c += uSunTint * mie * (1.0 - 0.55 * smoothstep(0.0, 0.7, abs(y)));
+
+  // Cloud layer. An empty gradient sky is roughly a quarter of every outdoor frame and
+  // reads as a grey void; it also gives glass and metal nothing to reflect. Projecting
+  // noise onto a plane above the camera costs almost nothing because it only runs on sky
+  // rays, and it pays off twice — once in the sky, once in every reflection.
+  if (y > 0.015) {
+    vec2 uv = d.xz / max(y + 0.14, 0.02) * 1.35 + vec2(uTime * 0.006, uTime * 0.0022);
+    float n = skyFbm(uv * 1.25);
+    float cover = smoothstep(0.48, 0.78, n);
+    float fade = smoothstep(0.015, 0.16, y);
+    // lit rim on the sun side, cool grey in the body
+    float lit = pow(max(dot(normalize(d), S), 0.0), 2.0);
+    vec3 cloud = mix(vec3(0.62, 0.66, 0.74), uSunColor * 1.25 + vec3(0.35), 0.35 + 0.5 * lit);
+    c = mix(c, cloud, cover * fade * 0.82);
+  }
   return c * uSkyIntensity;
 }
 
@@ -216,7 +251,10 @@ float traceShadow(vec3 ro, vec3 rd, float tMax, int maxSteps) {
     vec3 te = (cmin + cs * pos01 - ro) * inv;
     t = min(min(te.x, te.y), te.z) + 1e-3;
   }
-  return tMax;
+  // Step budget exhausted. Returning tMax would report "nothing in the way", which lets
+  // sunlight punch straight through thick geometry at grazing angles — it showed up as a
+  // lamp glow bleeding through an exterior wall. Fail closed instead.
+  return -1.0;
 }
 `;
 

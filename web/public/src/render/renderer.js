@@ -72,6 +72,8 @@ export const DEFAULTS = {
   specRange: 300,
   emissivePower: 1.0,
   lightScale: 0.22,
+  voxelEdge: 0.16,        // seam darkening between adjacent voxels — the strongest cue
+                          // that a merged quad is actually made of cubes.
   voxelNoise: 0.16,       // per-voxel grain. At 0.055 a greedy-merged wall still read as
                           // flat painted vinyl; Teardown surfaces always show the cubes.
 
@@ -228,6 +230,7 @@ export class VoxelRenderer {
       uPalCol: { value: this.palColTex },
       uVoxel: { value: VOXEL },
       uVoxelNoise: { value: this.params.voxelNoise },
+      uVoxelEdge: { value: this.params.voxelEdge },
     };
   }
 
@@ -321,6 +324,7 @@ export class VoxelRenderer {
     s.uFogDensity.value = p.fogDensity;
     s.uFogHeight.value = p.fogHeight;
     this.gbufUniforms.uVoxelNoise.value = p.voxelNoise;
+    this.gbufUniforms.uVoxelEdge.value = p.voxelEdge;
 
     if (this.traceMaterial.defines.AO_RAYS !== p.aoRays) {
       this.traceMaterial.defines.AO_RAYS = p.aoRays;

@@ -41,6 +41,7 @@ varying float vPal;
 uniform sampler2D uPalCol;
 uniform float uVoxel;
 uniform float uVoxelNoise;
+uniform float uVoxelEdge;
 
 layout(location = 0) out vec4 oAlbedo;
 layout(location = 1) out vec4 oNormal;
@@ -66,6 +67,28 @@ void main() {
   vec3 cell = floor(vWorld / uVoxel - N * 0.5);
   float g = hash13(cell) - 0.5;
   albedo *= 1.0 + g * uVoxelNoise;
+
+  // Per-voxel chroma jitter. A pure brightness jitter still reads as one painted surface
+  // with lighting variation; real voxel scenes vary in hue too, which is what makes a
+  // patch of grass or dirt read as thousands of separate cubes rather than a textured
+  // plane. Small and decorrelated from the value jitter above.
+  vec3 h3 = vec3(hash13(cell + 11.3), hash13(cell + 27.7), hash13(cell + 41.1)) - 0.5;
+  albedo *= 1.0 + h3 * uVoxelNoise * 0.55;
+
+  // Voxel edge definition. The single strongest cue that a surface is made of cubes is a
+  // faint darkening in the seam between adjacent voxels — without it greedy-merged quads
+  // are literally one flat polygon and no amount of colour noise reads as geometry.
+  // Distance to the nearest cell border, measured only in the two axes that lie in this
+  // face's plane so the seam never runs across the face's own normal direction.
+  vec3 f = abs(fract(vWorld / uVoxel) - 0.5);      // 0.5 at centre -> 0 at the border
+  vec3 an = abs(N);
+  // pick the two in-plane axes by zeroing the one along the normal
+  float e = 1.0;
+  if (an.x < 0.5) e = min(e, f.x);
+  if (an.y < 0.5) e = min(e, f.y);
+  if (an.z < 0.5) e = min(e, f.z);
+  float seam = smoothstep(0.0, 0.16, e);           // 0 in the seam, 1 in the cell centre
+  albedo *= mix(1.0 - uVoxelEdge, 1.0, seam);
 
   oAlbedo   = vec4(albedo, pc.a * 8.0);
   oNormal   = vec4(N, vAo);

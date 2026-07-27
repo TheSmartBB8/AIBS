@@ -340,6 +340,31 @@ export class VoxelRenderer {
     return this.lights;
   }
 
+  /**
+   * Merge transient gameplay lights (explosion flashes, muzzle flare, fire) with the
+   * static emissive set for this frame. There are only 8 light slots, so transient
+   * lights take priority — a blast going off matters more than a distant lamp — and the
+   * static set fills whatever is left.
+   */
+  setLights(transient) {
+    if (!transient || transient.length === 0) {
+      if (this._hadTransient) { this._hadTransient = false; this.lights = this._staticLights || this.lights; this._applyLights(); }
+      return;
+    }
+    this._staticLights = this._staticLights || this.lights;
+    const dyn = transient.slice(0, 8).map((L) => ({
+      pos: L.pos,
+      color: L.color,
+      // fade the flash out over its lifetime instead of cutting it off abruptly
+      power: L.intensity * Math.max(0, 1 - (L.age ?? 0) / Math.max(1e-3, L.ttl ?? 0.1)),
+      radius: L.radius,
+    }));
+    this.lights = dyn.concat(this._staticLights.slice(0, Math.max(0, 8 - dyn.length)));
+    this._hadTransient = true;
+    this._applyLights();
+    this.resetAccumulation();
+  }
+
   _applyLights() {
     const s = this.shared;
     const n = Math.min(8, this.lights.length);

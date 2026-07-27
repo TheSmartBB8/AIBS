@@ -1,0 +1,172 @@
+// engine.js — the wiring layer.
+//
+// The simulation systems were each built to be independently testable, so none of them
+// import each other: tools reach the world only through injected callbacks, physics owns
+// voxel edits, fx owns fire and particles. This module is the one place that knows about
+// all of them, and it exists to keep that decoupling intact rather than letting the
+// systems grow references to one another.
+//
+// Coordinate convention: the tool callbacks take flat scalars (x, y, z, ...), while the
+// physics helpers take arrays. Converting here — in one place — is deliberate; doing it
+// at each call site is where sign and ordering mistakes breed.
+
+import { PhysicsWorld } from '../physics/index.js';
+import { ToolSystem } from '../tools/index.js';
+import { TOOL, TOOL_ORDER } from '../tools/registry.js';
+import { ParticleSystem } from '../fx/particles.js';
+import { FireSim } from '../fx/fire.js';
+import { VOXEL } from '../voxel/world.js';
+
+export class Engine {
+  constructor(world, palette, opts = {}) {
+    this.world = world;
+    this.palette = palette;
+    this.time = 0;
+    this.lights = [];              // transient lights the renderer consumes each frame
+    this.sounds = [];              // queued sound events (no audio backend yet)
+    this.ops = [];                 // networkable op log; nothing consumes it yet
+
+    this.physics = new PhysicsWorld(world, palette, { seed: opts.seed ?? 1337 });
+    this.particles = new ParticleSystem({ seed: opts.seed ?? 1337 });
+    this.fire = new FireSim(world, palette, {
+      seed: opts.seed ?? 1337,
+      // Fire must not delete voxels behind physics' back — burning through a support has
+      // to run the same integrity pass as any other edit, or a building can end up
+      // floating because the thing holding it up quietly burned away.
+      onBurnAway: (x, y, z, pal) => {
+        world.set(x, y, z, 0);
+        this.physics.afterEdit({ x0: x - 1, y0: y - 1, z0: z - 1, x1: x + 1, y1: y + 1, z1: z + 1 });
+        this.particles.impactBurst([(x + 0.5) * VOXEL, (y + 0.5) * VOXEL, (z + 0.5) * VOXEL], [0, 1, 0], pal, 0.4);
+      },
+      onIgnite: (x, y, z) => {
+        this.particles.fireEmit([(x + 0.5) * VOXEL, (y + 0.5) * VOXEL, (z + 0.5) * VOXEL], 1);
+      },
+    });
+
+    this.tools = new ToolSystem(this.makeToolContext());
+    this.stats = { carves: 0, explosions: 0, ignitions: 0 };
+  }
+
+  /** The callback surface the tools were written against. */
+  makeToolContext() {
+    const P = this.physics;
+    return {
+      world: this.world,
+      palette: this.palette,
+      rng: Math.random,
+
+      carveSphere: (x, y, z, radius, energy, opts = {}) => {
+        this.stats.carves++;
+        return P.carveBoxAt
+          ? P.explode([x, y, z], radius, energy, { ...opts, impulse: 0, quiet: true })
+          : null;
+      },
+      carveCapsule: (x0, y0, z0, x1, y1, z1, radius, energy, opts = {}) => {
+        this.stats.carves++;
+        return P.cut([x0, y0, z0], [x1, y1, z1], radius, energy, opts);
+      },
+      explode: (x, y, z, radius, energy, opts = {}) => {
+        this.stats.explosions++;
+        const res = P.explode([x, y, z], radius, energy, opts);
+        this.particles.explosionBurst([x, y, z], radius);
+        this.addLight(x, y, z, { color: [1.0, 0.62, 0.28], intensity: 26, radius: radius * 5, ttl: 0.35 });
+        return res;
+      },
+      applyImpulse: (x, y, z, ix, iy, iz, opts = {}) => {
+        // Radial blasts push every nearby body; a directed impulse (a sledge hit) pushes
+        // whatever is at the point. Recoil is flagged `self` and is the player's problem,
+        // not the world's.
+        if (opts.self) return;
+        const at = [x, y, z];
+        if (opts.radial) {
+          const r = opts.radius ?? 2, s = opts.strength ?? 1000;
+          for (const b of P.bodies) {
+            const dx = b.pos[0] - x, dy = b.pos[1] - y, dz = b.pos[2] - z;
+            const d = Math.hypot(dx, dy, dz);
+            if (d > r || d < 1e-6) continue;
+            const f = (1 - d / r) * s;
+            b.applyImpulse(at, [dx / d * f, dy / d * f, dz / d * f]);
+          }
+        } else {
+          for (const b of P.bodies) {
+            const d = Math.hypot(b.pos[0] - x, b.pos[1] - y, b.pos[2] - z);
+            if (d > (opts.radius ?? 0.6) + 0.5) continue;
+            b.applyImpulse(at, [ix, iy, iz]);
+          }
+        }
+      },
+
+      spawnParticles: (kind, x, y, z, opts = {}) => {
+        const p = [x, y, z];
+        switch (kind) {
+          case 'explosion': this.particles.explosionBurst(p, opts.radius ?? 1.5); break;
+          case 'smoke':     this.particles.smokePlume(p, opts.strength ?? 1); break;
+          case 'sparks':
+          case 'ricochet':  this.particles.impactBurst(p, opts.normal ?? [0, 1, 0], 0, 1.4); break;
+          case 'splinters':
+          case 'debris':    this.particles.impactBurst(p, opts.normal ?? [0, 1, 0], opts.pal ?? 0, 1); break;
+          default:          this.particles.impactBurst(p, opts.normal ?? [0, 1, 0], 0, 0.8); break;
+        }
+      },
+
+      igniteAt: (x, y, z, opts = {}) => {
+        this.stats.ignitions++;
+        const r = Math.max(1, Math.round((opts.r ?? 0.2) / VOXEL));
+        const vx = Math.floor(x / VOXEL), vy = Math.floor(y / VOXEL), vz = Math.floor(z / VOXEL);
+        let lit = 0;
+        for (let dz = -r; dz <= r; dz++)
+          for (let dy = -r; dy <= r; dy++)
+            for (let dx = -r; dx <= r; dx++)
+              if (this.fire.ignite(vx + dx, vy + dy, vz + dz)) lit++;
+        return lit;
+      },
+      extinguishAt: (x, y, z, opts = {}) => {
+        if (opts.dir) return this.fire.extinguishCone([x, y, z], opts.dir, opts.range ?? 4, opts.cone ?? 22, opts.power ?? 1);
+        return this.fire.extinguishSphere([x, y, z], opts.radius ?? 1, opts.power ?? 1);
+      },
+
+      playSound: (name, opts = {}) => { this.sounds.push({ name, ...opts, t: this.time }); },
+      addLight: (x, y, z, opts = {}) => this.addLight(x, y, z, opts),
+      emitOp: (op) => { this.ops.push(op); if (this.ops.length > 4096) this.ops.shift(); },
+    };
+  }
+
+  addLight(x, y, z, opts = {}) {
+    this.lights.push({
+      pos: [x, y, z],
+      color: opts.color ?? [1, 0.8, 0.5],
+      intensity: opts.intensity ?? 8,
+      radius: opts.radius ?? 3,
+      ttl: opts.ttl ?? 0.1,
+      age: 0,
+    });
+    if (this.lights.length > 64) this.lights.shift();
+  }
+
+  selectTool(id) { this.tools.select(id); }
+  nextTool(dir = 1) {
+    const order = TOOL_ORDER;
+    const i = order.indexOf(this.tools.current);
+    this.tools.select(order[((i + dir) % order.length + order.length) % order.length]);
+  }
+  get currentTool() { return this.tools.current; }
+
+  triggerDown(eye, dir) { return this.tools.triggerDown(eye, dir); }
+  triggerUp(eye, dir) { return this.tools.triggerUp?.(eye, dir); }
+
+  update(dt, aim) {
+    this.time += dt;
+    if (aim) this.tools.setAim?.(aim.eye, aim.dir);
+    this.tools.update(dt, aim?.eye, aim?.dir);
+    this.physics.step(dt);
+    this.fire.update(dt);
+    this.particles.update(dt);
+    for (let i = this.lights.length - 1; i >= 0; i--) {
+      const L = this.lights[i];
+      L.age += dt;
+      if (L.age >= L.ttl) this.lights.splice(i, 1);
+    }
+  }
+}
+
+export { TOOL, TOOL_ORDER };

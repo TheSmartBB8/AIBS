@@ -1,0 +1,43 @@
+// demo.mjs — stage a destruction event, let debris settle, then capture before/after.
+import { chromium } from 'playwright';
+import { mkdirSync, writeFileSync } from 'fs';
+const out = process.argv[2] || 'shots/demo';
+const view = process.argv[3] || 'street';
+mkdirSync(out, { recursive: true });
+const browser = await chromium.launch({ args: ['--enable-unsafe-swiftshader'] });
+const page = await browser.newPage({ viewport: { width: 640, height: 360 } });
+const errs = [];
+page.on('pageerror', e => errs.push('PAGEERROR: ' + e.message));
+page.on('console', m => { if (m.type() === 'error') errs.push(m.text().slice(0, 200)); });
+await page.goto('http://127.0.0.1:8899/index.html', { waitUntil: 'load', timeout: 60000 });
+await page.waitForFunction(() => window.__app?.ready === true, { timeout: 120000 });
+console.log('stats:', JSON.stringify(await page.evaluate(() => window.__app.stats())));
+
+const settle = async (target = 96) => {
+  let last = -1, stall = 0;
+  for (let i = 0; i < 200; i++) {
+    await page.evaluate(() => window.__app.renderFrames(4));
+    const s = await page.evaluate(() => window.__app.renderer.samples ?? 0);
+    if (s >= target) break;
+    if (s === last && ++stall > 3) break; else if (s !== last) stall = 0;
+    last = s;
+  }
+};
+
+await page.evaluate((v) => window.__app.setView(v), view);
+await settle();
+writeFileSync(`${out}/1_before.png`, await page.screenshot());
+console.log('wrote before');
+
+// Rocket the warehouse facade, then let the debris fall and settle.
+const solidBefore = await page.evaluate(() => window.__app.countSolid());
+await page.evaluate(() => window.__app.fireAt('rocket', [6.0, 2.6, 4.0], [12.2, 2.4, 8.0], 1));
+await page.evaluate(() => window.__app.simulate(4));
+const solidAfter = await page.evaluate(() => window.__app.countSolid());
+console.log('solid', solidBefore, '->', solidAfter, 'destroyed', solidBefore - solidAfter);
+console.log('post stats:', JSON.stringify(await page.evaluate(() => window.__app.stats())));
+await settle();
+writeFileSync(`${out}/2_after.png`, await page.screenshot());
+console.log('wrote after');
+if (errs.length) { console.log('ERRORS:'); errs.slice(0,8).forEach(e=>console.log(' ',e)); }
+await browser.close();

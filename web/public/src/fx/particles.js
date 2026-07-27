@@ -79,6 +79,13 @@ export const PTYPE_TRAITS = T;
 const SMOKE_HOT = [0.085, 0.078, 0.072];    // dense, near-black, right off the flame
 const SMOKE_COOL = [0.50, 0.495, 0.485];    // thinned-out ash grey, high in the column
 
+// Pulverised masonry is NOT combustion smoke. Demolition dust is pale and warm-grey from
+// the instant it forms — it is powdered brick and plaster, not soot — and it only lightens
+// as it thins. Emitting the near-black SMOKE_HOT ramp for a blast made every explosion look
+// like an oil fire instead of a building coming down.
+const DUST_DENSE = [0.44, 0.40, 0.355];
+const DUST_THIN  = [0.72, 0.695, 0.655];
+
 export class ParticleSystem {
   constructor(opts = {}) {
     const cap = this.capacity = Math.max(1, opts.capacity ?? 8192);
@@ -365,7 +372,10 @@ export class ParticleSystem {
    * Thick dark smoke. `strength` scales size, lifetime and opacity together — 1 is one
    * burning voxel, 3+ is an explosion or a fuel fire.
    */
-  smokePlume(pos, strength = 1) {
+  /**
+   * @param dust when true, emit pale masonry dust rather than dark combustion smoke.
+   */
+  smokePlume(pos, strength = 1, dust = false) {
     const x = readVec(pos, 0), y = readVec(pos, 1), z = readVec(pos, 2);
     const i = this._spawn(PType.SMOKE);
     if (i < 0) return -1;
@@ -381,11 +391,13 @@ export class ParticleSystem {
     this.temp[i] = rng.range(0.85, 1);
     // A slight warm cast at the base, where it is still lit by the fire it came from.
     const w = rng.range(0, 0.05);
+    const hot = dust ? DUST_DENSE : SMOKE_HOT;
+    const cool = dust ? DUST_THIN : SMOKE_COOL;
     setRamp(this, i,
-            SMOKE_HOT[0] + w * 1.6, SMOKE_HOT[1] + w * 0.6, SMOKE_HOT[2],
-            SMOKE_COOL[0] * rng.range(0.85, 1.15),
-            SMOKE_COOL[1] * rng.range(0.85, 1.15),
-            SMOKE_COOL[2] * rng.range(0.85, 1.15));
+            hot[0] + w * 1.6, hot[1] + w * 0.6, hot[2],
+            cool[0] * rng.range(0.85, 1.15),
+            cool[1] * rng.range(0.85, 1.15),
+            cool[2] * rng.range(0.85, 1.15));
     return i;
   }
 
@@ -528,7 +540,7 @@ export class ParticleSystem {
 
     const smokes = Math.min(90, Math.round(22 * s));
     for (let k = 0; k < smokes; k++) {
-      const i = this.smokePlume(pos, 1.6 * s);
+      const i = this.smokePlume(pos, 1.6 * s, true);   // masonry dust, not combustion smoke
       if (i < 0) break;
       rng.unitVec(v);
       const sp = rng.range(1.0, 5.0) * s;

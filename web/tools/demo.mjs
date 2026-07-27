@@ -32,12 +32,17 @@ console.log('wrote before');
 // Rocket the warehouse facade, then let the debris fall and settle.
 const solidBefore = await page.evaluate(() => window.__app.countSolid());
 await page.evaluate(() => window.__app.fireAt('rocket', [6.0, 2.6, 4.0], [12.2, 2.4, 8.0], 1));
-await page.evaluate(() => window.__app.simulate(4));
+// Capture mid-flight first: debris tumbling is the moment worth verifying.
+await page.evaluate(() => window.__app.simulate(0.28));
+await settle(48);
+writeFileSync(`${out}/2_midair.png`, await page.screenshot());
+console.log('midair stats:', JSON.stringify(await page.evaluate(() => window.__app.stats())));
+await page.evaluate(() => window.__app.simulate(5));
 const solidAfter = await page.evaluate(() => window.__app.countSolid());
 console.log('solid', solidBefore, '->', solidAfter, 'destroyed', solidBefore - solidAfter);
 console.log('post stats:', JSON.stringify(await page.evaluate(() => window.__app.stats())));
 await settle();
-writeFileSync(`${out}/2_after.png`, await page.screenshot());
+writeFileSync(`${out}/3_after.png`, await page.screenshot());
 console.log('wrote after');
 if (errs.length) { console.log('ERRORS:'); errs.slice(0,8).forEach(e=>console.log(' ',e)); }
 await browser.close();

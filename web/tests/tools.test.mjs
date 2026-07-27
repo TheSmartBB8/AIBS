@@ -3,6 +3,7 @@
 // injected-callback contract in public/src/tools/context.js.
 
 import { VoxelWorld, VOXEL } from '../public/src/voxel/world.js';
+import { PIPEBOMB_BLAST, BOMB_BLAST, NITRO_BLAST } from '../public/src/tools/explosives.js';
 import { Palette, MAT } from '../public/src/voxel/palette.js';
 import { ToolSystem } from '../public/src/tools/system.js';
 import { TOOL, TOOLS, TOOL_ORDER, getTool, cooldownOf } from '../public/src/tools/registry.js';
@@ -379,7 +380,14 @@ const paletteWith = () => {
   CHECK(ctx.calls.explode.length === 1, 'rocket detonates on contact, long before any fuse');
   const ev = sys.events.find(e => e.type === 'detonate');
   CHECK(ev.cause === 'impact', 'the detonation is attributed to the impact');
-  CHECK(ev.radius > 4, `rocket has the largest blast radius (${ev.radius} m)`);
+  // Assert the intended ordering rather than a magic number, so retuning a radius does
+  // not silently invalidate the claim this test is actually making. A shoulder-fired
+  // rocket out-blasts a pipe bomb and a planted bomb; a whole canister of nitroglycerin
+  // still beats it.
+  CHECK(ev.radius > PIPEBOMB_BLAST.radius && ev.radius > BOMB_BLAST.radius,
+        `rocket out-blasts the pipe bomb and the planted bomb (${ev.radius} m)`);
+  CHECK(NITRO_BLAST.radius > ev.radius,
+        `a nitroglycerin canister is the biggest blast in the game (${NITRO_BLAST.radius} m)`);
 }
 
 // ================================================ ToolSystem: bomb timer

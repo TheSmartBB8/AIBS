@@ -152,7 +152,11 @@ export const nitro = {
 
 // -------------------------------------------------------------------- rocket launcher
 export const ROCKET_SPEED = 26;
-export const ROCKET_BLAST = { radius: 4.5, energy: 3.6, impulse: 6000, kind: 'rocket' };
+// Retuned from 4.5 m, which punched a ~50k-voxel hole clean through a warehouse — far
+// larger than a Teardown rocket, which leaves a big but contained crater you can still
+// read the building around. 3.4 m keeps it the biggest directly-fired blast (above the
+// planted bomb) while a whole nitroglycerin canister still beats it.
+export const ROCKET_BLAST = { radius: 3.4, energy: 3.2, impulse: 4800, kind: 'rocket' };
 
 export const rocket = {
   id: 'rocket', name: 'Rocket launcher', slot: 11,

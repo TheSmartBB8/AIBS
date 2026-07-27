@@ -24,6 +24,7 @@ import { MATERIALS, MAT } from '../voxel/palette.js';
 import { VoxelVolume, findEmissiveLights } from './volume.js';
 import { GBUFFER_VERT, GBUFFER_FRAG, createGBufferTarget } from './gbuffer.js';
 import { createTraceMaterial } from './trace.js';
+import { BodyRenderer } from './bodies.js';
 import {
   makeQuad, hdrTarget, fsMaterial,
   ACCUM_FRAG, DENOISE_FRAG, BLOOM_PREFILTER_FRAG, BLOOM_DOWN_FRAG, BLOOM_UP_FRAG, COMPOSITE_FRAG,
@@ -125,6 +126,11 @@ export class VoxelRenderer {
     this.chunkGroup = new THREE.Group();
     this.scene.add(this.chunkGroup);
     this.meshes = new Map();
+
+    // Detached chunks in flight. They go into the same scene as the static geometry so
+    // they are rasterised into the same G-buffer and receive identical raytraced lighting.
+    this.bodyRenderer = new BodyRenderer(palette, this.gbufMaterial);
+    this.scene.add(this.bodyRenderer.group);
 
     this.width = 960; this.height = 540;
     this._allocTargets(this.width, this.height);
@@ -363,6 +369,17 @@ export class VoxelRenderer {
     this._hadTransient = true;
     this._applyLights();
     this.resetAccumulation();
+  }
+
+  /**
+   * Sync the in-flight debris. Anything moving invalidates the accumulated history, so
+   * this resets it — otherwise tumbling chunks smear across the temporal buffer.
+   */
+  setBodies(bodies, debris) {
+    const moving = this.bodyRenderer.update(bodies || [], debris);
+    if (moving || this._hadBodies) this.resetAccumulation();
+    this._hadBodies = moving;
+    return moving;
   }
 
   _applyLights() {

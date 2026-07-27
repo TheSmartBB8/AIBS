@@ -1,0 +1,33 @@
+<!doctype html><html><head><meta charset="utf-8">
+<script type="importmap">{"imports":{"three":"/vendor/three.module.js","three/addons/":"/vendor/jsm/"}}</script>
+</head><body style="margin:0;background:#000">
+<canvas id="c" width="320" height="240"></canvas>
+<script type="module">
+import * as THREE from 'three';
+const info = { ok:false };
+try {
+  const canvas = document.getElementById('c');
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias:true });
+  renderer.setSize(320,240,false);
+  const gl = renderer.getContext();
+  const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+  info.vendor = dbg ? gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL) : gl.getParameter(gl.VENDOR);
+  info.renderer = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+  info.isWebGL2 = renderer.capabilities.isWebGL2;
+  info.maxTexSize = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+  info.float = !!gl.getExtension('EXT_color_buffer_float');
+  info.maxTex3D = gl.getParameter(gl.MAX_3D_TEXTURE_SIZE);
+  const scene = new THREE.Scene(); scene.background = new THREE.Color(0x102030);
+  const cam = new THREE.PerspectiveCamera(50,320/240,0.1,100); cam.position.set(3,3,3); cam.lookAt(0,0,0);
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(2,2,2), new THREE.MeshStandardMaterial({color:0xff8020,roughness:0.5}));
+  scene.add(mesh);
+  const dl = new THREE.DirectionalLight(0xffffff,2.5); dl.position.set(5,8,4); scene.add(dl);
+  scene.add(new THREE.AmbientLight(0x404060,1.5));
+  renderer.render(scene,cam);
+  const px = new Uint8Array(4);
+  gl.readPixels(160,120,1,1,gl.RGBA,gl.UNSIGNED_BYTE,px);
+  info.centerPixel = Array.from(px);
+  info.ok = true;
+} catch(e) { info.error = String(e); info.stack = e.stack; }
+window.__probe = info;
+</script></body></html>

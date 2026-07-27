@@ -1,0 +1,13 @@
+import { chromium } from 'playwright';
+const b = await chromium.launch({ args:['--enable-unsafe-swiftshader'] });
+const p = await b.newPage({ viewport:{width:320,height:240} });
+p.on('console', m => console.log('CONSOLE['+m.type()+']:', m.text().slice(0,300)));
+p.on('pageerror', e => console.log('PAGEERROR:', e.message.slice(0,300)));
+p.on('requestfailed', r => console.log('REQFAIL:', r.url(), r.failure()?.errorText));
+await p.goto('http://127.0.0.1:8899/probe.html', { waitUntil:'load' });
+await p.waitForTimeout(4000);
+console.log('probe =', JSON.stringify(await p.evaluate(()=>window.__probe ?? 'UNDEFINED')));
+console.log('modules supported =', await p.evaluate(()=>'noModule' in HTMLScriptElement.prototype));
+console.log('importmap support =', await p.evaluate(()=>HTMLScriptElement.supports && HTMLScriptElement.supports('importmap')));
+console.log('raw webgl2 =', await p.evaluate(()=>{const c=document.createElement('canvas');const g=c.getContext('webgl2');return g?g.getParameter(g.VERSION):'NO WEBGL2';}));
+await b.close();

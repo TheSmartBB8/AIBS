@@ -43,12 +43,15 @@ export function buildLevel(world, palette) {
     metal:      palette.add(138, 144, 150, MAT.METAL),
     metalDark:  palette.add(92, 98, 104, MAT.METAL),
     rust:       palette.add(142, 80, 48, MAT.METAL),
-    glass:      palette.add(150, 190, 205, MAT.GLASS),
+    // Glass gets a dark diffuse base on purpose. Its brightness should come from the
+    // reflection pass (sky/sun in the pane), not from lighting a pale blue albedo — with a
+    // bright albedo every window renders as a flat white rectangle in direct sun.
+    glass:      palette.add(38, 52, 62, MAT.GLASS),
     barrelRed:  palette.add(178, 52, 42, MAT.METAL),
     barrelYell: palette.add(206, 158, 40, MAT.METAL),
     tyre:       palette.add(34, 34, 38, MAT.PLASTIC),
     carBody:    palette.add(58, 96, 152, MAT.METAL),
-    carGlass:   palette.add(140, 176, 196, MAT.GLASS),
+    carGlass:   palette.add(34, 48, 60, MAT.GLASS),
     leaf:       palette.add(72, 104, 52, MAT.FOLIAGE),
     trunk:      palette.add(92, 68, 46, MAT.WOOD),
     lamp:       palette.add(255, 244, 214, MAT.GLASS, 6.0),

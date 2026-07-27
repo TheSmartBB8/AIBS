@@ -266,6 +266,82 @@ export function buildLevel(world, palette) {
   };
   tree(24, 190, 20); tree(210, 210, 24); tree(120, 216, 18); tree(30, 70, 16);
 
+  // ---- environmental detail. Teardown's scenes read as *places* rather than test levels
+  // largely because of this layer: service clutter, signage, weathering and wear. It costs
+  // little and does a lot of the work of selling the look.
+
+  // roof vents + AC units
+  for (const [vx, vz] of [[92, 104], [120, 132], [150, 112], [104, 152]]) {
+    box(vx, WY1 + 2, vz, vx + 9, WY1 + 8, vz + 9, P.metal);
+    box(vx + 1, WY1 + 9, vz + 1, vx + 8, WY1 + 9, vz + 8, P.metalDark);
+    box(vx + 2, WY1 + 10, vz + 2, vx + 3, WY1 + 12, vz + 3, P.metalDark);
+  }
+
+  // drainpipes down the corners of the warehouse
+  for (const [px, pz] of [[WX0 + 2, WZ0 - 1], [WX1 - 2, WZ0 - 1], [WX0 + 2, WZ1 + 1]]) {
+    box(px, G, pz, px + 1, WY1, pz + 1, P.metalDark);
+    box(px - 1, WY1 - 1, pz, px + 2, WY1, pz + 1, P.metalDark);   // hopper head
+  }
+
+  // signboard over the roller door
+  {
+    const sx0 = 106, sx1 = 146, sy0 = G + 22, sy1 = G + 30;
+    box(sx0, sy0, WZ0 - 1, sx1, sy1, WZ0 - 1, P.metalDark);
+    for (let x = sx0 + 3; x < sx1 - 3; x += 6)
+      box(x, sy0 + 2, WZ0 - 2, x + 3, sy1 - 2, WZ0 - 2, P.barrelYell);
+    box(sx0, sy1 + 1, WZ0 - 2, sx1, sy1 + 1, WZ0 - 2, P.metal);
+  }
+
+  // ground clutter: pallets, crates, stacked tyres, scattered rubble
+  const pallet = (px, pz) => {
+    box(px, G, pz, px + 11, G, pz + 8, P.woodPale);
+    for (let i = 0; i <= 11; i += 3) box(px + i, G + 1, pz, px + i + 1, G + 1, pz + 8, P.woodDark);
+    box(px, G + 2, pz, px + 11, G + 2, pz + 8, P.woodPale);
+  };
+  pallet(186, 62); pallet(186, 74); pallet(200, 66);
+  for (let i = 0; i < 3; i++) box(202, G + 3 + i * 5, 68, 210, G + 7 + i * 5, 76, P.woodPale);
+
+  const tyreStack = (tx, tz, n) => {
+    for (let i = 0; i < n; i++)
+      for (let dz = -4; dz <= 4; dz++)
+        for (let dx = -4; dx <= 4; dx++) {
+          const d = dx * dx + dz * dz;
+          if (d <= 16 && d >= 4)
+            for (let y = 0; y < 3; y++) world.setRaw(tx + dx, G + i * 3 + y, tz + dz, P.tyre);
+        }
+  };
+  tyreStack(52, 62, 3); tyreStack(60, 66, 2);
+
+  // rubble + litter scattered over the apron and verge
+  for (let i = 0; i < 220; i++) {
+    const rx = (58 + rng() * 140) | 0, rz = (56 + rng() * 140) | 0;
+    if (rx > WX0 - 2 && rx < WX1 + 2 && rz > WZ0 - 2 && rz < WZ1 + 2) continue;  // keep inside clear
+    const pick = rng();
+    const p = pick < 0.4 ? P.concreteD : pick < 0.7 ? P.brickDark : P.woodDark;
+    const h = rng() < 0.75 ? 0 : 1;
+    box(rx, G, rz, rx + (rng() < 0.5 ? 0 : 1), G + h, rz + (rng() < 0.5 ? 0 : 1), p);
+  }
+
+  // grime streaks running down the brick beneath the upper windows
+  for (let x = WX0 + 8; x < WX1 - 10; x += 16) {
+    for (let i = 0; i < 10; i++) {
+      if (rng() < 0.45) continue;
+      const sxp = x + ((rng() * 9) | 0);
+      const len = 3 + ((rng() * 7) | 0);
+      for (let y = G + 27; y > G + 27 - len; y--) world.setRaw(sxp, y, WZ0, P.brickDark);
+    }
+  }
+
+  // puddles on the road after rain — dark, slightly reflective patches
+  for (let i = 0; i < 7; i++) {
+    const px = (rng() * sx) | 0, pz = (22 + rng() * 22) | 0;
+    const r = 3 + ((rng() * 5) | 0);
+    for (let dz = -r; dz <= r; dz++)
+      for (let dx = -r * 2; dx <= r * 2; dx++)
+        if (dx * dx * 0.25 + dz * dz <= r * r && rng() < 0.85)
+          world.setRaw(px + dx, G - 1, pz + dz, P.asphalt);
+  }
+
   world.markAllDirty();
   world.rebuildMips();
   return { palette: P, groundY: G };

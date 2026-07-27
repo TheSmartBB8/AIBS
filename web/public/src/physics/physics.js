@@ -396,7 +396,10 @@ export class PhysicsWorld {
           this.onDestroy, { damage: this.damage, core: 0.3 });
         for (let k = 0; k < res.destroyed.length; k++) {
           const [x, y, z, pal] = res.destroyed[k];
-          this.debris.spawnFromVoxel(x, y, z, pal, at, 1.5);
+          // Thrown clear and flagged non-welding: this material was pulverised by the
+          // impact, so it must not settle straight back into the hole it was knocked out
+          // of and heal the surface.
+          this.debris.spawnFromVoxel(x, y, z, pal, at, 3.2, { noWeld: true });
         }
       }
     }

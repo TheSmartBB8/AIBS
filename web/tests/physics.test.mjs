@@ -2,6 +2,7 @@
 // No GPU, no renderer: everything here is arithmetic over the voxel grid.
 //   node tests/physics.test.mjs
 import { VoxelWorld, VOXEL } from '../public/src/voxel/world.js';
+import { TORCH_RADIUS, TORCH_ENERGY } from '../public/src/tools/blowtorch.js';
 import { Palette, MAT } from '../public/src/voxel/palette.js';
 import {
   PhysicsWorld, hashState, SUBSTEP_H, SUBSTEP_HZ,
@@ -101,9 +102,18 @@ const box = (w, x0, y0, z0, x1, y1, z1, pal) => {
   // capsule cut severs a beam
   const { w: w2, P: P2 } = floorWorld(24);
   box(w2, 4, 10, 12, 20, 12, 14, P2.wood);
-  const cut = carveCapsule(w2, P2.p, [1.2, 0.9, 1.15], [1.2, 1.4, 1.55], 0.06, 1.0);
+  // Use the blowtorch's real constants. A one-voxel kerf (radius < VOXEL) loses most of
+  // its energy to distance falloff, so the tool is tuned with a high energy to compensate;
+  // testing it at an arbitrary lower energy asserts a configuration nothing actually uses.
+  const cut = carveCapsule(w2, P2.p, [1.2, 0.9, 1.15], [1.2, 1.4, 1.55], TORCH_RADIUS, TORCH_ENERGY);
   CHECK(cut.count > 0, `capsule/ray carve cuts through a beam (${cut.count} voxels)`);
-  CHECK(cut.destroyed.every(([x]) => x === 12), 'the cut stays inside the capsule radius');
+  // Geometric containment, not "exactly one column": at the torch's real energy the kerf
+  // is wide enough to take the neighbouring column too, since a voxel centre 0.05 m from
+  // the axis still sits inside the 0.055 m radius. What must hold is that nothing outside
+  // the capsule is touched.
+  const axisX = 1.2;
+  CHECK(cut.destroyed.every(([x]) => Math.abs((x + 0.5) * VOXEL - axisX) <= TORCH_RADIUS + 1e-9),
+        'every destroyed voxel centre lies within the capsule radius of its axis');
 
   const { w: w3, P: P3 } = floorWorld(24);
   box(w3, 4, 4, 4, 14, 14, 14, P3.brick);
@@ -372,14 +382,22 @@ const box = (w, x0, y0, z0, x1, y1, z1, pal) => {
   CHECK(hFast === hExact, 'and it matches a direct fixed-substep replay with no accumulator at all');
   CHECK(fast.bodies.length === slow.bodies.length, 'same surviving body count');
 
-  // non-vacuous: the hash must actually be sensitive to the simulation state
-  const shifted = (() => {
-    const p = scenario();
-    p.bodies.forEach((b) => { b.pos[0] += 1e-9; });
-    p.runSubsteps(N);
-    return p;
-  })();
-  CHECK(hashState(shifted) !== hExact, 'the hash detects a 1e-9 m perturbation (the equality above is not vacuous)');
+  // Non-vacuous: the hash must actually be sensitive to simulation state. Perturb and hash
+  // immediately — running the perturbed scenario to completion is NOT a valid sensitivity
+  // check, because bodies settle and weld back onto the integer grid, so the sim genuinely
+  // converges and a 1e-9 offset is legitimately absorbed. That convergence is correct
+  // behaviour; it just cannot distinguish a sensitive hash from a blind one.
+  const probe = scenario();
+  probe.runSubsteps(30);                       // still mid-flight, nothing settled yet
+  const hBefore = hashState(probe);
+  // This scenario throws debris rather than whole rigid bodies, so perturb what is
+  // actually in flight. The hash covers debris positions too.
+  const live = probe.bodies.length > 0 ? probe.bodies : probe.debris.parts;
+  CHECK(live.length > 0, `the sensitivity probe has something in flight to perturb (${live.length})`);
+  if (probe.bodies.length > 0) probe.bodies[0].pos[0] += 1e-9;
+  else probe.debris.parts[0].x += 1e-9;
+  CHECK(hashState(probe) !== hBefore,
+        'the hash detects a 1e-9 m perturbation (so the equality above is not vacuous)');
 
   // sub-substep frames must bank time, not integrate it
   const tiny = scenario();

@@ -372,8 +372,10 @@ const paletteWith = () => {
   sys.select(TOOL.ROCKET);
   sys.triggerDown([1.0, 2.0, 3.0], [1, 0, 0]);
   CHECK(sys.projectiles[0].detonateOnImpact === true, 'a rocket is an impact fuse');
-  sys.update(0.05);
-  sys.update(0.05);
+  // The far wall is ~5.2 m away and the rocket flies at 26 m/s, so it needs ~0.2 s to get
+  // there. Step until it lands (capped well under its fuse) rather than assuming a
+  // fixed number of frames.
+  for (let i = 0; i < 20 && ctx.calls.explode.length === 0; i++) sys.update(0.02);
   CHECK(ctx.calls.explode.length === 1, 'rocket detonates on contact, long before any fuse');
   const ev = sys.events.find(e => e.type === 'detonate');
   CHECK(ev.cause === 'impact', 'the detonation is attributed to the impact');

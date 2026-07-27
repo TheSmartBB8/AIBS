@@ -16,7 +16,7 @@ import { VOXEL } from '../voxel/world.js';
 
 // ------------------------------------------------------------------------------ plank
 export const PLANK_RANGE = 8.0;
-export const PLANK_MAX_LEN = 7.0;
+export const PLANK_MAX_LEN = 5.0;   // metres. Long enough to prop a storey, short enough that it cannot bridge a whole street.
 export const PLANK_MIN_LEN = 0.25;
 export const PLANK_RADIUS = 0.075;   // metres — a 1-2 voxel strut
 

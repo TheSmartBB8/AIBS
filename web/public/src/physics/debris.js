@@ -34,13 +34,17 @@ export class DebrisSystem {
   get count() { return this.parts.length; }
 
   /** Spawn one debris voxel at a world position (metres) with a world velocity. */
-  spawn(x, y, z, vx, vy, vz, pal) {
+  spawn(x, y, z, vx, vy, vz, pal, opts = null) {
     if (this.parts.length >= this.maxParticles) this.parts.shift();
     const mp = matPhys(this.palette, pal);
     this.parts.push({
       x, y, z, vx, vy, vz, pal,
       age: 0, rest: 0, alive: true,
       restitution: mp.restitution, friction: mp.friction,
+      // Pulverised material (crush splinters) must not weld back into the grid. Letting
+      // it re-weld restores the exact voxels that were just smashed, so a wall landing on
+      // a wooden deck leaves the deck visually untouched — the crater heals itself.
+      noWeld: !!(opts && opts.noWeld),
     });
   }
 
@@ -48,7 +52,7 @@ export class DebrisSystem {
    * Spawn debris for a destroyed voxel, thrown away from a blast centre with a little
    * deterministic scatter so a wall does not disintegrate into a perfectly radial starburst.
    */
-  spawnFromVoxel(vx, vy, vz, pal, centre, speed) {
+  spawnFromVoxel(vx, vy, vz, pal, centre, speed, opts = null) {
     const px = (vx + 0.5) * VOXEL, py = (vy + 0.5) * VOXEL, pz = (vz + 0.5) * VOXEL;
     let dx = px - centre[0], dy = py - centre[1], dz = pz - centre[2];
     const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
@@ -58,7 +62,7 @@ export class DebrisSystem {
       dx * speed + this.rng.sym() * speed * j,
       dy * speed + this.rng.sym() * speed * j + speed * 0.25,
       dz * speed + this.rng.sym() * speed * j,
-      pal);
+      pal, opts);
   }
 
   /** One fixed substep. */
@@ -97,7 +101,7 @@ export class DebrisSystem {
       const done = p.rest >= this.settleTime || p.age >= this.maxAge || p.y < -2;
       if (done) {
         p.alive = false;
-        if (this.weld && p.y >= 0 && this.weldParticle(p)) {
+        if (this.weld && !p.noWeld && p.y >= 0 && this.weldParticle(p)) {
           const vx = Math.floor(p.x / VOXEL), vy = Math.floor(p.y / VOXEL), vz = Math.floor(p.z / VOXEL);
           if (!welded) welded = { x0: vx, y0: vy, z0: vz, x1: vx, y1: vy, z1: vz };
           else {

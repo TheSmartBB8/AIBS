@@ -346,6 +346,10 @@ export class ToolSystem {
     } finally {
       this._draining = false;
       this._queue.length = 0;
+      // Compact here rather than waiting for the next _updatePlaced tick. notifyDamage()
+      // is a public entry point, so a caller that inspects `placed` straight after a
+      // chain reaction must not still see the canisters that just went off.
+      if (this.placed.some((p) => p.dead)) this.placed = this.placed.filter((p) => !p.dead);
     }
   }
 

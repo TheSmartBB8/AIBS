@@ -25,6 +25,7 @@ import { VoxelVolume, findEmissiveLights } from './volume.js';
 import { GBUFFER_VERT, GBUFFER_FRAG, createGBufferTarget } from './gbuffer.js';
 import { createTraceMaterial } from './trace.js';
 import { BodyRenderer } from './bodies.js';
+import { ParticleRenderer } from './particles.js';
 import {
   makeQuad, hdrTarget, fsMaterial,
   ACCUM_FRAG, DENOISE_FRAG, BLOOM_PREFILTER_FRAG, BLOOM_DOWN_FRAG, BLOOM_UP_FRAG, COMPOSITE_FRAG,
@@ -137,6 +138,11 @@ export class VoxelRenderer {
     // they are rasterised into the same G-buffer and receive identical raytraced lighting.
     this.bodyRenderer = new BodyRenderer(palette, this.gbufMaterial);
     this.scene.add(this.bodyRenderer.group);
+
+    // Smoke/dust/fire. Drawn forward over the composited image rather than into the
+    // G-buffer, because they are transparent and the deferred pass has nowhere to put them.
+    this.particleRenderer = new ParticleRenderer();
+    this._particleInst = null;
 
     this.width = 960; this.height = 540;
     this._allocTargets(this.width, this.height);
@@ -389,6 +395,14 @@ export class VoxelRenderer {
     return moving;
   }
 
+  /** Hand in the fx layer's instance data for this frame. */
+  setParticles(inst) {
+    this._particleInst = inst;
+    // Particles move every frame, so a still accumulating frame must restart or they
+    // smear into the history as translucent streaks.
+    if (inst && ((inst.blend?.count | 0) + (inst.additive?.count | 0)) > 0) this.resetAccumulation();
+  }
+
   _applyLights() {
     const s = this.shared;
     const n = Math.min(8, this.lights.length);
@@ -608,6 +622,21 @@ export class VoxelRenderer {
     cu.uRes.value.set(w, h);
     this.renderer.setRenderTarget(null);
     this._blit(this.compositeMaterial, null);
+
+    // Particles go over the tonemapped image, occlusion-tested against the G-buffer's
+    // world-position target. They are already in display space, so they are not bloomed —
+    // an acceptable trade for smoke and dust, which are the point here.
+    if (this._particleInst) {
+      const n = this.particleRenderer.update(
+        this._particleInst, this.gbuf.textures[2], this.camera, w, h);
+      if (n > 0) {
+        const prevAuto = this.renderer.autoClear;
+        this.renderer.autoClear = false;
+        this.particleRenderer.render(this.renderer, this.camera);
+        this.renderer.autoClear = prevAuto;
+      }
+      this.stats.particles = n;
+    }
   }
 
   _bloomScratch(i) {

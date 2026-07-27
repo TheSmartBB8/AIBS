@@ -104,6 +104,7 @@ function step(dt) {
   if (rebuilt > 0) renderer.resetAccumulation?.();
   renderer.setLights?.(engine.lights);
   renderer.setBodies?.(engine.physics.bodies, engine.physics.debris);
+  renderer.setParticles?.(engine.particles.buildInstances());
   if (!freeCam) {
     const e = player.eye();
     const f = player.forward();

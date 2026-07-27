@@ -7,7 +7,7 @@
     "vendor": "mkdir -p public/vendor && cp node_modules/three/build/three.module.js node_modules/three/build/three.core.js public/vendor/ && cp -r node_modules/three/examples/jsm public/vendor/jsm",
     "postinstall": "npm run vendor",
     "serve": "http-server public -p 8899 --silent",
-    "test": "node tests/core.test.mjs",
+    "test": "node tests/all.mjs",
     "shot": "node tools/shot.mjs"
   },
   "keywords": [],

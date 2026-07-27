@@ -27,13 +27,27 @@ try {
 const stats = await page.evaluate(() => window.__app.stats());
 console.log('stats:', JSON.stringify(stats));
 
+// The renderer resolves its 1-sample-per-pixel raytracing temporally, so a shot is only
+// worth judging once the history has accumulated. Render in batches (rather than one huge
+// synchronous call) so a slow software frame can't trip the page's watchdog, and stop
+// early once the sample count stops climbing.
+const TARGET = parseInt(process.env.SAMPLES || '96', 10);
 for (const v of views) {
   await page.evaluate((name) => window.__app.setView(name), v);
-  await page.evaluate(() => window.__app.renderFrames(4));
-  await page.waitForTimeout(120);
+  let last = -1, stalled = 0;
+  for (let i = 0; i < 200; i++) {
+    await page.evaluate(() => window.__app.renderFrames(4));
+    const s = await page.evaluate(() => window.__app.renderer?.samples ?? window.__app.stats().samples ?? 0);
+    if (s >= TARGET) break;
+    if (s === last && ++stalled > 3) break;   // accumulation isn't advancing; don't spin
+    if (s !== last) stalled = 0;
+    last = s;
+  }
+  const s = await page.evaluate(() => window.__app.renderer?.samples ?? 0);
+  await page.waitForTimeout(80);
   const buf = await page.screenshot();
   writeFileSync(`${outDir}/${v}.png`, buf);
-  console.log('wrote', `${outDir}/${v}.png`);
+  console.log(`wrote ${outDir}/${v}.png  (${s} samples)`);
 }
 if (errors.length) { console.log('\nPAGE ERRORS:'); errors.slice(0,10).forEach(e => console.log('  ', e)); }
 await browser.close();

@@ -35,7 +35,7 @@ export function buildLevel(world, palette) {
     brickDark:  palette.add(128, 70, 53, MAT.BRICK),
     brickWarm:  palette.add(158, 94, 68, MAT.BRICK),
     brickCool:  palette.add(134, 78, 64, MAT.BRICK),
-    mortar:     palette.add(160, 132, 116, MAT.BRICK),
+    mortar:     palette.add(150, 105, 88, MAT.BRICK),
     wood:       palette.add(150, 110, 68, MAT.WOOD),
     woodDark:   palette.add(112, 80, 48, MAT.WOOD),
     woodPale:   palette.add(186, 152, 106, MAT.WOOD),
@@ -97,7 +97,9 @@ export function buildLevel(world, palette) {
   // offset half a brick, and the mortar joint is only a slight lightening. Sampling per
   // *brick* (not per voxel) keeps each brick a solid colour, which is what makes the bond
   // pattern legible instead of looking like noise.
-  const BRICK_L = 8, BRICK_H = 4;
+  // 3 x 2 voxels = 0.30 x 0.20 m. The previous 8 x 4 made every "brick" 0.8 x 0.4 m —
+  // a cinder block, and at that size the bond pattern read as a graphic decal.
+  const BRICK_L = 3, BRICK_H = 2;
   const brickVariants = [P.brick, P.brickDark, P.brickWarm, P.brickCool];
   const brickAt = (u, y) => {
     const course = Math.floor(y / BRICK_H);
@@ -137,18 +139,41 @@ export function buildLevel(world, palette) {
   // roller door (metal) on the south face
   box(108, G, WZ0, 142, G + 20, WZ0 + 1, P.metalDark);
   for (let y = G; y <= G + 20; y += 3) box(108, y, WZ0 - 1, 142, y, WZ0 - 1, P.metal);
-  // windows: upper storey ribbon
+  // Windows are cut INTO the wall rather than painted onto it: the opening is carved two
+  // voxels deep, the glass sits at the back of the recess, a frame rings it and a sill
+  // projects proudly. That relief is what makes a window self-shadow — a flush palette
+  // swap in the wall plane reads as a sticker no matter how good the lighting is.
+  const window = (face, a0, a1, y0, y1) => {
+    const inward = (face === 'z0' || face === 'x0') ? 1 : -1;
+    const at = face === 'z0' ? WZ0 : face === 'z1' ? WZ1 : face === 'x0' ? WX0 : WX1;
+    const put = (u, y, depth, pal) => {
+      const d = at + depth * inward;
+      if (face === 'z0' || face === 'z1') world.setRaw(u, y, d, pal);
+      else world.setRaw(d, y, u, pal);
+    };
+    for (let u = a0 - 1; u <= a1 + 1; u++)
+      for (let y = y0 - 1; y <= y1 + 1; y++) {
+        const edge = (u < a0 || u > a1 || y < y0 || y > y1);
+        if (edge) { put(u, y, 0, P.plaster); put(u, y, 1, P.plaster); }
+        else { put(u, y, 0, 0); put(u, y, 1, 0); put(u, y, 2, P.glass); }
+      }
+    for (let u = a0 - 1; u <= a1 + 1; u++) put(u, y0 - 1, -1, P.concreteD);   // sill
+  };
+
   for (let x = WX0 + 8; x < WX1 - 10; x += 16) {
-    box(x, G + 28, WZ0, x + 9, G + 38, WZ0 + 1, P.glass);
-    box(x, G + 28, WZ1 - 1, x + 9, G + 38, WZ1, P.glass);
+    window('z0', x, x + 9, G + 28, G + 38);
+    window('z1', x, x + 9, G + 28, G + 38);
   }
   for (let z = WZ0 + 12; z < WZ1 - 12; z += 18) {
-    box(WX0, G + 28, z, WX0 + 1, G + 38, z + 10, P.glass);
-    box(WX1 - 1, G + 28, z, WX1, G + 38, z + 10, P.glass);
+    window('x0', z, z + 10, G + 28, G + 38);
+    window('x1', z, z + 10, G + 28, G + 38);
   }
-  // ground-floor windows either side of the door
-  box(WX0 + 10, G + 6, WZ0, WX0 + 24, G + 16, WZ0 + 1, P.glass);
-  box(WX1 - 24, G + 6, WZ0, WX1 - 10, G + 16, WZ0 + 1, P.glass);
+  window('z0', WX0 + 10, WX0 + 24, G + 6, G + 16);
+  window('z0', WX1 - 24, WX1 - 10, G + 6, G + 16);
+
+  // lintel course above the roller door, and a gutter along the eaves
+  box(106, G + 21, WZ0 - 1, 144, G + 22, WZ0 - 1, P.concreteD);
+  for (const zz of [WZ0 - 1, WZ1 + 1]) box(WX0 - 1, WY1, zz, WX1 + 1, WY1, zz, P.metalDark);
 
   // gabled wooden roof with exposed trusses
   {

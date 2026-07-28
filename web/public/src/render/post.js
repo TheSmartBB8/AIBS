@@ -214,16 +214,31 @@ void main() {
   // Worth noting none of the earlier measurements could have caught this: they sampled
   // 4/8/16/32/64 with a static camera, and 2-3 samples is what a *moving* camera produces
   // constantly — which is most frames in play.
+  // Geometrically weighted, which the first version was not — and that omission showed up
+  // in the numbers as an anomaly rather than an error. The 1-sample frame is by far the
+  // noisiest and should gain the most from filtering, yet it improved only 12.6% while 2
+  // and 3 samples improved ~40%. An unweighted 5x5 measures variance *across surface
+  // boundaries*: a window frame against brick, a kerb against tarmac. That is scene detail,
+  // not noise, and counting it inflates the tolerance on exactly the pixels where an edge
+  // needs protecting. Weighting the moments by the same normal and position terms the main
+  // loop uses confines the estimate to one surface, which is what it was always meant to
+  // measure.
   float floorV = 0.0;
   if (uSamples < 2.0) {
-    float m1 = 0.0, m2 = 0.0;
+    float m1 = 0.0, m2 = 0.0, mw = 0.0;
     for (int y = -2; y <= 2; y++)
       for (int x = -2; x <= 2; x++) {
-        float l = lumaOf(texture(tColor, vUv + vec2(float(x), float(y)) * uTexel).rgb);
-        m1 += l; m2 += l * l;
+        vec2 uv = vUv + vec2(float(x), float(y)) * uTexel;
+        vec4 n = texture(tNormal, uv);
+        vec3 p = texture(tPosition, uv).xyz;
+        float w = pow(max(dot(n.xyz, n0.xyz), 0.0), uPhiN) * exp(-length(p - p0) * uPhiP);
+        float l = lumaOf(texture(tColor, uv).rgb);
+        m1 += l * w; m2 += l * l * w; mw += w;
       }
-    m1 /= 25.0; m2 /= 25.0;
-    floorV = max(m2 - m1 * m1, 0.0);
+    if (mw > 1e-4) {
+      m1 /= mw; m2 /= mw;
+      floorV = max(m2 - m1 * m1, 0.0);
+    }
   }
 
   // The variance estimate is itself built from noisy data. Prefilter it 3x3 (gaussian)

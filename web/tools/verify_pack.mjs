@@ -36,8 +36,15 @@ const stats = await page.evaluate(() => window.__app.stats());
 console.log('ready from file:// —', JSON.stringify(stats));
 
 // A blank canvas would also report "ready", so render and check the image has content.
-await page.evaluate(() => { window.__app.setView('street'); window.__app.renderFrames(24); });
-const buf = await page.screenshot();
+//
+// Freeze first. Playwright's screenshot waits for the page to yield a frame, and under
+// SwiftShader the à-trous passes make each frame expensive enough that a free-running rAF
+// loop starves it — the capture timed out at 30 s against a build that was rendering
+// perfectly well. Stopping the loop leaves the last rendered frame on the canvas and the
+// page idle, which is what the capture needs.
+await page.evaluate(() => { window.__app.freeze(); window.__app.setView('street'); });
+await page.evaluate(() => window.__app.renderFrames(24));
+const buf = await page.screenshot({ timeout: 120000 });
 if (shot) writeFileSync(shot, buf);
 
 // Measure the *screenshot*, not the live canvas. Reading back from a WebGL canvas with

@@ -13,7 +13,9 @@ import { TOOL_ORDER } from './tools/registry.js';
 // Fixed viewpoints. Held constant so every iteration of a visual review compares the same
 // framing — a shot that drifted would make "did this get better?" unanswerable.
 export const VIEWS = {
-  street:   { pos: [4.2,  2.0,  1.4], look: [14.0, 2.8, 12.0], fov: 68 },
+  // On the road looking down it: shopfronts to one side, the warehouse to the other.
+  // The old position pointed straight into what is now the terrace and rendered black.
+  street:   { pos: [2.6,  1.9,  3.4], look: [22.0, 2.6,  4.6], fov: 70 },
   approach: { pos: [2.2,  1.8,  6.0], look: [13.0, 3.0, 13.0], fov: 72 },
   corner:   { pos: [21.5, 2.6,  2.2], look: [11.0, 3.2, 12.5], fov: 66 },
   wide:     { pos: [1.6,  6.5,  1.0], look: [14.0, 2.0, 13.5], fov: 62 },

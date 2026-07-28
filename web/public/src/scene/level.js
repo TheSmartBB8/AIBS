@@ -370,6 +370,83 @@ export function buildLevel(world, palette) {
           world.setRaw(px + dx, G - 1, pz + dz, P.asphalt);
   }
 
+  // ---- a second row of buildings across the road. The critic's verdict was that the
+  // ceiling on believability is authored density, not renderer parameters: one building in
+  // an empty lot reads as a test scene no matter how well it is lit. A street needs two
+  // sides. These are terraced shopfronts facing the warehouse across the road.
+  {
+    const shopCols = [
+      [176, 158, 122], [148, 132, 108], [186, 168, 136], [132, 120, 104], [166, 142, 118],
+    ];
+    let bx = 8;
+    let unit = 0;
+    while (bx < sx - 40) {
+      const w = 30 + ((unit * 7) % 14);
+      const h = 26 + ((unit * 11) % 14);
+      const col = shopCols[unit % shopCols.length];
+      const wall = palette.add(col[0], col[1], col[2], MAT.PLASTER);
+      const wallDark = palette.add((col[0] * 0.82) | 0, (col[1] * 0.82) | 0, (col[2] * 0.82) | 0, MAT.PLASTER);
+      const z0 = 2, z1 = 16;
+
+      // shell
+      for (let y = G; y <= G + h; y++)
+        for (let x = bx; x <= bx + w; x++) {
+          const c = (y % 7 === 0) ? wallDark : wall;
+          world.setRaw(x, y, z1, c); world.setRaw(x, y, z1 - 1, c);
+        }
+      for (let y = G; y <= G + h; y++)
+        for (let z = z0; z <= z1; z++) {
+          world.setRaw(bx, y, z, wall); world.setRaw(bx + w, y, z, wall);
+        }
+      box(bx, G - 1, z0, bx + w, G - 1, z1, P.concreteD);
+      box(bx, G + h + 1, z0 - 1, bx + w, G + h + 2, z1 + 1, P.woodDark);   // parapet/roof
+
+      // shopfront: recessed glazing + a door, facing the road
+      const gx0 = bx + 4, gx1 = bx + w - 4;
+      for (let x = gx0; x <= gx1; x++)
+        for (let y = G + 2; y <= G + 13; y++) {
+          world.setRaw(x, y, z1, 0); world.setRaw(x, y, z1 - 1, 0);
+          world.setRaw(x, y, z1 - 2, P.glass);
+        }
+      const dx0 = bx + (w >> 1) - 3;
+      for (let x = dx0; x <= dx0 + 6; x++)
+        for (let y = G; y <= G + 12; y++) { world.setRaw(x, y, z1, 0); world.setRaw(x, y, z1 - 1, 0); }
+      // fascia band + awning over the shopfront
+      box(gx0 - 1, G + 14, z1 - 1, gx1 + 1, G + 18, z1, P.signBack ?? wallDark);
+      box(gx0 - 1, G + 19, z1 + 1, gx1 + 1, G + 19, z1 + 4, unit % 2 ? P.barrelRed : P.metalDark);
+      // upper windows, recessed
+      for (let x = bx + 5; x < bx + w - 8; x += 11)
+        for (let y = G + 22; y <= G + Math.min(h - 3, 30); y++)
+          for (let xx = x; xx < x + 6; xx++) {
+            world.setRaw(xx, y, z1, 0); world.setRaw(xx, y, z1 - 1, 0);
+            world.setRaw(xx, y, z1 - 2, P.glass);
+          }
+
+      bx += w + 3;
+      unit++;
+    }
+  }
+
+  // ---- street furniture: poles with wires, bins, crates, kerbside clutter
+  {
+    const pole = palette.add(96, 88, 76, MAT.WOOD);
+    const wire = palette.add(28, 28, 30, MAT.METAL);
+    for (let x = 16; x < sx - 16; x += 62) {
+      box(x, G, 50, x + 1, G + 46, 51, pole);
+      box(x - 5, G + 44, 50, x + 6, G + 44, 51, pole);
+      // catenary to the next pole, sagging in the middle
+      for (let i = 0; i < 62 && x + i < sx - 8; i++) {
+        const t = i / 62;
+        const sag = (Math.sin(t * Math.PI) * 4) | 0;
+        world.setRaw(x + i, G + 44 - sag, 50, wire);
+      }
+    }
+    for (let i = 0; i < 10; i++) {
+      const cx2 = (10 + rng() * (sx - 30)) | 0;
+      box(cx2, G, 55, cx2 + 5, G + 7, 60, rng() < 0.5 ? P.woodPale : P.metalDark);
+    }
+  }
+
   // ---- horizon. Without this the ground plane visibly stops and the scene reads as a
   // diorama on a table. Every Teardown frame hides its world edge behind receding
   // silhouettes fading into haze, which is most of what sells the sense of place.

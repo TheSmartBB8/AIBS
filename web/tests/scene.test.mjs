@@ -185,7 +185,7 @@ const level = buildLevel(world, palette);
     'uNumLights', 'uLightPos', 'uLightColor', 'uLightRadius',
     'uSunDir', 'uSunColor', 'uSunAngle', 'uSunSoftness', 'uSunPower',
     'uSkyZenith', 'uSkyHorizon', 'uSkyGround', 'uSkyIntensity', 'uSunTint',
-    'uAoRange', 'uAoStrength', 'uBakedAoMix', 'uBounce', 'uSpecRange', 'uEmissivePower',
+    'uAoRange', 'uGiRange', 'uAoStrength', 'uBakedAoMix', 'uBounce', 'uSpecRange', 'uEmissivePower',
     'uFogDensity', 'uFogHeight',
     'uHorizonY', 'uGroundNear', 'uGroundFar', 'uHillColor', 'uHillHeight', 'uEnvFog',
   ]);

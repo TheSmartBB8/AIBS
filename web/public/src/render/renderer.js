@@ -84,6 +84,11 @@ export const DEFAULTS = {
                           // darkening under debris vanished; 12 was the opposite failure —
                           // anything more than 1.2 m from another surface counted as fully
                           // open sky, so a street canyon got no canyon at all.
+  giRange: 64,            // voxels (6.4 m) — how far an indirect ray looks for a bouncer.
+                          // Separate from aoRange because they are different questions:
+                          // occlusion falloff is a contact-shadow scale, transport is not.
+                          // 6.4 m clears the 2.6 m street with room for the facade behind,
+                          // which is the bounce that lights the shaded side of the road.
   aoStrength: 1.0,
   bakedAoMix: 0.45,
   bounce: 1.30,           // albedo-tinted sky bounce. Interiors were collapsing to pure
@@ -265,6 +270,7 @@ export class VoxelRenderer {
       uSunPower: { value: 4.5 },
       uSunSoftness: { value: 1 },
       uAoRange: { value: 46 },
+      uGiRange: { value: 64 },
       uAoStrength: { value: 1 },
       uBakedAoMix: { value: 0.45 },
       uBounce: { value: 0.28 },
@@ -383,6 +389,7 @@ export class VoxelRenderer {
     s.uSkyIntensity.value = p.skyIntensity;
     s.uSunTint.value.set(...p.sunTint);
     s.uAoRange.value = p.aoRange;
+    s.uGiRange.value = p.giRange;
     s.uAoStrength.value = p.aoStrength;
     s.uBakedAoMix.value = p.bakedAoMix;
     s.uBounce.value = p.bounce;

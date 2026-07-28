@@ -39,7 +39,8 @@ uniform float uFrameSeed;
 
 uniform float uSunPower;
 uniform float uSunSoftness;
-uniform float uAoRange;      // voxels
+uniform float uAoRange;      // voxels — how fast ambient recovers with distance
+uniform float uGiRange;      // voxels — how far the indirect ray actually looks
 uniform float uAoStrength;
 uniform float uBakedAoMix;
 uniform float uBounce;
@@ -180,7 +181,17 @@ void main() {
   vec3 amb = vec3(0.0);
   for (int i = 0; i < AO_RAYS; i++) {
     vec3 D = cosineHemisphere(N, rnd2());
-    VHit h = traceVoxels(ro, D, uAoRange, 128);
+    // Trace to the *GI* range, not the AO range. These were one number, and it could not
+    // be right for both jobs at once: the comment on aoRange records losing contact
+    // darkening under debris at 46 voxels and losing the street canyon entirely at 12, and
+    // the value that survived that squeeze (22, i.e. 2.2 m) is shorter than the street is
+    // wide. So light bouncing off the sunlit facade never reached the terrace opposite —
+    // the ray simply stopped in mid-air 40 cm short and was counted as open sky.
+    //
+    // They are different physical quantities. How quickly a surface stops being occluded
+    // is a contact-shadow question and wants a short scale; how far away a surface can be
+    // and still throw light at you is a transport question and wants a long one.
+    VHit h = traceVoxels(ro, D, uGiRange, 160);
     if (!h.hit) {
       amb += skyRadiance(D);
     } else {

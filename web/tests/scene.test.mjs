@@ -9,6 +9,7 @@ import { VoxelWorld, VOXEL } from '../public/src/voxel/world.js';
 import { Palette, MAT } from '../public/src/voxel/palette.js';
 import { buildLevel } from '../public/src/scene/level.js';
 import { VIEWS } from '../public/src/scene/views.js';
+import { Engine } from '../public/src/game/engine.js';
 import { findEmissiveLights } from '../public/src/render/volume.js';
 import { DEFAULTS } from '../public/src/render/renderer.js';
 import { TRACE_FRAG } from '../public/src/render/trace.js';
@@ -157,6 +158,45 @@ const level = buildLevel(world, palette);
         'the backdrop hazes more slowly than the volume, or the far country dissolves to grey');
   CHECK(DEFAULTS.groundNear.every(v => v >= 0 && v <= 1) && DEFAULTS.groundFar.every(v => v >= 0 && v <= 1),
         'backdrop albedos are in linear 0..1');
+}
+
+// ---- destruction against the real level, not a synthetic test box
+//
+// Every other destruction test builds its own tidy scene. This one fires into the level
+// that actually ships: masonry with window openings above it, a roof load over that, and
+// a floor slab tied in. That combination is what makes structural integrity either work
+// or cascade a whole building into the street, and nothing else exercises it.
+{
+  const w2 = new VoxelWorld(256, 160, 256);
+  const p2 = new Palette();
+  buildLevel(w2, p2);
+  const engine = new Engine(w2, p2, { seed: 7 });
+
+  const before = w2.countSolid();
+  // straight into the warehouse's south face, at chest height between two windows
+  engine.tools.ctx.explode(11.0, 2.4, 7.6, 2.4, 8.0, {});
+  const afterBlast = w2.countSolid();
+  CHECK(afterBlast < before, `an explosion into the warehouse removes voxels (${before - afterBlast})`);
+  CHECK(before - afterBlast < before * 0.05,
+        `and does not level the map (${(100 * (before - afterBlast) / before).toFixed(2)}% removed)`);
+
+  const spawned = engine.physics.bodies.length + (engine.physics.debris?.length ?? 0);
+  CHECK(spawned > 0, `the blast detached loose geometry (${spawned} bodies)`);
+  CHECK(engine.particles.count > 0, `and threw a dust plume (${engine.particles.count} particles)`);
+
+  let threw = null;
+  try { for (let i = 0; i < 60 * 6; i++) engine.update(1 / 60, { eye: [11, 2.4, 5], dir: [0, 0, 1] }); }
+  catch (e) { threw = e; }
+  CHECK(!threw, `six seconds of settling does not throw${threw ? ' — ' + threw.message : ''}`);
+  CHECK(engine.physics.bodies.every(b => b.pos.every(Number.isFinite)),
+        'no body position went NaN while settling');
+
+  const settled = w2.countSolid();
+  CHECK(settled > before * 0.9,
+        `the building is still standing after the debris lands (${(100 * settled / before).toFixed(1)}% of the original)`);
+  // Debris welding back into the grid is what makes rubble persist rather than vanish.
+  CHECK(settled >= afterBlast,
+        `landed debris welds back into the world rather than evaporating (${settled - afterBlast} voxels returned)`);
 }
 
 console.log(`\n== ${fails === 0 ? 'ALL CHECKS PASSED' : 'FAILED'} (${checks} checks, ${fails} failing) ==`);

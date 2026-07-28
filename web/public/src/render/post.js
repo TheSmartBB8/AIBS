@@ -53,12 +53,27 @@ uniform sampler2D tHist;
 uniform vec2 uTexel;
 uniform float uBlend;
 uniform float uClamp;   // 0 = pure average (still frame), 1 = clamp history (motion)
+
+// Alpha carries the running mean of sample luminance *squared*. Together with the mean
+// radiance in rgb that is a complete second-moment estimator, so the denoiser downstream
+// can ask "how noisy is this pixel actually?" instead of being told by a hand-tuned
+// sample-count schedule. It costs nothing: the buffer is already RGBA float and alpha was
+// being written as a constant 1.0.
+//
+// Luminance is a linear functional, so mean(luma(sample)) == luma(mean(rgb)) and the
+// first moment needs no separate channel — variance is just alpha - luma(rgb)^2.
+float lumaOf(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+
 void main() {
-  vec3 c = texture(tCur, vUv).rgb;
-  vec3 h = texture(tHist, vUv).rgb;
+  vec4 cs = texture(tCur, vUv);
+  vec4 hs = texture(tHist, vUv);
+  vec3 c = cs.rgb, h = hs.rgb;
   // guard against NaN/Inf leaking into the history and poisoning it forever
   c = clamp(c, vec3(0.0), vec3(2048.0));
   if (!(c.r == c.r)) c = vec3(0.0);
+  float m2c = lumaOf(c) * lumaOf(c);
+  float m2h = hs.a;
+  if (!(m2h == m2h)) m2h = m2c;
 
   // Neighbourhood clamping. While debris is tumbling and smoke is drifting the history
   // holds those things where they *were*, so blending it in smears them. Clamping the
@@ -77,10 +92,35 @@ void main() {
     vec3 pad = (hi - lo) * 0.5 + vec3(0.02);
     h = mix(h, clamp(h, lo - pad, hi + pad), uClamp);
   }
-  oColor = vec4(mix(h, c, uBlend), 1.0);
+  vec3 mean = mix(h, c, uBlend);
+  // Keep the second moment consistent with the mean it is paired with. Clamping rgb above
+  // can leave a stale m2 that sits below luma^2, which would make the variance negative
+  // and read as "perfectly converged" on exactly the pixels that just changed.
+  float m2 = max(mix(m2h, m2c, uBlend), lumaOf(mean) * lumaOf(mean));
+  oColor = vec4(mean, m2);
 }`;
 
 // ---------------------------------------------------------------- edge-aware cleanup
+//
+// Variance-guided a-trous, run as several passes with a doubling tap spacing (1, 2, 4,
+// 8...). Two changes from the single 5x5 pass this replaces, both of which matter:
+//
+//   * Multiple passes. One 5x5 kernel gathers 25 pixels; five passes at doubling spacing
+//     gather an effective 81x81 neighbourhood for the cost of 125 taps. At the 6-20
+//     samples an interactive frame actually has, that is the whole difference between
+//     grain and a clean image — and interactive is where the player lives, since nobody
+//     holds still for the 96 samples a review screenshot gets.
+//
+//   * The filter decides its own strength from measured variance rather than from a
+//     sample-count schedule. The old code faded out linearly and cut off at 20 samples
+//     because that was roughly where grain stopped being obvious *on the shots I looked
+//     at*; a dim interior needs far more, a sunlit wall far less, and one global ramp
+//     cannot serve both. Variance of the mean falls as 1/N automatically, so the filter
+//     retires itself where the estimate has converged and keeps working where it has not.
+//
+// Alpha in/out is variance. uM2 selects how to read it: the accumulation buffer hands us
+// a second moment (variance = m2 - luma^2, over N samples), every later pass hands us the
+// filtered variance directly.
 export const DENOISE_FRAG = /* glsl */`
 precision highp float;
 varying vec2 vUv;
@@ -91,28 +131,91 @@ uniform sampler2D tPosition;
 uniform vec2 uTexel;
 uniform float uStep;      // à-trous dilation in pixels
 uniform float uStrength;  // 0 = passthrough
+uniform float uM2;        // 1 = alpha is a second moment, 0 = alpha is variance
+uniform float uSamples;   // accumulated samples behind the mean in tColor
+uniform float uPhiL;      // luminance tolerance, in standard deviations
+uniform float uPhiN;      // normal tolerance (exponent)
+uniform float uPhiP;      // world-position falloff, 1/metres
+
+float lumaOf(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+
+// Variance of the *mean* at a texel, however alpha happens to be encoded this pass.
+//
+// Note the N-1 rather than N: (E[l^2] - E[l]^2) underestimates the sample variance by
+// (N-1)/N, and dividing the corrected figure by N to get the variance of the mean leaves
+// N-1 on the bottom. At small N — the only place any of this matters — that correction is
+// not a rounding detail: at N=2 it is a factor of two.
+float varAt(vec4 c) {
+  float l = lumaOf(c.rgb);
+  return uM2 > 0.5 ? max(c.a - l * l, 0.0) / max(uSamples - 1.0, 1.0) : max(c.a, 0.0);
+}
+
 void main() {
-  vec3 c0 = texture(tColor, vUv).rgb;
-  if (uStrength <= 0.001) { oColor = vec4(c0, 1.0); return; }
+  vec4 c0 = texture(tColor, vUv);
+  if (uStrength <= 0.001) { oColor = c0; return; }
   vec4 n0 = texture(tNormal, vUv);
   vec3 p0 = texture(tPosition, vUv).xyz;
-  float sum = 1.0;
-  vec3 acc = c0;
+  float l0 = lumaOf(c0.rgb);
+
+  // Spatial fallback for a thin history.
+  //
+  // The temporal variance is estimated from the same N samples as the mean, so at N=1 it
+  // is *identically zero* — the mean is the sample, and there is nothing to disagree with.
+  // Taken at face value that gives a zero tolerance, every neighbour is rejected as an
+  // edge, and the filter switches itself off completely on the single noisiest frame
+  // there is: the one right after the camera moves. Which is most of them, in play.
+  //
+  // So below a handful of samples, estimate the noise from the neighbourhood in space
+  // instead, and use whichever estimate is larger. Costs 25 taps and only on the first
+  // few frames after a reset.
+  float floorV = 0.0;
+  if (uSamples < 4.0) {
+    float m1 = 0.0, m2 = 0.0;
+    for (int y = -2; y <= 2; y++)
+      for (int x = -2; x <= 2; x++) {
+        float l = lumaOf(texture(tColor, vUv + vec2(float(x), float(y)) * uTexel).rgb);
+        m1 += l; m2 += l * l;
+      }
+    m1 /= 25.0; m2 /= 25.0;
+    floorV = max(m2 - m1 * m1, 0.0);
+  }
+
+  // The variance estimate is itself built from noisy data. Prefilter it 3x3 (gaussian)
+  // before using it as a tolerance, or a single firefly declares its own neighbourhood an
+  // edge, refuses to be filtered, and survives every pass as a permanent bright speck.
+  float vs = 0.0, vw = 0.0;
+  for (int y = -1; y <= 1; y++)
+    for (int x = -1; x <= 1; x++) {
+      float k = (x == 0 && y == 0) ? 4.0 : ((x == 0 || y == 0) ? 2.0 : 1.0);
+      vs += varAt(texture(tColor, vUv + vec2(float(x), float(y)) * uTexel)) * k;
+      vw += k;
+    }
+  float sigmaL = uPhiL * sqrt(max(vs / vw, floorV)) + 1e-4;
+
   const float k[3] = float[3](1.0, 0.66, 0.24);
+  vec3 acc = c0.rgb;
+  float accV = varAt(c0);
+  float sum = 1.0, sum2 = 1.0;
   for (int y = -2; y <= 2; y++) {
     for (int x = -2; x <= 2; x++) {
       if (x == 0 && y == 0) continue;
       vec2 uv = vUv + vec2(float(x), float(y)) * uTexel * uStep;
+      vec4 c = texture(tColor, uv);
       vec4 n = texture(tNormal, uv);
       vec3 p = texture(tPosition, uv).xyz;
-      float wn = pow(max(dot(n.xyz, n0.xyz), 0.0), 24.0);
-      float wp = exp(-length(p - p0) * 14.0);
-      float w = k[abs(x)] * k[abs(y)] * wn * wp;
-      acc += texture(tColor, uv).rgb * w;
+      float wn = pow(max(dot(n.xyz, n0.xyz), 0.0), uPhiN);
+      float wp = exp(-length(p - p0) * uPhiP);
+      float wl = exp(-abs(lumaOf(c.rgb) - l0) / sigmaL);
+      float w = k[abs(x)] * k[abs(y)] * wn * wp * wl;
+      acc += c.rgb * w;
       sum += w;
+      // Variance of a weighted mean carries the *square* of each weight, so the estimate
+      // shrinks as the filter gathers — which is what lets the next pass filter less.
+      accV += varAt(c) * w * w;
+      sum2 += w * w;
     }
   }
-  oColor = vec4(mix(c0, acc / sum, uStrength), 1.0);
+  oColor = vec4(mix(c0.rgb, acc / sum, uStrength), accV / max(sum2, 1e-6));
 }`;
 
 // ---------------------------------------------------------------- bloom

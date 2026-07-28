@@ -131,7 +131,14 @@ export const DEFAULTS = {
   lift: 0.0,
 
   maxSamples: 512,
-  denoiseUntil: 20,
+  denoise: 1,
+  denoisePasses: 5,       // 5x5 taps at spacing 1,2,4,8,16 — an 81x81 effective support
+  denoisePhiL: 4.0,       // how many standard deviations of luminance count as "the same
+                          // surface". Below ~2 the filter refuses to cross its own noise
+                          // and grain survives every pass; above ~8 it starts eating
+                          // contact shadows under the parked cars.
+  denoiseUntil: 256,      // past this the mean is its own answer and the filter is a
+                          // no-op that still costs a full-screen pass.
 
   // How much history survives while something in the scene is moving. Debris and smoke
   // used to throw the whole accumulation away every frame, so the moment you destroyed
@@ -200,6 +207,7 @@ export class VoxelRenderer {
     this.samples = 0;
     this._camKey = '';
     this._volVersion = -1;
+    this._frozenTime = null;   // null = read the wall clock; see freezeTime()
     this.stats = { chunks: 0, triangles: 0, lastMeshMs: 0, samples: 0, frameMs: 0 };
 
     this._baseProj = new THREE.Matrix4();
@@ -308,6 +316,8 @@ export class VoxelRenderer {
     this.denoiseMaterial = fsMaterial(DENOISE_FRAG, {
       tColor: { value: null }, tNormal: { value: null }, tPosition: { value: null },
       uTexel: { value: new THREE.Vector2() }, uStep: { value: 1 }, uStrength: { value: 0 },
+      uM2: { value: 1 }, uSamples: { value: 1 },
+      uPhiL: { value: 4.0 }, uPhiN: { value: 24.0 }, uPhiP: { value: 14.0 },
     });
     this.bloomPreMaterial = fsMaterial(BLOOM_PREFILTER_FRAG, {
       tColor: { value: null }, uTexel: { value: new THREE.Vector2() },
@@ -333,7 +343,11 @@ export class VoxelRenderer {
     this.gbuf = createGBufferTarget(w, h);
     this.traceRT = hdrTarget(w, h);
     this.accumRT = [hdrTarget(w, h, true), hdrTarget(w, h, true)];
-    this.denoiseRT = hdrTarget(w, h);
+    // Two, to ping-pong the à-trous passes. Float rather than half: alpha carries variance
+    // of the mean, which at 100+ samples is a very small number multiplied by w*w again
+    // every pass, and half-float flushes it to zero — at which point the filter reads
+    // "converged" everywhere and stops, silently, exactly where it should be gentlest.
+    this.denoiseRT = [hdrTarget(w, h, true), hdrTarget(w, h, true)];
     this.bloomRT = [];
     let bw = Math.max(2, w >> 1), bh = Math.max(2, h >> 1);
     for (let i = 0; i < 5; i++) {
@@ -344,7 +358,7 @@ export class VoxelRenderer {
   }
 
   _disposeTargets() {
-    const all = [this.gbuf, this.traceRT, this.denoiseRT,
+    const all = [this.gbuf, this.traceRT, ...(this.denoiseRT || []),
       ...(this.accumRT || []), ...(this.bloomRT || []), ...(this._scratch || [])];
     for (const rt of all) if (rt) rt.dispose();
     this._scratch = null;
@@ -511,6 +525,15 @@ export class VoxelRenderer {
 
   /** Throw the history away. For anything that invalidates it wholesale: the camera
    *  moving, geometry being remeshed, a parameter change. */
+  /**
+   * Pin the clock the cloud layer reads, so successive accumulations render the same sky.
+   * Pass null to go back to wall-clock time. See __app.freeze() for why this exists.
+   */
+  freezeTime(t) {
+    this._frozenTime = t;
+    this.resetAccumulation();
+  }
+
   resetAccumulation() {
     this.samples = 0;
     this._movingBodies = false;
@@ -622,7 +645,10 @@ export class VoxelRenderer {
     const p = this.params;
     // Clouds drift with wall-clock time, but the value is frozen while a still frame
     // accumulates — otherwise the sky would smear across the temporal history.
-    if (this.samples === 0) this.shared.uTime.value = performance.now() * 0.001;
+    if (this.samples === 0) {
+      this.shared.uTime.value = this._frozenTime !== null && this._frozenTime !== undefined
+        ? this._frozenTime : performance.now() * 0.001;
+    }
     if (this.samples < p.maxSamples) {
       this._renderSample();
       this.samples++;
@@ -689,17 +715,30 @@ export class VoxelRenderer {
     const p = this.params;
     let color = this.accumRT[this.accumIdx].texture;
 
-    // ---- cleanup, only while the history is still thin
-    if (this.samples > 0 && this.samples < p.denoiseUntil) {
+    // ---- cleanup: variance-guided à-trous, doubling tap spacing each pass
+    //
+    // How hard each pass filters is decided per pixel by the measured variance, not here.
+    // All this schedule does is buy back the GPU time: a converged frame gets almost
+    // nothing out of five passes, because the weights have already collapsed to identity.
+    const passes = this._denoisePasses(this.samples, p);
+    if (passes > 0) {
       const du = this.denoiseMaterial.uniforms;
-      du.tColor.value = color;
       du.tNormal.value = this.gbuf.textures[1];
       du.tPosition.value = this.gbuf.textures[2];
       du.uTexel.value.set(1 / w, 1 / h);
-      du.uStep.value = this.samples < 4 ? 2.0 : 1.0;
-      du.uStrength.value = Math.min(1, Math.max(0, 1.0 - this.samples / p.denoiseUntil)) * 0.92;
-      this._blit(this.denoiseMaterial, this.denoiseRT);
-      color = this.denoiseRT.texture;
+      du.uStrength.value = 1.0;
+      du.uPhiL.value = p.denoisePhiL;
+      du.uSamples.value = this.samples;
+      for (let i = 0; i < passes; i++) {
+        du.tColor.value = color;
+        // Only the first pass reads the accumulator, whose alpha is a second moment;
+        // after that alpha is variance and must not be squared out again.
+        du.uM2.value = i === 0 ? 1 : 0;
+        du.uStep.value = 1 << i;
+        const dst = this.denoiseRT[i & 1];
+        this._blit(this.denoiseMaterial, dst);
+        color = dst.texture;
+      }
     }
 
     // ---- bloom mip chain
@@ -749,6 +788,21 @@ export class VoxelRenderer {
       }
       this.stats.particles = n;
     }
+  }
+
+  /**
+   * How many à-trous passes to run at a given sample count. Purely a cost schedule — the
+   * per-pixel weights already retire the filter where the estimate has converged, so this
+   * only decides how much GPU time to spend looking for the places it has not.
+   */
+  _denoisePasses(samples, p) {
+    if (samples <= 0 || p.denoise <= 0) return 0;
+    const max = p.denoisePasses;
+    if (samples < 4) return max;
+    if (samples < 16) return Math.max(1, max - 1);
+    if (samples < 48) return Math.max(1, max - 2);
+    if (samples < p.denoiseUntil) return 1;
+    return 0;
   }
 
   _bloomScratch(i) {

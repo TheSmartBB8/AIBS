@@ -150,11 +150,26 @@ const level = buildLevel(world, palette);
   CHECK(/vec3\s+envRadiance\s*\(/.test(ENVIRONMENT) && /vec3\s+envAmbient\s*\(/.test(ENVIRONMENT),
         'ENVIRONMENT exposes both the with-sun and no-sun entry points');
   CHECK(TRACE_FRAG.includes('envRadiance(uCamPos, rayDir)'), 'primary misses go to the backdrop, not bare sky');
-  CHECK(TRACE_FRAG.includes('envRadiance(P, R)'), 'reflections that escape see the backdrop too');
+  // Escaping specular rays see the backdrop *without* the sun disc, because the sun is
+  // sampled explicitly for the specular lobe. These two facts have to move together: put
+  // envRadiance back here while specularBRDF is still in the sun block and every glossy
+  // surface counts the sun twice, which reads as a blown-out smear rather than an obvious
+  // bug. Assert both halves so neither can be changed alone.
+  CHECK(TRACE_FRAG.includes('envAmbient(P, R)') && !TRACE_FRAG.includes('envRadiance(P, R)'),
+        'escaping reflections see the backdrop but not the sun disc');
+  CHECK(/sunSpec\s*\+=[^;]*specularBRDF\(N, V, L,/.test(TRACE_FRAG),
+        'the sun is sampled explicitly for specular, not left to the reflection ray');
   CHECK(TRACE_FRAG.includes('envAmbient(uCamPos, rayDir)'), 'aerial perspective fades toward the backdrop');
 
-  // Balanced braces is a cheap proxy for "the template literal was not truncated" — the
-  // exact failure mode a stray backtick produces.
+  // Balanced braces is a cheap proxy for "the template literal was not truncated".
+  //
+  // The failure this guards against is a backtick written inside a doc comment in a GLSL
+  // template literal, which silently ends the string early. Worth being clear about what
+  // catches what: when the stray backtick is unpaired the file is no longer valid
+  // JavaScript, and simply *importing* it — which this suite does at the top — is the
+  // detection, reported by tests/all.mjs as a crashed suite. This check covers the case
+  // where the backticks happen to pair up, so the module still parses and the shader is
+  // merely truncated. Both have now happened.
   const opens = (TRACE_FRAG.match(/\{/g) || []).length, closes = (TRACE_FRAG.match(/\}/g) || []).length;
   CHECK(opens === closes, `the assembled trace shader has balanced braces (${opens}/${closes})`);
 

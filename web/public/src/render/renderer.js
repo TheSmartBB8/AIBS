@@ -110,6 +110,10 @@ export const DEFAULTS = {
                           // size needs portal sampling, not more bounces.
   specRange: 300,
   emissivePower: 1.0,
+  fireEmissive: 6.0,      // gain on additive particles going into the HDR buffer, so fire
+                          // crosses bloomThreshold. See the note in particles.js: the ramp
+                          // peaks at 1.0 and the threshold is 1.75, so the value matters —
+                          // at 1.0 a flame glows exactly as much as no flame at all.
   lightScale: 0.22,
   voxelEdge: 0.16,        // seam darkening between adjacent voxels — the strongest cue
                           // that a merged quad is actually made of cubes.
@@ -788,6 +792,12 @@ export class VoxelRenderer {
       const prevAuto = this.renderer.autoClear;
       this.renderer.autoClear = false;
       this.renderer.setRenderTarget(this.fxRT);
+      // Emissive gain. Fire tops out at 1.0 in the colour ramp and the bloom threshold is
+      // 1.75, so without this the flame sits in the bloom path and still contributes
+      // nothing — the reorder alone was a no-op. 6.0 clears the threshold roughly three
+      // times over, which is the right order for something that is meant to be a light
+      // source next to brick that lands near 2.
+      this.particleRenderer.additive.mat.uniforms.uGain.value = p.fireEmissive;
       this.particleRenderer.render(this.renderer, this.camera, 'additive');
       this.renderer.autoClear = prevAuto;
       color = this.fxRT.texture;

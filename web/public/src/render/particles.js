@@ -51,6 +51,19 @@ uniform sampler2D tPosition;   // G-buffer world position (w = palette, 0 = sky)
 uniform vec2 uRes;
 uniform vec3 uCamPos;
 uniform float uSoft;
+// Emissive gain, applied to the additive layer only.
+//
+// Fire is authored in display space: fireEmit ramps it from (1.0, 0.92, 0.62) white-hot to
+// (0.85, 0.22, 0.045), so the brightest channel it ever reaches is 1.0. The bloom
+// prefilter thresholds at 1.75, which means br - threshold is negative, the soft knee
+// clamps to zero, and a flame contributes *exactly nothing* to the glow. Moving the layer
+// in front of the bloom chain was necessary and did nothing on its own — checked by
+// reading the two numbers rather than by rendering.
+//
+// Real flame is far brighter than the sunlit brick beside it, and sunlit brick here lands
+// around 2 (sunPower 3.9 x albedo ~0.5). A gain that clears the threshold several times
+// over is what makes fire read as a light source instead of an orange decal.
+uniform float uGain;
 void main() {
   float d = length(vUv) * 2.0;
   if (d > 1.0) discard;
@@ -68,7 +81,7 @@ void main() {
     // fade as it approaches the surface so puffs don't slice through walls
     a *= clamp((sceneDist - partDist) * uSoft, 0.0, 1.0);
   }
-  gl_FragColor = vec4(vColor, a);
+  gl_FragColor = vec4(vColor * uGain, a);
 }`;
 
 function makeLayer(blending, depthWrite) {
@@ -91,6 +104,7 @@ function makeLayer(blending, depthWrite) {
       uRes: { value: new THREE.Vector2(960, 540) },
       uCamPos: { value: new THREE.Vector3() },
       uSoft: { value: 2.5 },
+      uGain: { value: 1.0 },
     },
     transparent: true, depthTest: false, depthWrite,
     blending, side: THREE.DoubleSide,

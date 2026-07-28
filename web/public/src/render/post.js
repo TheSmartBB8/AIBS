@@ -191,8 +191,23 @@ void main() {
   // So below a handful of samples, estimate the noise from the neighbourhood in space
   // instead, and use whichever estimate is larger. Costs 25 taps and only on the first
   // few frames after a reset.
+  // Only at a single sample, where the temporal estimate is *identically* zero and there
+  // is nothing else to go on. This used to trigger below 4 samples and that was actively
+  // harmful: measured against a 384-sample reference, the filter improved the 1-sample
+  // frame by 12.6% but made 2 samples 15.0% worse and 3 samples 39.0% worse, while 6
+  // samples — just past the threshold — improved by 31.6%.
+  //
+  // The cause is the max() below. A neighbourhood's spatial variance at low sample counts
+  // is dominated by real scene detail rather than noise, so once the temporal estimate
+  // becomes usable at N=2 the floor overrides it with an inflated tolerance and the filter
+  // blurs across genuine edges. Taking the larger of the two is only right when one of
+  // them is known to be meaningless.
+  //
+  // Worth noting none of the earlier measurements could have caught this: they sampled
+  // 4/8/16/32/64 with a static camera, and 2-3 samples is what a *moving* camera produces
+  // constantly — which is most frames in play.
   float floorV = 0.0;
-  if (uSamples < 4.0) {
+  if (uSamples < 2.0) {
     float m1 = 0.0, m2 = 0.0;
     for (int y = -2; y <= 2; y++)
       for (int x = -2; x <= 2; x++) {

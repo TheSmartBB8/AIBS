@@ -193,9 +193,17 @@ void main() {
   // few frames after a reset.
   // Only at a single sample, where the temporal estimate is *identically* zero and there
   // is nothing else to go on. This used to trigger below 4 samples and that was actively
-  // harmful: measured against a 384-sample reference, the filter improved the 1-sample
-  // frame by 12.6% but made 2 samples 15.0% worse and 3 samples 39.0% worse, while 6
-  // samples — just past the threshold — improved by 31.6%.
+  // harmful. Measured against a 384-sample reference, before and after narrowing it:
+  //
+  //     samples   was      now
+  //           1   -12.6%   -12.6%
+  //           2   +15.0%   -43.6%
+  //           3   +39.0%   -39.9%
+  //           6   -31.6%   -31.6%
+  //
+  // Two and three samples went from worse-than-no-filter to the best results in the table,
+  // and the counts either side are untouched, which is what says the change is confined to
+  // the band it was aimed at.
   //
   // The cause is the max() below. A neighbourhood's spatial variance at low sample counts
   // is dominated by real scene detail rather than noise, so once the temporal estimate

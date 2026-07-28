@@ -111,6 +111,14 @@ export const DEFAULTS = {
 
   maxSamples: 512,
   denoiseUntil: 20,
+
+  // How much history survives while something in the scene is moving. Debris and smoke
+  // used to throw the whole accumulation away every frame, so the moment you destroyed
+  // anything the image dropped to a single sample per pixel and stayed there for as long
+  // as the rubble kept twitching — the noisiest the renderer ever looks is exactly when
+  // the player is looking hardest. Holding a few frames of history, with neighbourhood
+  // clamping to stop it smearing, is worth far more than the mean it gives up.
+  motionSamples: 6,
 };
 
 export class VoxelRenderer {
@@ -273,6 +281,7 @@ export class VoxelRenderer {
 
     this.accumMaterial = fsMaterial(ACCUM_FRAG, {
       tCur: { value: null }, tHist: { value: null }, uBlend: { value: 1 },
+      uTexel: { value: new THREE.Vector2() }, uClamp: { value: 0 },
     });
     this.denoiseMaterial = fsMaterial(DENOISE_FRAG, {
       tColor: { value: null }, tNormal: { value: null }, tPosition: { value: null },
@@ -404,6 +413,7 @@ export class VoxelRenderer {
   setLights(transient) {
     if (!transient || transient.length === 0) {
       if (this._hadTransient) { this._hadTransient = false; this.lights = this._staticLights || this.lights; this._applyLights(); }
+      this._movingLights = false;
       return;
     }
     this._staticLights = this._staticLights || this.lights;
@@ -417,7 +427,10 @@ export class VoxelRenderer {
     this.lights = dyn.concat(this._staticLights.slice(0, Math.max(0, 8 - dyn.length)));
     this._hadTransient = true;
     this._applyLights();
-    this.resetAccumulation();
+    // A flash fades every frame, so a full reset here pins the image at one sample for
+    // as long as anything is burning. Same treatment as debris: hold and clamp.
+    this._movingLights = true;
+    this.holdAccumulation();
   }
 
   /**
@@ -426,7 +439,8 @@ export class VoxelRenderer {
    */
   setBodies(bodies, debris) {
     const moving = this.bodyRenderer.update(bodies || [], debris);
-    if (moving || this._hadBodies) this.resetAccumulation();
+    this._movingBodies = moving || !!this._hadBodies;
+    if (this._movingBodies) this.holdAccumulation();
     this._hadBodies = moving;
     return moving;
   }
@@ -434,9 +448,11 @@ export class VoxelRenderer {
   /** Hand in the fx layer's instance data for this frame. */
   setParticles(inst) {
     this._particleInst = inst;
-    // Particles move every frame, so a still accumulating frame must restart or they
-    // smear into the history as translucent streaks.
-    if (inst && ((inst.blend?.count | 0) + (inst.additive?.count | 0)) > 0) this.resetAccumulation();
+    // Particles move every frame. They are drawn forward over the composited image, so
+    // they never enter the history themselves — but the world behind them is being
+    // relit as smoke shadows it, so the history is still partly stale.
+    this._movingParticles = !!inst && ((inst.blend?.count | 0) + (inst.additive?.count | 0)) > 0;
+    if (this._movingParticles) this.holdAccumulation();
   }
 
   _applyLights() {
@@ -456,7 +472,26 @@ export class VoxelRenderer {
     }
   }
 
-  resetAccumulation() { this.samples = 0; }
+  /** Throw the history away. For anything that invalidates it wholesale: the camera
+   *  moving, geometry being remeshed, a parameter change. */
+  resetAccumulation() {
+    this.samples = 0;
+    this._movingBodies = false;
+    this._movingParticles = false;
+    this._movingLights = false;
+  }
+
+  /**
+   * Something in the scene is animating. Keep a few frames of history rather than
+   * discarding it, and turn on neighbourhood clamping so the part that is stale gets
+   * rejected per pixel instead of smearing.
+   */
+  holdAccumulation() {
+    this.samples = Math.min(this.samples, this.params.motionSamples);
+  }
+
+  /** True while debris, particles or a fading flash are live, so the history is partly stale. */
+  get inMotion() { return !!(this._movingBodies || this._movingParticles || this._movingLights); }
 
   setSize(w, h) {
     w = Math.max(2, w | 0); h = Math.max(2, h | 0);
@@ -604,6 +639,10 @@ export class VoxelRenderer {
     au.tCur.value = this.traceRT.texture;
     au.tHist.value = src.texture;
     au.uBlend.value = n === 0 ? 1.0 : 1.0 / (n + 1);
+    au.uTexel.value.set(1 / w, 1 / h);
+    // Clamp only while something is animating. On a still frame the running mean is the
+    // whole point of the accumulator and clamping would bias it toward the newest sample.
+    au.uClamp.value = this.inMotion ? 1.0 : 0.0;
     this._blit(this.accumMaterial, dst);
     this.accumIdx = 1 - this.accumIdx;
   }

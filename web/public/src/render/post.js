@@ -50,13 +50,33 @@ varying vec2 vUv;
 layout(location = 0) out vec4 oColor;
 uniform sampler2D tCur;
 uniform sampler2D tHist;
+uniform vec2 uTexel;
 uniform float uBlend;
+uniform float uClamp;   // 0 = pure average (still frame), 1 = clamp history (motion)
 void main() {
   vec3 c = texture(tCur, vUv).rgb;
   vec3 h = texture(tHist, vUv).rgb;
   // guard against NaN/Inf leaking into the history and poisoning it forever
   c = clamp(c, vec3(0.0), vec3(2048.0));
   if (!(c.r == c.r)) c = vec3(0.0);
+
+  // Neighbourhood clamping. While debris is tumbling and smoke is drifting the history
+  // holds those things where they *were*, so blending it in smears them. Clamping the
+  // history into the colour range of the current frame's 3x3 neighbourhood throws away
+  // exactly the samples that disagree with what is there now, which is what lets the
+  // accumulator keep running through motion instead of having to be thrown away.
+  // Disabled on a still frame (uClamp = 0), where an honest mean is strictly better.
+  if (uClamp > 0.0) {
+    vec3 lo = c, hi = c;
+    for (int y = -1; y <= 1; y++)
+      for (int x = -1; x <= 1; x++) {
+        vec3 s = texture(tCur, vUv + vec2(float(x), float(y)) * uTexel).rgb;
+        lo = min(lo, s); hi = max(hi, s);
+      }
+    // widen slightly: a hard box on a 1-spp frame is so noisy it rejects good history
+    vec3 pad = (hi - lo) * 0.5 + vec3(0.02);
+    h = mix(h, clamp(h, lo - pad, hi + pad), uClamp);
+  }
   oColor = vec4(mix(h, c, uBlend), 1.0);
 }`;
 

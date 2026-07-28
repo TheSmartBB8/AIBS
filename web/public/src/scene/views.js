@@ -13,7 +13,9 @@
 // frame under tarmac and hid the buildings' upper storeys behind their own eaves.
 export const VIEWS = {
   // On the road looking down it: shopfronts to one side, the warehouse to the other.
-  street:   { pos: [2.6,  2.9,  3.4], look: [22.0, 3.4,  4.8], fov: 70 },
+  // Pulled back from x 2.6 once the hatch moved to x 3.0 to open the car view: from there
+  // the hatch sat a metre ahead and filled the bottom half of the frame.
+  street:   { pos: [1.0,  2.9,  3.4], look: [22.0, 3.4,  4.8], fov: 70 },
   // From the road, diagonally across at the warehouse. Off the verge at z 6.0, where the
   // kerbside crate row stood right against the lens.
   approach: { pos: [2.2,  2.9,  4.4], look: [13.0, 4.0, 13.0], fov: 72 },

@@ -89,6 +89,14 @@ const level = buildLevel(world, palette);
   // 0.85: a stack filling the bottom third of the frame blocks about a fifth of the rays,
   // which a laxer bar waves through. Views flagged `tight` are deliberately in close
   // quarters and only have to not be walled in.
+  //
+  // Known limit, stated rather than papered over: this measures *distance*, not screen
+  // coverage. A car parked 1.1 m away filled the bottom half of the street shot while
+  // scoring 0.94 here, because most of its rays landed just past the cutoff. I tried a
+  // near-field coverage term as well and it caught nothing this did not, at any threshold
+  // that left the deliberately-close views passing — 49 rays is too coarse to measure how
+  // much of a frame an object below the view axis takes up. Treat a pass as "the lens is
+  // not buried", not as "the shot is well framed"; the latter still needs looking at it.
   const cramped = Object.entries(VIEWS)
     .map(([k, v]) => [k, openFraction(v), v.tight ? 0.55 : 0.85])
     .filter(([, frac, bar]) => frac < bar);

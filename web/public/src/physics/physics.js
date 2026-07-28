@@ -50,6 +50,10 @@ export class PhysicsWorld {
       seed: opts.seed === undefined ? 0x5eed1234 : opts.seed,
     });
     this.damage = new DamageField();
+    // Drivable vehicles. Their chassis also live in `bodies`, so they collide, take blast
+    // loading and shatter through exactly the same code as any other rigid body; the
+    // Vehicle wrapper only adds wheels.
+    this.vehicles = [];
     this.rng = new Rng((opts.seed === undefined ? 0x5eed1234 : opts.seed) ^ 0x1f2e3d4c);
 
     // ---- solver tuning
@@ -125,6 +129,14 @@ export class PhysicsWorld {
   // ==================================================================== one substep
   substep(h) {
     const bodies = this.bodies;
+
+    // Vehicles accumulate their wheel forces into the chassis *before* it integrates, so
+    // suspension and traction are part of the same step as gravity rather than a
+    // correction applied to a body that has already moved.
+    for (let i = 0; i < this.vehicles.length; i++) {
+      const v = this.vehicles[i];
+      if (v.alive) v.step(this.world, h);
+    }
 
     for (let i = 0; i < bodies.length; i++) {
       const b = bodies[i];
@@ -444,6 +456,10 @@ export class PhysicsWorld {
    * themselves shed as debris when they hit something stronger.
    */
   settleBody(body) {
+    // A vehicle standing still is parked, not rubble. Welding its chassis into the grid
+    // would turn the car you just got out of into scenery, and there would be nothing
+    // left to drive.
+    if (body.vehicle) { body.sleepTimer = 0; return null; }
     body.settled = true;
     body.alive = false;
     if (!this.weldBodies) return null;
@@ -589,6 +605,30 @@ export class PhysicsWorld {
    * `fraction` then thins the fragments, not the voxels: it decides how much of the
    * rubble becomes airborne rather than how finely it is ground.
    */
+  /**
+   * Register a vehicle. Its chassis joins the normal body list, so it collides, takes
+   * blast loading and can be shot to pieces by exactly the same code as any other body.
+   */
+  addVehicle(vehicle) {
+    vehicle.body.vehicle = vehicle;
+    // Suspension rates are derived from weight, so the vehicle has to agree with this
+    // world about how strong gravity is or it sits at the wrong ride height.
+    vehicle.tuning.gravity = Math.abs(this.gravity[1]);
+    vehicle.retune();
+    this.vehicles.push(vehicle);
+    this.bodies.push(vehicle.body);
+    if (this.onBodySpawn) this.onBodySpawn(vehicle.body);
+    return vehicle;
+  }
+
+  removeVehicle(vehicle) {
+    const vi = this.vehicles.indexOf(vehicle);
+    if (vi >= 0) this.vehicles.splice(vi, 1);
+    const bi = this.bodies.indexOf(vehicle.body);
+    if (bi >= 0) this.bodies.splice(bi, 1);
+    vehicle.alive = false;
+  }
+
   spawnDebrisFor(destroyed, centre, speed, fraction) {
     if (!destroyed.length || fraction <= 0) return;
     const S = this.debrisChunk;

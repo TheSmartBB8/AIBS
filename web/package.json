@@ -8,7 +8,9 @@
     "postinstall": "npm run vendor",
     "serve": "http-server public -p 8899 --silent",
     "test": "node tests/all.mjs",
-    "shot": "node tools/shot.mjs"
+    "shot": "node tools/shot.mjs",
+    "pack": "node tools/pack.mjs",
+    "verify:pack": "node tools/verify_pack.mjs"
   },
   "keywords": [],
   "author": "",
@@ -16,5 +18,10 @@
   "dependencies": {
     "three": "^0.185.1"
   },
-  "type": "module"
+  "type": "module",
+  "devDependencies": {
+    "esbuild": "^0.28.1",
+    "http-server": "^14.1.1",
+    "playwright": "^1.49.0"
+  }
 }

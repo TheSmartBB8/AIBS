@@ -1,6 +1,6 @@
 // shot_light.mjs — renderer/lighting screenshot harness (port 8811).
 // Usage: node tools/shot_light.mjs [outDir] [view1,view2,...] [width] [height] [accumFrames]
-import { chromium } from 'playwright';
+import { launchChromium } from './browser.mjs';
 import { mkdirSync, writeFileSync } from 'fs';
 
 const outDir = process.argv[2] || 'shots/light';
@@ -11,7 +11,7 @@ const ACC = parseInt(process.argv[6] || '96', 10);
 const OVERRIDES = process.argv[7] ? JSON.parse(process.argv[7]) : null;
 mkdirSync(outDir, { recursive: true });
 
-const browser = await chromium.launch({ args: ['--enable-unsafe-swiftshader'] });
+const browser = await launchChromium();
 const page = await browser.newPage({ viewport: { width: W, height: H } });
 const errors = [];
 page.on('pageerror', e => errors.push('PAGEERROR: ' + e.message));

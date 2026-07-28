@@ -1,10 +1,10 @@
 // demo.mjs — stage a destruction event, let debris settle, then capture before/after.
-import { chromium } from 'playwright';
+import { launchChromium } from './browser.mjs';
 import { mkdirSync, writeFileSync } from 'fs';
 const out = process.argv[2] || 'shots/demo';
 const view = process.argv[3] || 'street';
 mkdirSync(out, { recursive: true });
-const browser = await chromium.launch({ args: ['--enable-unsafe-swiftshader'] });
+const browser = await launchChromium();
 const page = await browser.newPage({ viewport: { width: 640, height: 360 } });
 const errs = [];
 page.on('pageerror', e => errs.push('PAGEERROR: ' + e.message));

@@ -3,7 +3,7 @@
 // loop is iterating. Uses the browser we already have rather than an image library.
 //
 // Usage: node tools/sheet.mjs <shotsDir> <out.png> [cols] [label]
-import { chromium } from 'playwright';
+import { launchChromium } from './browser.mjs';
 import { readdirSync, readFileSync, writeFileSync } from 'fs';
 import { basename, join } from 'path';
 
@@ -31,7 +31,7 @@ const html = `<!doctype html><meta charset="utf-8"><style>
                color:#f0a030; letter-spacing:.06em; }
 </style><h1>${label}</h1><div class="grid">${cells}</div>`;
 
-const browser = await chromium.launch({ args: ['--enable-unsafe-swiftshader'] });
+const browser = await launchChromium();
 const page = await browser.newPage({ viewport: { width: 480 * cols + 8, height: 800 } });
 await page.setContent(html, { waitUntil: 'load' });
 await page.waitForTimeout(300);

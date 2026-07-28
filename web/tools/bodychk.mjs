@@ -1,5 +1,5 @@
-import { chromium } from 'playwright';
-const b = await chromium.launch({ args:['--enable-unsafe-swiftshader'] });
+import { launchChromium } from './browser.mjs';
+const b = await launchChromium();
 const p = await b.newPage({ viewport:{width:640,height:360} });
 const errs=[]; p.on('pageerror',e=>errs.push(e.message)); p.on('console',m=>{if(m.type()==='error')errs.push(m.text().slice(0,200));});
 await p.goto('http://127.0.0.1:8899/index.html',{waitUntil:'load',timeout:60000});

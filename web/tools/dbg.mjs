@@ -1,5 +1,5 @@
-import { chromium } from 'playwright';
-const b = await chromium.launch({ args:['--enable-unsafe-swiftshader'] });
+import { launchChromium } from './browser.mjs';
+const b = await launchChromium();
 const p = await b.newPage({ viewport:{width:320,height:240} });
 p.on('console', m => console.log('CONSOLE['+m.type()+']:', m.text().slice(0,300)));
 p.on('pageerror', e => console.log('PAGEERROR:', e.message.slice(0,300)));

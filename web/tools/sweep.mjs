@@ -7,7 +7,7 @@
 //
 // Usage: node tools/sweep.mjs <view> <out.png> '<json array of param objects>' [w] [h]
 //   node tools/sweep.mjs street /tmp/s.png '[{},{"envFog":0.003},{"bounce":1.6}]'
-import { chromium } from 'playwright';
+import { launchChromium } from './browser.mjs';
 import { writeFileSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
 
@@ -20,7 +20,7 @@ const TARGET = parseInt(process.env.SAMPLES || '40', 10);
 const PORT = process.env.PORT || '8899';
 mkdirSync(dirname(out), { recursive: true });
 
-const browser = await chromium.launch({ args: ['--enable-unsafe-swiftshader'] });
+const browser = await launchChromium();
 const page = await browser.newPage({ viewport: { width: W, height: H } });
 const errors = [];
 page.on('pageerror', (e) => errors.push('PAGEERROR: ' + e.message));

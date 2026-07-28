@@ -1,6 +1,6 @@
 // shot.mjs — headless screenshot harness. Drives named views and writes PNGs.
 // Usage: node tools/shot.mjs [outDir] [view1,view2,...] [width] [height]
-import { chromium } from 'playwright';
+import { launchChromium } from './browser.mjs';
 import { mkdirSync, writeFileSync } from 'fs';
 
 const outDir = process.argv[2] || 'shots';
@@ -9,7 +9,7 @@ const W = parseInt(process.argv[4] || '960', 10);
 const H = parseInt(process.argv[5] || '540', 10);
 mkdirSync(outDir, { recursive: true });
 
-const browser = await chromium.launch({ args: ['--enable-unsafe-swiftshader'] });
+const browser = await launchChromium();
 const page = await browser.newPage({ viewport: { width: W, height: H } });
 const errors = [];
 page.on('pageerror', e => errors.push('PAGEERROR: ' + e.message));

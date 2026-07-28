@@ -9,6 +9,7 @@
 
 export { PhysicsWorld, hashState, SUBSTEP_HZ, SUBSTEP_H } from './physics.js';
 export { VoxelBody, resetBodyIds } from './body.js';
+export { Vehicle, Wheel, vehicleFromVoxels, CAR_TUNING } from './vehicle.js';
 export { DebrisSystem } from './debris.js';
 export {
   carveSphere, carveCapsule, carveRay, carveBox, carveField,

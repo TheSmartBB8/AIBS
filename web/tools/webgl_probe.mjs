@@ -1,7 +1,7 @@
 // Probe: can headless Chromium give us a real WebGL2 context, and can we screenshot
 // an actual three.js render? The whole visual-critic loop depends on this being真
 // genuinely true, so verify before building on top of it.
-import { chromium } from 'playwright';
+import { launchChromium } from './browser.mjs';
 import { writeFileSync } from 'fs';
 
 const FLAG_SETS = [
@@ -17,7 +17,7 @@ let winner = null;
 for (const set of FLAG_SETS) {
   let browser;
   try {
-    browser = await chromium.launch({ args: set.args });
+    browser = await launchChromium();
     const page = await browser.newPage({ viewport: { width: 320, height: 240 } });
     const errs = [];
     page.on('console', m => { if (m.type() === 'error') errs.push(m.text()); });

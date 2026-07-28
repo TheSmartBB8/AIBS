@@ -60,6 +60,8 @@ export function buildLevel(world, palette) {
     tyre:       palette.add(34, 34, 38, MAT.PLASTIC),
     carBody:    palette.add(58, 96, 152, MAT.METAL),
     carGlass:   palette.add(34, 48, 60, MAT.GLASS),
+    lampCar:    palette.add(236, 232, 214, MAT.GLASS, 0.30),
+    brakeLamp:  palette.add(206, 46, 38, MAT.PLASTIC, 0.30),
     leaf:       palette.add(72, 104, 52, MAT.FOLIAGE),
     trunk:      palette.add(92, 68, 46, MAT.WOOD),
     // 6.0 blew the lamp head into a featureless white disc with a bloom halo over a
@@ -346,6 +348,20 @@ export function buildLevel(world, palette) {
     for (const wx of [x0 + 6, x0 + 32])
       for (const wz of [z0 + 1, z0 + W - 4])
         box(wx, G, wz, wx + 5, G + 4, wz + 3, P.tyre);
+    // Details on the ends. Parked on a narrow street the car is usually seen head- or
+    // tail-on, and from there a plain extruded slab is all it was: no lamps, no glass,
+    // no bumper line to catch the light.
+    box(x0, G + 3, z0 + 2, x0, G + 6, z0 + W - 2, P.carGlass);           // windscreen
+    box(x0 + L, G + 3, z0 + 2, x0 + L, G + 6, z0 + W - 2, P.carGlass);   // rear screen
+    box(x0 - 1, G + 2, z0 + 1, x0 - 1, G + 3, z0 + W - 1, P.metalDark);  // bumpers
+    box(x0 + L + 1, G + 2, z0 + 1, x0 + L + 1, G + 3, z0 + W - 1, P.metalDark);
+    for (const lz2 of [z0 + 2, z0 + W - 5]) {
+      box(x0 - 1, G + 4, lz2, x0 - 1, G + 5, lz2 + 3, P.lampCar);        // headlamps
+      box(x0 + L + 1, G + 4, lz2, x0 + L + 1, G + 5, lz2 + 3, P.brakeLamp);
+    }
+    box(x0 + L + 1, G + 2, z0 + 7, x0 + L + 1, G + 3, z0 + 11, P.paint); // plate
+    box(x0 + 1, G + 8, z0 + 2, x0 + 9, G + 8, z0 + W - 2, P.carBody);    // bonnet lip
+    box(x0 + 31, G + 8, z0 + 2, x0 + L - 1, G + 8, z0 + W - 2, P.carBody);
   }
 
   // ---- lamp post
@@ -746,9 +762,14 @@ export function buildLevel(world, palette) {
     for (const wx of [x0 + 4, x0 + L - 14])
       for (const wz of [z0, z0 + W - 5])
         box(wx, G, wz, wx + 7, G + 5, wz + 4, P.tyre);
-    // a stack of the same crates that are on the pallets, being loaded alongside
-    box(x0 - 14, G, z0 + 4, x0 - 6, G + 8, z0 + 12, P.woodPale);
-    box(x0 - 13, G + 9, z0 + 5, x0 - 7, G + 15, z0 + 11, P.stock);
+  }
+
+  // ---- crates waiting outside the roller door. They used to sit beside the van on the
+  // road, where the corner camera looked straight over the top of the stack.
+  {
+    box(110, G, 66, 118, G + 8, 74, P.woodPale);
+    box(111, G + 9, 67, 117, G + 15, 73, P.stock);
+    box(122, G, 68, 128, G + 6, 74, P.stockAlt);
   }
 
   // ---- a brick chimney stack on the warehouse gable, matching the terrace's roofline

@@ -61,17 +61,39 @@ const level = buildLevel(world, palette);
   const buried = Object.entries(VIEWS).filter(([, v]) => !clear(v.pos)).map(([k]) => k);
   CHECK(buried.length === 0, `every review camera stands in open air (inside geometry: ${JSON.stringify(buried)})`);
 
-  // Standing in air is not enough — a lens 30 cm from a wall still renders a slab. The
-  // near metre along the view direction has to be open too. Not further than that:
-  // `closeup` is supposed to have its subject about two metres out.
-  const blocked = Object.entries(VIEWS).filter(([, v]) => {
-    const d = [0, 1, 2].map(i => v.look[i] - v.pos[i]);
-    const L = Math.hypot(...d) || 1;
-    for (const t of [0.4, 0.7, 1.0])
-      if (!clear([0, 1, 2].map(i => v.pos[i] + (d[i] / L) * t))) return true;
-    return false;
-  }).map(([k]) => k);
-  CHECK(blocked.length === 0, `no review camera is pressed against geometry (${JSON.stringify(blocked)})`);
+  // Standing in air is not enough, and neither is a clear line down the middle: the
+  // corner camera passed both while perched 20 cm above a crate stack that filled the
+  // bottom third of the frame. Fan rays across the frustum and require that most of them
+  // get somewhere. This measures what the lens actually sees.
+  const openFraction = (v) => {
+    const f = [0, 1, 2].map(i => v.look[i] - v.pos[i]);
+    const L = Math.hypot(...f) || 1;
+    const F = f.map(c => c / L);
+    // camera basis: right = forward x worldUp, up = right x forward
+    const R = [-F[2], 0, F[0]];
+    const rl = Math.hypot(...R) || 1;
+    const Rn = R.map(c => c / rl);
+    const U = [Rn[1] * F[2] - Rn[2] * F[1], Rn[2] * F[0] - Rn[0] * F[2], Rn[0] * F[1] - Rn[1] * F[0]];
+    const half = Math.tan(((v.fov ?? 70) * Math.PI / 180) / 2);
+    let open = 0, total = 0;
+    for (let iy = -3; iy <= 3; iy++)
+      for (let ix = -3; ix <= 3; ix++) {
+        const a = (ix / 3) * half * 1.6, b = (iy / 3) * half;   // 1.6 ~ 16:9 aspect
+        const d = [0, 1, 2].map(i => F[i] + Rn[i] * a + U[i] * b);
+        const h = world.raycast(v.pos[0], v.pos[1], v.pos[2], d[0], d[1], d[2], 3.0);
+        total++;
+        if (!h.hit || h.dist > 1.2) open++;
+      }
+    return open / total;
+  };
+  // 0.85: a stack filling the bottom third of the frame blocks about a fifth of the rays,
+  // which a laxer bar waves through. Views flagged `tight` are deliberately in close
+  // quarters and only have to not be walled in.
+  const cramped = Object.entries(VIEWS)
+    .map(([k, v]) => [k, openFraction(v), v.tight ? 0.55 : 0.85])
+    .filter(([, frac, bar]) => frac < bar);
+  CHECK(cramped.length === 0,
+        `no review camera has its frame filled by near geometry (${JSON.stringify(cramped.map(([k, f]) => k + ':' + f.toFixed(2)))})`);
 
   // ...and is aimed somewhere, not at its own position
   const degenerate = Object.entries(VIEWS).filter(([, v]) =>

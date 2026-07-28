@@ -1,8 +1,15 @@
-// debris.js — the small stuff: single voxels and chips too small to be worth a rigid body.
+// debris.js — the small stuff: fragments too small to be worth a rigid body.
 //
 // A 12-voxel fragment does not need an inertia tensor; it needs to arc, bounce off a wall,
-// skitter, and end up on the floor. So debris are point particles with a voxel-sized
-// collision sphere and no orientation, which lets us run thousands of them.
+// skitter, and end up on the floor. So debris are point particles with no orientation,
+// which lets us run thousands of them.
+//
+// A particle carries a *cluster* of voxels, not one. Spawning every destroyed voxel as its
+// own particle turned a rocket into six thousand independent grains, which spread into a
+// wide field of fine gravel — nothing like the tumbling chunks the real game throws. A
+// particle now owns a small block of cells (local offsets from its anchor voxel) that
+// travel, collide and weld as a unit, so the same blast produces a few hundred fragments
+// with the mass and scale of masonry rubble.
 //
 // The one non-obvious choice: settled debris is *welded back into the voxel grid* rather
 // than despawned. Teardown's rubble stays on the ground, and since our world is a dense
@@ -15,6 +22,9 @@ import { sphereVsWorld, SAMPLE_RADIUS } from './collision.js';
 import { matPhys } from './materials.js';
 import { markRegionDirty } from './destruction.js';
 import { Rng } from './math3d.js';
+
+/** Shared by every single-voxel chip; never mutated. */
+const SINGLE_CELL = Object.freeze([Object.freeze([0, 0, 0, 0])]);
 
 export class DebrisSystem {
   constructor(world, palette, opts = {}) {
@@ -41,9 +51,64 @@ export class DebrisSystem {
       x, y, z, vx, vy, vz, pal,
       age: 0, rest: 0, alive: true,
       restitution: mp.restitution, friction: mp.friction,
+      // A single-voxel chip. `cells` is the general form used by chunks; keeping it
+      // present (rather than null) means step/weld/render never need a special case.
+      cells: (opts && opts.cells) || SINGLE_CELL,
+      radius: (opts && opts.radius) || SAMPLE_RADIUS,
       // Pulverised material (crush splinters) must not weld back into the grid. Letting
       // it re-weld restores the exact voxels that were just smashed, so a wall landing on
       // a wooden deck leaves the deck visually untouched — the crater heals itself.
+      noWeld: !!(opts && opts.noWeld),
+    });
+  }
+
+  /**
+   * Spawn a multi-voxel fragment. `cells` are [dx, dy, dz, pal] offsets from the anchor
+   * voxel, which sits at the given world position.
+   *
+   * Heavier fragments bounce less and settle sooner: a brick does not skitter the way a
+   * chip does, and rubble that keeps twitching also keeps the renderer from converging.
+   */
+  spawnChunk(x, y, z, vx, vy, vz, cells, opts = null) {
+    if (!cells || cells.length === 0) return;
+    if (cells.length === 1) {
+      this.spawn(x, y, z, vx, vy, vz, cells[0][3], opts);
+      return;
+    }
+    if (this.parts.length >= this.maxParticles) this.parts.shift();
+
+    // Rebase the cells around the fragment's own centre. They arrive relative to its
+    // minimum corner, and leaving them that way puts both the collision sphere and the
+    // weld anchor at a corner that is typically buried in whatever the fragment landed
+    // on: it tested for collision in the wrong place and then failed to weld, so most of
+    // a blast's rubble quietly disappeared instead of piling up.
+    let ex = 0, ey = 0, ez = 0;
+    for (let i = 0; i < cells.length; i++) {
+      if (cells[i][0] > ex) ex = cells[i][0];
+      if (cells[i][1] > ey) ey = cells[i][1];
+      if (cells[i][2] > ez) ez = cells[i][2];
+    }
+    const ox = ex >> 1, oy = ey >> 1, oz = ez >> 1;
+    const local = new Array(cells.length);
+    let half = 0;
+    for (let i = 0; i < cells.length; i++) {
+      const c = cells[i];
+      const lx = c[0] - ox, ly = c[1] - oy, lz = c[2] - oz;
+      local[i] = [lx, ly, lz, c[3]];
+      const m = Math.max(Math.abs(lx), Math.abs(ly), Math.abs(lz));
+      if (m > half) half = m;
+    }
+
+    const pal = cells[0][3];
+    const mp = matPhys(this.palette, pal);
+    this.parts.push({
+      x: x + ox * VOXEL, y: y + oy * VOXEL, z: z + oz * VOXEL,
+      vx, vy, vz, pal,
+      age: 0, rest: 0, alive: true,
+      restitution: mp.restitution * 0.55,
+      friction: Math.min(1, mp.friction * 1.25),
+      cells: local,
+      radius: VOXEL * (half + 0.5),
       noWeld: !!(opts && opts.noWeld),
     });
   }
@@ -65,6 +130,30 @@ export class DebrisSystem {
       pal, opts);
   }
 
+  /**
+   * Same, for a multi-voxel fragment anchored at voxel (ax, ay, az). The throw is aimed
+   * from the blast centre through the fragment's *centroid*, not its corner, or every
+   * fragment picks up a bias toward -x-y-z.
+   */
+  spawnChunkFrom(ax, ay, az, cells, centre, speed, opts = null) {
+    let cx = 0, cy = 0, cz = 0;
+    for (let i = 0; i < cells.length; i++) { cx += cells[i][0]; cy += cells[i][1]; cz += cells[i][2]; }
+    const n = cells.length;
+    const mx = (ax + cx / n + 0.5) * VOXEL, my = (ay + cy / n + 0.5) * VOXEL, mz = (az + cz / n + 0.5) * VOXEL;
+    let dx = mx - centre[0], dy = my - centre[1], dz = mz - centre[2];
+    const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (d > 1e-6) { dx /= d; dy /= d; dz /= d; } else { dx = 0; dy = 1; dz = 0; }
+    // Heavier fragments leave slower for the same blast — momentum is shared across the
+    // mass, and a brick that flies like a chip reads as weightless.
+    const s = speed / Math.sqrt(n);
+    const j = 0.45;
+    this.spawnChunk((ax + 0.5) * VOXEL, (ay + 0.5) * VOXEL, (az + 0.5) * VOXEL,
+      dx * s + this.rng.sym() * s * j,
+      dy * s + this.rng.sym() * s * j + s * 0.25,
+      dz * s + this.rng.sym() * s * j,
+      cells, opts);
+  }
+
   /** One fixed substep. */
   step(h) {
     const g = this.gravity;
@@ -75,7 +164,7 @@ export class DebrisSystem {
       p.age += h;
       p.vy += g * h;
       const nx = p.x + p.vx * h, ny = p.y + p.vy * h, nz = p.z + p.vz * h;
-      const c = sphereVsWorld(this.world, nx, ny, nz, SAMPLE_RADIUS);
+      const c = sphereVsWorld(this.world, nx, ny, nz, p.radius);
       if (c) {
         // push out and reflect the normal component, scrub the tangent with friction
         p.x = nx + c.nx * c.pen;
@@ -101,13 +190,15 @@ export class DebrisSystem {
       const done = p.rest >= this.settleTime || p.age >= this.maxAge || p.y < -2;
       if (done) {
         p.alive = false;
-        if (this.weld && !p.noWeld && p.y >= 0 && this.weldParticle(p)) {
-          const vx = Math.floor(p.x / VOXEL), vy = Math.floor(p.y / VOXEL), vz = Math.floor(p.z / VOXEL);
-          if (!welded) welded = { x0: vx, y0: vy, z0: vz, x1: vx, y1: vy, z1: vz };
-          else {
-            if (vx < welded.x0) welded.x0 = vx; if (vx > welded.x1) welded.x1 = vx;
-            if (vy < welded.y0) welded.y0 = vy; if (vy > welded.y1) welded.y1 = vy;
-            if (vz < welded.z0) welded.z0 = vz; if (vz > welded.z1) welded.z1 = vz;
+        if (this.weld && !p.noWeld && p.y >= 0) {
+          const b = this.weldParticle(p);
+          if (b) {
+            if (!welded) welded = b;
+            else {
+              if (b.x0 < welded.x0) welded.x0 = b.x0; if (b.x1 > welded.x1) welded.x1 = b.x1;
+              if (b.y0 < welded.y0) welded.y0 = b.y0; if (b.y1 > welded.y1) welded.y1 = b.y1;
+              if (b.z0 < welded.z0) welded.z0 = b.z0; if (b.z1 > welded.z1) welded.z1 = b.z1;
+            }
           }
         }
       }
@@ -120,27 +211,63 @@ export class DebrisSystem {
   }
 
   /**
-   * Try to drop the particle into the grid. It must land in an empty cell that has support
-   * underneath, otherwise we would be creating a voxel floating in mid-air — which the
-   * integrity pass would immediately detach again, producing an infinite fall/weld loop.
+   * Try to drop the fragment into the grid, returning the bounding box it wrote or null.
+   *
+   * The anchor cell must land somewhere empty with something adjacent to rest against,
+   * otherwise we would be creating geometry floating in mid-air — which the integrity pass
+   * would immediately detach again, producing an infinite fall/weld loop. The rest of the
+   * fragment's cells then go in around it, skipping any that are already occupied: a
+   * fragment settling into a corner keeps whatever fits and quietly loses the overlap,
+   * which looks like rubble packing rather than like geometry interpenetrating.
    */
   weldParticle(p) {
     const w = this.world;
-    let x = Math.floor(p.x / VOXEL), y = Math.floor(p.y / VOXEL), z = Math.floor(p.z / VOXEL);
-    if (!w.inBounds(x, y, z)) return false;
-    for (let up = 0; up <= 2; up++) {
+    const x = Math.floor(p.x / VOXEL), y = Math.floor(p.y / VOXEL), z = Math.floor(p.z / VOXEL);
+    if (!w.inBounds(x, y, z)) return null;
+    const cells = p.cells;
+
+    // Nudge upward until enough of the fragment fits. A single chip only ever needs one
+    // free cell; a lump of masonry landing on uneven rubble will always have some of its
+    // cells inside something, so demanding a perfect fit throws the whole fragment away.
+    let best = -1, bestFits = 0;
+    for (let up = 0; up <= 3; up++) {
       const yy = y + up;
       if (!w.inBounds(x, yy, z)) break;
-      if (w.data[w.idx(x, yy, z)] !== 0) continue;
-      if (!w.isSolidClamped(x, yy - 1, z) &&
-          !w.isSolidClamped(x - 1, yy, z) && !w.isSolidClamped(x + 1, yy, z) &&
-          !w.isSolidClamped(x, yy, z - 1) && !w.isSolidClamped(x, yy, z + 1)) continue;
-      w.data[w.idx(x, yy, z)] = p.pal;
-      this.weldedCount++;
-      p.x = (x + 0.5) * VOXEL; p.y = (yy + 0.5) * VOXEL; p.z = (z + 0.5) * VOXEL;
-      return true;
+      let fits = 0, anchored = false;
+      for (let k = 0; k < cells.length; k++) {
+        const c = cells[k];
+        const cx = x + c[0], cy = yy + c[1], cz = z + c[2];
+        if (!w.inBounds(cx, cy, cz) || w.data[w.idx(cx, cy, cz)] !== 0) continue;
+        fits++;
+        if (!anchored && (w.isSolidClamped(cx, cy - 1, cz) ||
+            w.isSolidClamped(cx - 1, cy, cz) || w.isSolidClamped(cx + 1, cy, cz) ||
+            w.isSolidClamped(cx, cy, cz - 1) || w.isSolidClamped(cx, cy, cz + 1))) anchored = true;
+      }
+      // must touch something, or the integrity pass detaches it again next frame and the
+      // fragment falls and re-welds forever
+      if (!anchored || fits === 0) continue;
+      if (fits > bestFits) { bestFits = fits; best = up; }
+      if (fits === cells.length) break;
     }
-    return false;
+    if (best < 0) return null;
+
+    const yy = y + best;
+    let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
+    for (let k = 0; k < cells.length; k++) {
+      const c = cells[k];
+      const cx = x + c[0], cy = yy + c[1], cz = z + c[2];
+      if (!w.inBounds(cx, cy, cz)) continue;
+      const i = w.idx(cx, cy, cz);
+      if (w.data[i] !== 0) continue;
+      w.data[i] = c[3] || p.pal;
+      this.weldedCount++;
+      if (cx < x0) x0 = cx; if (cx > x1) x1 = cx;
+      if (cy < y0) y0 = cy; if (cy > y1) y1 = cy;
+      if (cz < z0) z0 = cz; if (cz > z1) z1 = cz;
+    }
+    if (x0 === Infinity) return null;
+    p.x = (x + 0.5) * VOXEL; p.y = (yy + 0.5) * VOXEL; p.z = (z + 0.5) * VOXEL;
+    return { x0, y0, z0, x1, y1, z1 };
   }
 
   clear() { this.parts.length = 0; }

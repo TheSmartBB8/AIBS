@@ -69,6 +69,10 @@ export class PhysicsWorld {
     // ---- structural integrity
     this.integrityMargin = opts.integrityMargin === undefined ? 24 : opts.integrityMargin;
     this.minBodyVoxels = opts.minBodyVoxels === undefined ? 30 : opts.minBodyVoxels;
+    // Lattice used to group destroyed voxels into rubble fragments. 3 gives pieces of up
+    // to 27 voxels (30 cm across) — masonry lumps. 1 restores the old behaviour of one
+    // particle per voxel, which is what tests that count individual chips want.
+    this.debrisChunk = opts.debrisChunk === undefined ? 3 : opts.debrisChunk;
     this.maxBodies = opts.maxBodies === undefined ? 64 : opts.maxBodies;
     this.bodyBodyCollisions = opts.bodyBodyCollisions === undefined ? true : opts.bodyBodyCollisions;
 
@@ -572,12 +576,58 @@ export class PhysicsWorld {
     return { ...res, bodies: detached };
   }
 
+  /**
+   * Turn destroyed voxels into flying fragments.
+   *
+   * The voxels are first grouped on a fixed lattice, so neighbours that were part of the
+   * same piece of wall stay part of the same piece of rubble. Spawning one particle per
+   * destroyed voxel instead — which is what this used to do — meant a rocket produced
+   * thousands of independent grains that spread into a wide field of gravel; the whole
+   * reason a blast reads as *demolition* is that what comes off is recognisably lumps of
+   * the thing that was there.
+   *
+   * `fraction` then thins the fragments, not the voxels: it decides how much of the
+   * rubble becomes airborne rather than how finely it is ground.
+   */
   spawnDebrisFor(destroyed, centre, speed, fraction) {
     if (!destroyed.length || fraction <= 0) return;
+    const S = this.debrisChunk;
+    if (S <= 1) {
+      const stride = fraction >= 1 ? 1 : Math.max(1, Math.round(1 / fraction));
+      for (let i = 0; i < destroyed.length; i += stride) {
+        const [x, y, z, pal] = destroyed[i];
+        this.debris.spawnFromVoxel(x, y, z, pal, centre, speed);
+      }
+      return;
+    }
+
+    // Bucket by lattice cell. The key is positional, not a hash: two distant cells sharing
+    // a hash would weld a fragment together out of voxels from opposite ends of the blast.
+    const buckets = new Map();
+    for (let i = 0; i < destroyed.length; i++) {
+      const d = destroyed[i];
+      const kx = (d[0] / S) | 0, ky = (d[1] / S) | 0, kz = (d[2] / S) | 0;
+      const key = (ky * 256 + kz) * 256 + kx;
+      let b = buckets.get(key);
+      if (b === undefined) { b = []; buckets.set(key, b); }
+      b.push(d);
+    }
+
     const stride = fraction >= 1 ? 1 : Math.max(1, Math.round(1 / fraction));
-    for (let i = 0; i < destroyed.length; i += stride) {
-      const [x, y, z, pal] = destroyed[i];
-      this.debris.spawnFromVoxel(x, y, z, pal, centre, speed);
+    let n = 0;
+    for (const b of buckets.values()) {
+      if ((n++ % stride) !== 0) continue;
+      // anchor at the fragment's own minimum corner, cells relative to it
+      let ax = b[0][0], ay = b[0][1], az = b[0][2];
+      for (let i = 1; i < b.length; i++) {
+        if (b[i][0] < ax) ax = b[i][0];
+        if (b[i][1] < ay) ay = b[i][1];
+        if (b[i][2] < az) az = b[i][2];
+      }
+      const cells = new Array(b.length);
+      for (let i = 0; i < b.length; i++)
+        cells[i] = [b[i][0] - ax, b[i][1] - ay, b[i][2] - az, b[i][3]];
+      this.debris.spawnChunkFrom(ax, ay, az, cells, centre, speed);
     }
   }
 

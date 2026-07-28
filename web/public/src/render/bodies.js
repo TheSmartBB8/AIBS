@@ -45,17 +45,23 @@ export class BodyRenderer {
     this._p = new THREE.Vector3();
     this._s = new THREE.Vector3(1, 1, 1);
 
-    // loose single-voxel debris
+    // Loose rubble. One instanced cube per voxel of every fragment: a fragment is a rigid
+    // block of cells with no orientation, so it needs no mesh of its own.
     const geo = new THREE.BoxGeometry(VOXEL, VOXEL, VOXEL);
     this._debrisGeo = geo;
     this.debrisMesh = new THREE.InstancedMesh(geo, gbufMaterial, MAX_DEBRIS);
     this.debrisMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.debrisMesh.count = 0;
     this.debrisMesh.frustumCulled = false;
-    // meshChunk-style attributes the G-buffer shader expects, constant across the cube
     const n = geo.attributes.position.count;
     geo.setAttribute('aAo', new THREE.BufferAttribute(new Float32Array(n).fill(1), 1));
-    geo.setAttribute('aPal', new THREE.BufferAttribute(new Float32Array(n), 1));
+    // Per-instance palette. Every chip used to take the *first* chip's colour, on the
+    // theory that dust is too small to tell apart — which held while debris was single
+    // voxels and stopped holding the moment fragments became 30 cm lumps of brick lying
+    // on the ground. An instanced attribute of the same name costs one float per voxel.
+    this._debrisPal = new THREE.InstancedBufferAttribute(new Float32Array(MAX_DEBRIS), 1);
+    this._debrisPal.setUsage(THREE.DynamicDrawUsage);
+    geo.setAttribute('aPal', this._debrisPal);
     this.group.add(this.debrisMesh);
 
     this.stats = { bodies: 0, bodyTris: 0, debris: 0 };
@@ -129,26 +135,23 @@ export class BodyRenderer {
       const q = new THREE.Quaternion();
       const s = new THREE.Vector3(1, 1, 1);
       const p = new THREE.Vector3();
-      const palAttr = this._debrisGeo.attributes.aPal;
-      let firstPal = -1;
+      const palArr = this._debrisPal.array;
       for (let i = 0; i < debris.parts.length && n < MAX_DEBRIS; i++) {
         const d = debris.parts[i];
         if (!d.alive) continue;
-        p.set(d.x, d.y, d.z);
-        m.compose(p, q, s);
-        this.debrisMesh.setMatrixAt(n, m);
-        if (firstPal < 0) firstPal = d.pal;
-        n++;
-      }
-      // Per-instance palette would need an instanced attribute; loose chips are tiny and
-      // short-lived, so they all take the first chip's palette entry. Visually this reads
-      // as "dust of roughly the right colour", which at chip scale is indistinguishable.
-      if (firstPal >= 0 && palAttr.array[0] !== firstPal) {
-        palAttr.array.fill(firstPal);
-        palAttr.needsUpdate = true;
+        const cells = d.cells;
+        for (let k = 0; k < cells.length && n < MAX_DEBRIS; k++) {
+          const c = cells[k];
+          p.set(d.x + c[0] * VOXEL, d.y + c[1] * VOXEL, d.z + c[2] * VOXEL);
+          m.compose(p, q, s);
+          this.debrisMesh.setMatrixAt(n, m);
+          palArr[n] = c[3] || d.pal;
+          n++;
+        }
       }
       this.debrisMesh.count = n;
       this.debrisMesh.instanceMatrix.needsUpdate = true;
+      this._debrisPal.needsUpdate = true;
     } else {
       this.debrisMesh.count = 0;
     }

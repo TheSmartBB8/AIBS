@@ -77,8 +77,10 @@ export const DEFAULTS = {
   voxelNoise: 0.16,       // per-voxel grain. At 0.055 a greedy-merged wall still read as
                           // flat painted vinyl; Teardown surfaces always show the cubes.
 
-  fogDensity: 0.0075,
-  fogHeight: 3.0,
+  fogDensity: 0.011,      // aerial perspective. At 0.0075 fog was measurably doing nothing
+                          // (far ground within 3 luma of near), so the scene stayed uniformly
+                          // sharp to the horizon and read as a tabletop diorama.
+  fogHeight: 7.0,
 
   exposure: 1.18,
   bloom: 0.22,

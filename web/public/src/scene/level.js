@@ -370,6 +370,51 @@ export function buildLevel(world, palette) {
           world.setRaw(px + dx, G - 1, pz + dz, P.asphalt);
   }
 
+  // ---- horizon. Without this the ground plane visibly stops and the scene reads as a
+  // diorama on a table. Every Teardown frame hides its world edge behind receding
+  // silhouettes fading into haze, which is most of what sells the sense of place.
+  {
+    const pineDark = palette.add(52, 72, 46, MAT.FOLIAGE);
+    const pineMid = palette.add(64, 86, 54, MAT.FOLIAGE);
+    const ridge = palette.add(96, 104, 92, MAT.DIRT);
+
+    // a low ridge line just inside the boundary, so the ground never ends in mid-air
+    for (let i = 0; i < sx; i++) {
+      const h = 6 + ((Math.sin(i * 0.11) * 3 + Math.sin(i * 0.043) * 4 + 7) | 0);
+      for (const [x, z] of [[i, 3], [i, sz - 4], [3, i], [sx - 4, i]]) {
+        if (x < 0 || z < 0 || x >= sx || z >= sz) continue;
+        for (let y = G; y < G + h; y++) world.setRaw(x, y, z, ridge);
+      }
+    }
+
+    // conifers along the ridge — cheap cones, they only ever read as silhouettes
+    const pine = (px, pz, ph) => {
+      for (let y = 0; y < ph; y++) {
+        const r = Math.max(0, ((ph - y) * 0.42) | 0);
+        for (let dz = -r; dz <= r; dz++)
+          for (let dx = -r; dx <= r; dx++) {
+            if (dx * dx + dz * dz > r * r) continue;
+            world.setRaw(px + dx, G + 4 + y, pz + dz, ((y + dx + dz) & 3) ? pineMid : pineDark);
+          }
+      }
+    };
+    // The world is only ~25 m across, so the boundary is close enough that a tree planted
+    // on it lands in shot. Leave the road corridor clear at both ends so the street view
+    // looks down an open road rather than into a trunk.
+    const roadCorridor = (z) => z > 14 && z < 54;
+    for (let i = 6; i < sx - 6; i += 7) {
+      const jitter = ((i * 37) % 5) - 2;
+      if (!roadCorridor(6 + jitter)) pine(i, 6 + jitter, 16 + ((i * 13) % 10));
+      if (!roadCorridor(sz - 7 + jitter)) pine(i, sz - 7 + jitter, 16 + ((i * 29) % 10));
+    }
+    for (let i = 18; i < sz - 18; i += 7) {
+      if (roadCorridor(i)) continue;
+      const jitter = ((i * 41) % 5) - 2;
+      pine(6 + jitter, i, 16 + ((i * 17) % 10));
+      pine(sx - 7 + jitter, i, 16 + ((i * 23) % 10));
+    }
+  }
+
   world.markAllDirty();
   world.rebuildMips();
   return { palette: P, groundY: G };

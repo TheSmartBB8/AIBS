@@ -34,10 +34,14 @@ export const VIEWS = {
   // the wheels and the panel work. Every other street view looks *down* the road, which
   // means every car is seen nose- or tail-on with its flanks in shadow — so the wheels,
   // the thing most recently rebuilt, could not be assessed from any existing shot.
-  // Ahead of the sedan on its sunlit side, looking back along it. Measured, not guessed:
-  // this puts the car across 39% of the frame with nothing inside 0.8 m. The obvious spot
-  // beside it scored better on clearance but framed the *next* car along at 20 cm.
-  car:      { pos: [14.9, 2.4,  2.2], look: [12.1, 1.75, 3.5], fov: 56, tight: true },
+  // Front three-quarter of the parked sedan, from the side the sun is actually on.
+  //
+  // Worth spelling out, because I got it wrong twice: the sun comes from -x -z, so the lit
+  // faces are the car's front and its -z flank, and the only vantage that sees both is at
+  // lower x AND lower z than the car. Standing beside it framed the next car along at
+  // 20 cm; standing ahead of it framed the shaded rear. The hatch was moved back to x 3.0
+  // to open this approach up at all.
+  car:      { pos: [8.4,  2.5,  2.15], look: [11.8, 1.85, 3.4], fov: 56, tight: true },
 
   // Down the street the other way, so the backdrop and the far end are in frame. Kept
   // upstream of the parked van (x 19.4-24.6) rather than out at the far end, where the

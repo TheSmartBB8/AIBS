@@ -349,7 +349,7 @@ export function buildLevel(world, palette) {
   // parked car fills it: anywhere a camera stands, a car cannot. The pickup goes on the
   // apron by the roller door, which is where a works vehicle belongs anyway.
   vehicles.push(buildCar(world, P, palette, {
-    at: [60, G, 26], style: 'hatch', color: [168, 62, 54], name: 'hatch',
+    at: [30, G, 26], style: 'hatch', color: [168, 62, 54], name: 'hatch',
   }));
   vehicles.push(buildCar(world, P, palette, {
     at: [100, G, 26], style: 'sedan', color: [58, 96, 152], name: 'sedan',

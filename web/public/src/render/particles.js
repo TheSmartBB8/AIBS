@@ -140,9 +140,22 @@ export class ParticleRenderer {
     return this.count;
   }
 
-  render(renderer, camera) {
+  /**
+   * @param layer 'all' | 'additive' | 'blend'
+   *
+   * Split because the two halves belong at different points in the frame. Fire and sparks
+   * emit, so they have to reach the HDR buffer *before* the bloom chain or they cannot
+   * glow — and a flame that does not glow is most of what separates this from Teardown.
+   * Smoke and dust absorb; they belong over the finished, tonemapped image where they were
+   * already, and blooming them would only fog the picture.
+   */
+  render(renderer, camera, layer = 'all') {
     if (this.count === 0) return;
+    this.blend.mesh.visible = layer !== 'additive';
+    this.additive.mesh.visible = layer !== 'blend';
     renderer.render(this.scene, camera);
+    this.blend.mesh.visible = true;
+    this.additive.mesh.visible = true;
   }
 
   dispose() {

@@ -305,6 +305,16 @@ void main() {
   oColor = vec4(mix(c0.rgb, acc / sum, uStrength), accV / max(sum * sum, 1e-6));
 }`;
 
+// Straight passthrough. Needed because emissive particles have to be drawn *into* the HDR
+// colour before the bloom chain reads it, and the buffer holding that colour is one we are
+// sampling — so it gets copied somewhere writable first.
+export const COPY_FRAG = /* glsl */`
+precision highp float;
+varying vec2 vUv;
+layout(location = 0) out vec4 oColor;
+uniform sampler2D tColor;
+void main() { oColor = texture(tColor, vUv); }`;
+
 // ---------------------------------------------------------------- bloom
 export const BLOOM_PREFILTER_FRAG = /* glsl */`
 precision highp float;

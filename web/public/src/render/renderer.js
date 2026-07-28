@@ -29,6 +29,7 @@ import { ParticleRenderer } from './particles.js';
 import {
   makeQuad, hdrTarget, fsMaterial,
   ACCUM_FRAG, DENOISE_FRAG, BLOOM_PREFILTER_FRAG, BLOOM_DOWN_FRAG, BLOOM_UP_FRAG, COMPOSITE_FRAG,
+  COPY_FRAG,
 } from './post.js';
 
 // How metallic each material behaves. Painted sheet metal is not a mirror, so METAL sits
@@ -339,6 +340,7 @@ export class VoxelRenderer {
       uM2: { value: 1 }, uSamples: { value: 1 },
       uPhiL: { value: 4.0 }, uPhiN: { value: 24.0 }, uPhiP: { value: 14.0 },
     });
+    this.copyMaterial = fsMaterial(COPY_FRAG, { tColor: { value: null } });
     this.bloomPreMaterial = fsMaterial(BLOOM_PREFILTER_FRAG, {
       tColor: { value: null }, uTexel: { value: new THREE.Vector2() },
       uThreshold: { value: 1 }, uKnee: { value: 0.6 },
@@ -368,6 +370,8 @@ export class VoxelRenderer {
     // every pass, and half-float flushes it to zero — at which point the filter reads
     // "converged" everywhere and stops, silently, exactly where it should be gentlest.
     this.denoiseRT = [hdrTarget(w, h, true), hdrTarget(w, h, true)];
+    // Holds the HDR colour with emissive particles drawn into it, so bloom sees the fire.
+    this.fxRT = hdrTarget(w, h);
     this.bloomRT = [];
     let bw = Math.max(2, w >> 1), bh = Math.max(2, h >> 1);
     for (let i = 0; i < 5; i++) {
@@ -378,7 +382,7 @@ export class VoxelRenderer {
   }
 
   _disposeTargets() {
-    const all = [this.gbuf, this.traceRT, ...(this.denoiseRT || []),
+    const all = [this.gbuf, this.traceRT, this.fxRT, ...(this.denoiseRT || []),
       ...(this.accumRT || []), ...(this.bloomRT || []), ...(this._scratch || [])];
     for (const rt of all) if (rt) rt.dispose();
     this._scratch = null;
@@ -735,6 +739,12 @@ export class VoxelRenderer {
     const p = this.params;
     let color = this.accumRT[this.accumIdx].texture;
 
+    // Upload once, up front. The emissive half is drawn before bloom and the absorptive
+    // half after the composite, so the instance data has to be in place before either.
+    this.stats.particles = this._particleInst
+      ? this.particleRenderer.update(this._particleInst, this.gbuf.textures[2], this.camera, w, h)
+      : 0;
+
     // ---- cleanup: variance-guided à-trous, doubling tap spacing each pass
     //
     // How hard each pass filters is decided per pixel by the measured variance, not here.
@@ -759,6 +769,28 @@ export class VoxelRenderer {
         this._blit(this.denoiseMaterial, dst);
         color = dst.texture;
       }
+    }
+
+    // ---- emissive particles, into the HDR colour so the bloom chain can see them
+    //
+    // Fire and sparks are additive because they *emit*. They used to be composited with
+    // the smoke, after the tonemap and after bloom, which meant a flame contributed
+    // nothing to the glow — the one thing that most makes fire read as fire. Drawing them
+    // here costs a copy (the colour buffer is one we are sampling, so it cannot also be
+    // the render target) and puts them in front of the bloom threshold like any other
+    // bright surface.
+    //
+    // Smoke and dust stay where they were, over the finished image: they absorb rather
+    // than emit, and blooming them would just fog the picture.
+    if (this._particleInst && this.stats.particles > 0) {
+      this.copyMaterial.uniforms.tColor.value = color;
+      this._blit(this.copyMaterial, this.fxRT);
+      const prevAuto = this.renderer.autoClear;
+      this.renderer.autoClear = false;
+      this.renderer.setRenderTarget(this.fxRT);
+      this.particleRenderer.render(this.renderer, this.camera, 'additive');
+      this.renderer.autoClear = prevAuto;
+      color = this.fxRT.texture;
     }
 
     // ---- bloom mip chain
@@ -794,19 +826,14 @@ export class VoxelRenderer {
     this.renderer.setRenderTarget(null);
     this._blit(this.compositeMaterial, null);
 
-    // Particles go over the tonemapped image, occlusion-tested against the G-buffer's
-    // world-position target. They are already in display space, so they are not bloomed —
-    // an acceptable trade for smoke and dust, which are the point here.
-    if (this._particleInst) {
-      const n = this.particleRenderer.update(
-        this._particleInst, this.gbuf.textures[2], this.camera, w, h);
-      if (n > 0) {
-        const prevAuto = this.renderer.autoClear;
-        this.renderer.autoClear = false;
-        this.particleRenderer.render(this.renderer, this.camera);
-        this.renderer.autoClear = prevAuto;
-      }
-      this.stats.particles = n;
+    // Smoke and dust, over the tonemapped image, occlusion-tested against the G-buffer's
+    // world-position target. These absorb rather than emit, so display space is where they
+    // belong and bloom would only fog the frame. The emissive half went in before bloom.
+    if (this.stats.particles > 0) {
+      const prevAuto = this.renderer.autoClear;
+      this.renderer.autoClear = false;
+      this.particleRenderer.render(this.renderer, this.camera, 'blend');
+      this.renderer.autoClear = prevAuto;
     }
   }
 

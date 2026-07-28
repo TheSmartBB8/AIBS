@@ -28,6 +28,10 @@ function resize() { renderer.setSize(window.innerWidth, window.innerHeight); }
 window.addEventListener('resize', resize);
 resize();
 
+// Lift the level's cars out of the grid and make them drivable. Done before the first
+// mesh build so the road under them is already clear.
+const vehicles = engine.spawnVehicles(level);
+
 const t0 = performance.now();
 renderer.updateMeshes(0);
 const buildMs = performance.now() - t0;
@@ -40,6 +44,14 @@ let freeCam = true;    // headless shots use fixed viewpoints, not the player ca
 addEventListener('keydown', (e) => {
   keys[e.code] = true;
   if (e.code === 'KeyF') freeCam = !freeCam;
+  // E gets in and out of whatever you are standing next to.
+  if (e.code === 'KeyE') {
+    if (engine.driving) engine.exitVehicle();
+    else {
+      const eye = player.eye();
+      engine.enterVehicle(engine.nearestVehicle([eye.x, eye.y, eye.z], 3.5));
+    }
+  }
   const n = parseInt(e.key, 10);
   if (!isNaN(n) && n >= 1 && n <= 9 && TOOL_ORDER[n - 1] !== undefined) engine.selectTool(TOOL_ORDER[n - 1]);
   if (e.code === 'Space') e.preventDefault();
@@ -81,11 +93,23 @@ applyView(VIEWS.street);
 
 function step(dt) {
   if (pointerLocked) {
-    player.update(dt, {
-      mx: (keys.KeyD ? 1 : 0) - (keys.KeyA ? 1 : 0),
-      mz: (keys.KeyW ? 1 : 0) - (keys.KeyS ? 1 : 0),
-      jump: !!keys.Space, sprint: !!keys.ShiftLeft, crouch: !!keys.ControlLeft,
-    });
+    if (engine.driving) {
+      // Same keys, different vehicle: W/S is throttle, A/D is steering, space is the
+      // handbrake. Routing them here rather than into the player keeps the walking
+      // controller from also trying to move while you are sitting in a car.
+      engine.driveInput({
+        throttle: (keys.KeyW ? 1 : 0) - (keys.KeyS ? 1 : 0),
+        steer: (keys.KeyD ? 1 : 0) - (keys.KeyA ? 1 : 0),
+        brake: keys.ShiftLeft ? 1 : 0,
+        handbrake: !!keys.Space,
+      });
+    } else {
+      player.update(dt, {
+        mx: (keys.KeyD ? 1 : 0) - (keys.KeyA ? 1 : 0),
+        mz: (keys.KeyW ? 1 : 0) - (keys.KeyS ? 1 : 0),
+        jump: !!keys.Space, sprint: !!keys.ShiftLeft, crouch: !!keys.ControlLeft,
+      });
+    }
   }
   engine.update(dt, { eye: aimEye(), dir: aimDir() });
   // A destructive edit changes geometry, so the accumulated history is stale.
@@ -96,10 +120,31 @@ function step(dt) {
   renderer.setBodies?.(engine.physics.bodies, engine.physics.debris);
   renderer.setParticles?.(engine.particles.buildInstances());
   if (!freeCam) {
-    const e = player.eye();
-    const f = player.forward();
-    renderer.camera.position.set(e.x, e.y, e.z);
-    renderer.camera.lookAt(e.x + f.x, e.y + f.y, e.z + f.z);
+    if (engine.driving) {
+      // Chase camera, behind and above the car, looking at it. Placed from the chassis'
+      // own forward axis so it works whichever way the car was authored.
+      const v = engine.driving;
+      const R = v.body.R, f = v.forwardLocal, u = v.upLocal;
+      const fw = [R[0] * f[0] + R[1] * f[1] + R[2] * f[2],
+                  R[3] * f[0] + R[4] * f[1] + R[5] * f[2],
+                  R[6] * f[0] + R[7] * f[1] + R[8] * f[2]];
+      const up = [R[0] * u[0] + R[1] * u[1] + R[2] * u[2],
+                  R[3] * u[0] + R[4] * u[1] + R[5] * u[2],
+                  R[6] * u[0] + R[7] * u[1] + R[8] * u[2]];
+      const p = v.body.pos;
+      renderer.camera.position.set(
+        p[0] - fw[0] * 5.5 + up[0] * 2.2,
+        p[1] - fw[1] * 5.5 + up[1] * 2.2,
+        p[2] - fw[2] * 5.5 + up[2] * 2.2);
+      renderer.camera.lookAt(p[0] + fw[0] * 2, p[1] + fw[1] * 2, p[2] + fw[2] * 2);
+      // and drag the player along, so getting out puts you beside the car
+      player.pos = { x: p[0], y: p[1] + 0.4, z: p[2] };
+    } else {
+      const e = player.eye();
+      const f = player.forward();
+      renderer.camera.position.set(e.x, e.y, e.z);
+      renderer.camera.lookAt(e.x + f.x, e.y + f.y, e.z + f.z);
+    }
   }
 }
 
@@ -120,7 +165,13 @@ window.__app = {
   ready: true,
   buildMs,
   get frames() { return frames; },
+  vehicles,
+  enterVehicle: (i = 0) => engine.enterVehicle(engine.physics.vehicles[i]),
+  exitVehicle: () => engine.exitVehicle(),
+  drive: (input) => { engine.driveInput(input); return true; },
   stats: () => ({ ...renderer.stats, buildMs, ...engine.stats,
+                  vehicles: engine.physics.vehicles.length,
+                  driving: engine.driving ? engine.driving.name : null,
                   bodies: engine.physics.bodies.length,
                   particles: engine.particles.count, fires: engine.fire.count }),
   setView(name) {

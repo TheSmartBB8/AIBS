@@ -182,6 +182,40 @@ const level = buildLevel(world, palette);
         'backdrop albedos are in linear 0..1');
 }
 
+// ---- the level's drivable car survives being lifted out of the grid
+{
+  const w2 = new VoxelWorld(256, 160, 256);
+  const p2 = new Palette();
+  const lvl = buildLevel(w2, p2);
+  CHECK((lvl.vehicles || []).length >= 1, `the level describes at least one vehicle (${(lvl.vehicles || []).length})`);
+
+  const eng = new Engine(w2, p2, { seed: 1337 });
+  const before = w2.countSolid();
+  const spawned = eng.spawnVehicles(lvl);
+  CHECK(spawned.length === lvl.vehicles.length, 'every described vehicle becomes a real one');
+  CHECK(w2.countSolid() < before, `and its voxels leave the grid (${before - w2.countSolid()})`);
+
+  const car = spawned[0];
+  CHECK(car.body.mass > 100 && car.body.mass < 20000, `the chassis has a plausible mass (${car.body.mass | 0} kg)`);
+  // Lifting the road surface along with the car buries the chassis in the road it came
+  // from, where contact friction holds it and no amount of throttle moves it.
+  const gy = lvl.groundY * VOXEL;
+  const lowest = car.body.pos[1] - car.body.com[1];
+  CHECK(lowest > gy - 0.35, `the chassis is not sunk into the roadway (bottom ~${lowest.toFixed(2)} m, road ${gy.toFixed(2)} m)`);
+
+  for (let i = 0; i < 180; i++) eng.update(1 / 60, { eye: [1, 2, 3], dir: [1, 0, 0] });
+  CHECK(car.wheels.filter((wh) => wh.grounded).length === 4, 'it settles on all four wheels');
+  CHECK(car.wheels.every((wh) => wh.compression > 0.05 && wh.compression < 0.95),
+        `with the springs inside their travel (${car.wheels.map((wh) => wh.compression.toFixed(2)).join('/')})`);
+
+  eng.enterVehicle(car);
+  eng.driveInput({ throttle: 1 });
+  const x0 = car.body.pos[0];
+  for (let i = 0; i < 90; i++) eng.update(1 / 60, { eye: [1, 2, 3], dir: [1, 0, 0] });
+  CHECK(car.body.pos[0] - x0 > 1.0,
+        `and drives off down the street when told to (${(car.body.pos[0] - x0).toFixed(2)} m in 1.5 s)`);
+}
+
 // ---- destruction against the real level, not a synthetic test box
 //
 // Every other destruction test builds its own tidy scene. This one fires into the level

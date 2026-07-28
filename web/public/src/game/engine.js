@@ -10,7 +10,7 @@
 // physics helpers take arrays. Converting here — in one place — is deliberate; doing it
 // at each call site is where sign and ordering mistakes breed.
 
-import { PhysicsWorld } from '../physics/index.js';
+import { PhysicsWorld, vehicleFromVoxels, liftVoxels, markRegionDirty } from '../physics/index.js';
 import { ToolSystem } from '../tools/index.js';
 import { TOOL, TOOL_ORDER } from '../tools/registry.js';
 import { ParticleSystem } from '../fx/particles.js';
@@ -45,6 +45,71 @@ export class Engine {
 
     this.tools = new ToolSystem(this.makeToolContext());
     this.stats = { carves: 0, explosions: 0, ignitions: 0 };
+    this.driving = null;           // the Vehicle the player is currently in, if any
+  }
+
+  /**
+   * Turn the level's vehicle descriptors into drivable vehicles.
+   *
+   * The level *describes* its cars rather than building them, because scene/ has
+   * deliberately never depended on physics/. Lifting happens here: the voxels come out of
+   * the grid (so the road underneath is clear and the car is no longer world geometry)
+   * and become a chassis with wheels.
+   */
+  spawnVehicles(level) {
+    const out = [];
+    for (const spec of level?.vehicles || []) {
+      const voxels = [];
+      for (let y = spec.min[1]; y <= spec.max[1]; y++)
+        for (let z = spec.min[2]; z <= spec.max[2]; z++)
+          for (let x = spec.min[0]; x <= spec.max[0]; x++) {
+            const pal = this.world.get(x, y, z);
+            if (pal !== 0) voxels.push([x, y, z, pal]);
+          }
+      if (voxels.length < 8) continue;
+      liftVoxels(this.world, voxels);
+      markRegionDirty(this.world, spec.min[0], spec.min[1], spec.min[2],
+        spec.max[0], spec.max[1], spec.max[2]);
+      const veh = vehicleFromVoxels(voxels, this.palette, spec.wheels, {
+        originVoxel: spec.min,
+        tuning: { forward: spec.forward || [0, 0, 1] },
+      });
+      veh.name = spec.name || 'vehicle';
+      this.physics.addVehicle(veh);
+      out.push(veh);
+    }
+    return out;
+  }
+
+  get vehicles() { return this.physics.vehicles; }
+
+  /** The drivable vehicle whose chassis centre is nearest `pos`, within `range` metres. */
+  nearestVehicle(pos, range = 3.0) {
+    let best = null, bestD = range * range;
+    for (const v of this.physics.vehicles) {
+      if (!v.alive) continue;
+      const d = (v.body.pos[0] - pos[0]) ** 2 + (v.body.pos[1] - pos[1]) ** 2 + (v.body.pos[2] - pos[2]) ** 2;
+      if (d < bestD) { bestD = d; best = v; }
+    }
+    return best;
+  }
+
+  enterVehicle(v) {
+    if (!v || !v.alive) return null;
+    this.driving = v;
+    return v;
+  }
+
+  exitVehicle() {
+    if (this.driving) this.driving.setInput({});
+    const v = this.driving;
+    this.driving = null;
+    return v;
+  }
+
+  /** Route driving input to whatever the player is sitting in. */
+  driveInput(input) {
+    if (this.driving) this.driving.setInput(input);
   }
 
   /** The callback surface the tools were written against. */

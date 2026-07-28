@@ -336,6 +336,11 @@ export function buildLevel(world, palette) {
   };
   barrel(214, 150); barrel(222, 156); barrel(210, 162); barrel(226, 146);
 
+  // Vehicles the engine will lift out of the grid and make drivable. The level describes
+  // them; it does not build them, because a Vehicle needs the physics module and the
+  // scene has deliberately never depended on it.
+  const vehicles = [];
+
   // ---- car on the road
   {
     const x0 = 96, z0 = 26, L = 42, W = 18;
@@ -362,6 +367,24 @@ export function buildLevel(world, palette) {
     box(x0 + L + 1, G + 2, z0 + 7, x0 + L + 1, G + 3, z0 + 11, P.paint); // plate
     box(x0 + 1, G + 8, z0 + 2, x0 + 9, G + 8, z0 + W - 2, P.carBody);    // bonnet lip
     box(x0 + 31, G + 8, z0 + 2, x0 + L - 1, G + 8, z0 + W - 2, P.carBody);
+
+    // The car faces +x, down the street. Mounts sit at the tyre centres; the front pair
+    // steers and the rear pair drives, which is what makes it rotate about its nose
+    // rather than pivoting round the middle.
+    vehicles.push({
+      name: 'sedan',
+      // y starts at G, not G-1: G-1 is the road surface, and including it lifts a slab of
+      // asphalt into the chassis — which then sits buried in the road it came out of and
+      // is held by contact friction instead of its own suspension.
+      min: [x0 - 2, G, z0 - 2], max: [x0 + L + 2, G + 15, z0 + W + 2],
+      forward: [1, 0, 0],
+      wheels: [
+        { at: [x0 + 33, G + 2, z0 + 2],  steered: true,  driven: false },
+        { at: [x0 + 33, G + 2, z0 + 15], steered: true,  driven: false },
+        { at: [x0 + 8,  G + 2, z0 + 2],  steered: false, driven: true },
+        { at: [x0 + 8,  G + 2, z0 + 15], steered: false, driven: true },
+      ],
+    });
   }
 
   // ---- lamp post
@@ -844,5 +867,5 @@ export function buildLevel(world, palette) {
 
   world.markAllDirty();
   world.rebuildMips();
-  return { palette: P, groundY: G };
+  return { palette: P, groundY: G, vehicles };
 }

@@ -47,6 +47,14 @@ export function buildLevel(world, palette) {
     // reflection pass (sky/sun in the pane), not from lighting a pale blue albedo — with a
     // bright albedo every window renders as a flat white rectangle in direct sun.
     glass:      palette.add(38, 52, 62, MAT.GLASS),
+    // A pane is opaque in this renderer, so an unlit window can only ever be as bright as
+    // what it reflects — and a vertical pane reflects the building opposite, not the sky.
+    // Every window in the terrace therefore rendered as a black hole. Lit panes fix that
+    // and are the cue that a street is inhabited rather than a model. The emissive value
+    // is deliberately below findEmissiveLights' promotion threshold: these glow, they do
+    // not become point lights (see volume.js).
+    glassLit:   palette.add(246, 216, 158, MAT.GLASS, 0.55),
+    glassLitC:  palette.add(198, 214, 236, MAT.GLASS, 0.38),   // a cooler bulb / a TV
     barrelRed:  palette.add(178, 52, 42, MAT.METAL),
     barrelYell: palette.add(206, 158, 40, MAT.METAL),
     tyre:       palette.add(34, 34, 38, MAT.PLASTIC),
@@ -56,6 +64,32 @@ export function buildLevel(world, palette) {
     trunk:      palette.add(92, 68, 46, MAT.WOOD),
     lamp:       palette.add(255, 244, 214, MAT.GLASS, 6.0),
     bedrock:    palette.add(58, 56, 54, MAT.UNBREAKABLE),
+
+    // street surface + furniture
+    paint:      palette.add(208, 205, 196, MAT.CONCRETE),   // markings, kerb paint
+    // Resurfaced tarmac reads as a *patch*, not a hole, only if it stays close in value to
+    // the road around it. At (44,44,48) against (62,62,66) — and outlined in pale concrete —
+    // every patch rendered as an open trapdoor.
+    tarPatch:   palette.add(54, 53, 56, MAT.CONCRETE),
+    tarPale:    palette.add(76, 75, 78, MAT.CONCRETE),      // older, sun-bleached surface
+    grate:      palette.add(50, 52, 56, MAT.HEAVY_METAL),
+    bollard:    palette.add(84, 86, 90, MAT.HEAVY_METAL),
+    binGreen:   palette.add(48, 74, 54, MAT.PLASTIC),
+    signBlue:   palette.add(40, 68, 122, MAT.METAL),
+    signPost:   palette.add(126, 130, 134, MAT.METAL),
+    // a box van: pale body, dark chassis. Bigger silhouette than the car, and it parks
+    // where the eye lands halfway down the street.
+    vanBody:    palette.add(210, 206, 196, MAT.METAL),
+    vanTrim:    palette.add(154, 46, 42, MAT.METAL),
+    // the water tower, and scaffolding
+    steel:      palette.add(126, 132, 138, MAT.METAL),
+    steelDark:  palette.add(80, 86, 92, MAT.HEAVY_METAL),
+    // shop interiors: warm, pale surfaces so the bounce term inside actually returns
+    // something and the glazing reads as a room rather than a black rectangle
+    shopWall:   palette.add(198, 186, 166, MAT.PLASTER),
+    shopFloor:  palette.add(148, 136, 120, MAT.WOOD),
+    stock:      palette.add(176, 146, 96, MAT.WOOD),
+    stockAlt:   palette.add(148, 108, 88, MAT.WOOD),
   };
 
   const { sx, sy, sz } = world;
@@ -87,6 +121,52 @@ export function buildLevel(world, palette) {
   for (let x = 4; x < sx; x += 14) box(x, G - 1, 32, x + 6, G - 1, 33, P.lineYellow);
   // kerb
   box(0, G - 1, 47, sx - 1, G, 48, P.concreteD);
+
+  // Road *surface* detail. A perfectly uniform ribbon of asphalt with a dashed line is
+  // the single largest flat area in the street shot, and flat areas are where a voxel
+  // renderer's illusion breaks first. Everything below is one voxel deep — it costs
+  // nothing structurally and gives the ray-traced AO and reflections something to bite on.
+  {
+    // resurfaced strips and trench patches, with a lighter seam around the edge
+    for (let i = 0; i < 9; i++) {
+      const px = (rng() * sx) | 0, pz = (21 + rng() * 22) | 0;
+      const w = 6 + ((rng() * 20) | 0), d = 4 + ((rng() * 8) | 0);
+      box(px - 1, G - 1, pz - 1, px + w + 1, G - 1, pz + d + 1, P.tarPale);
+      box(px, G - 1, pz, px + w, G - 1, pz + d, P.tarPatch);
+    }
+    // cracks: short random walks, so they wander rather than reading as scratches
+    for (let i = 0; i < 26; i++) {
+      let cx2 = (rng() * sx) | 0, cz2 = (21 + rng() * 24) | 0;
+      for (let s = 0; s < 14 + ((rng() * 20) | 0); s++) {
+        world.setRaw(cx2, G - 1, cz2, P.tarPatch);
+        if (rng() < 0.72) cx2 += rng() < 0.5 ? 1 : -1; else cz2 += rng() < 0.5 ? 1 : -1;
+      }
+    }
+    // manhole covers and gully gratings at the kerb line
+    for (let x = 18; x < sx - 8; x += 46) {
+      for (let dz = -3; dz <= 3; dz++)
+        for (let dx = -3; dx <= 3; dx++)
+          if (dx * dx + dz * dz <= 9) world.setRaw(x + dx, G - 1, 30 + dz, P.grate);
+      box(x + 14, G - 1, 45, x + 19, G - 1, 46, P.grate);
+    }
+    // a crossing, plus stop line, where the driveway gap in the fence lets traffic out
+    for (let x = 96; x <= 144; x += 6) box(x, G - 1, 22, x + 2, G - 1, 44, P.paint);
+    box(92, G - 1, 22, 93, G - 1, 44, P.paint);
+    // skid marks approaching it
+    for (const zo of [26, 40]) {
+      for (let x = 74; x < 92; x++) {
+        const fade = (x - 74) / 18;
+        if (rng() > fade * 0.8 + 0.2) continue;
+        box(x, G - 1, zo, x, G - 1, zo + 1, P.tarPatch);
+      }
+    }
+    // kerbside grit and weeds creeping out of the gutter
+    for (let i = 0; i < 160; i++) {
+      const x = (rng() * sx) | 0;
+      const z = rng() < 0.5 ? 20 + ((rng() * 2) | 0) : 45 + ((rng() * 2) | 0);
+      world.setRaw(x, G - 1, z, rng() < 0.6 ? P.concreteD : P.grassDark);
+    }
+  }
 
   // ---- concrete apron the warehouse sits on
   box(58, G - 1, 62, 196, G - 1, 190, P.concrete);
@@ -374,19 +454,33 @@ export function buildLevel(world, palette) {
   // ceiling on believability is authored density, not renderer parameters: one building in
   // an empty lot reads as a test scene no matter how well it is lit. A street needs two
   // sides. These are terraced shopfronts facing the warehouse across the road.
+  //
+  // Three things carry this terrace: a broken roofline (equal parapets read as one long
+  // extruded box), interiors behind the glazing (a window onto nothing is a black
+  // rectangle no matter how it is lit), and rooftop clutter — chimneys, aerials, dishes —
+  // which is where a street gets its silhouette above the eaves.
   {
     const shopCols = [
       [176, 158, 122], [148, 132, 108], [186, 168, 136], [132, 120, 104], [166, 142, 118],
     ];
+    // Registered once, outside the loop: Palette.add dedupes, but building the family up
+    // front keeps the 256-entry budget legible.
+    const shopWall = shopCols.map((c) => palette.add(c[0], c[1], c[2], MAT.PLASTER));
+    const shopWallDark = shopCols.map((c) =>
+      palette.add((c[0] * 0.82) | 0, (c[1] * 0.82) | 0, (c[2] * 0.82) | 0, MAT.PLASTER));
+    const awningCols = [P.barrelRed, P.metalDark, P.signBlue, P.barrelYell];
+
     let bx = 8;
     let unit = 0;
     while (bx < sx - 40) {
       const w = 30 + ((unit * 7) % 14);
-      const h = 26 + ((unit * 11) % 14);
-      const col = shopCols[unit % shopCols.length];
-      const wall = palette.add(col[0], col[1], col[2], MAT.PLASTER);
-      const wallDark = palette.add((col[0] * 0.82) | 0, (col[1] * 0.82) | 0, (col[2] * 0.82) | 0, MAT.PLASTER);
-      const z0 = 2, z1 = 16;
+      // Storey count, not a smooth ramp: a terrace steps, it does not taper. Three
+      // distinct heights repeating irregularly is what breaks the extruded-box read.
+      const storeys = [2, 3, 2, 4, 3, 2][unit % 6];
+      const h = 14 + storeys * 12;
+      const wall = shopWall[unit % shopWall.length];
+      const wallDark = shopWallDark[unit % shopWallDark.length];
+      const z0 = 1, z1 = 16;
 
       // shell
       for (let y = G; y <= G + h; y++)
@@ -397,34 +491,133 @@ export function buildLevel(world, palette) {
       for (let y = G; y <= G + h; y++)
         for (let z = z0; z <= z1; z++) {
           world.setRaw(bx, y, z, wall); world.setRaw(bx + w, y, z, wall);
+          world.setRaw(bx + 1, y, z, wall); world.setRaw(bx + w - 1, y, z, wall);
         }
+      // back wall, so the units are rooms rather than open-ended tunnels onto the ridge
+      for (let y = G; y <= G + h; y++)
+        for (let x = bx; x <= bx + w; x++) world.setRaw(x, y, z0, wallDark);
       box(bx, G - 1, z0, bx + w, G - 1, z1, P.concreteD);
-      box(bx, G + h + 1, z0 - 1, bx + w, G + h + 2, z1 + 1, P.woodDark);   // parapet/roof
 
-      // shopfront: recessed glazing + a door, facing the road
+      // ---- roof: alternating flat-with-parapet and pitched, plus a cornice band
+      box(bx - 1, G + h + 1, z0 - 1, bx + w + 1, G + h + 1, z1 + 1, P.concreteD);
+      if (unit % 3 === 1) {
+        // pitched, ridge running along the street
+        const span = ((z1 - z0) / 2) | 0;
+        for (let i = 0; i <= span; i++)
+          box(bx, G + h + 2 + i, z0 + i, bx + w, G + h + 2 + i, z0 + i, P.woodDark);
+        for (let i = 0; i <= span; i++)
+          box(bx, G + h + 2 + i, z1 - i, bx + w, G + h + 2 + i, z1 - i, P.woodDark);
+        box(bx, G + h + 2 + span, z0 + span - 1, bx + w, G + h + 2 + span, z0 + span + 1, P.brickDark);
+      } else {
+        box(bx, G + h + 2, z0, bx + w, G + h + 3, z0 + 1, wallDark);         // rear parapet
+        box(bx, G + h + 2, z1 - 1, bx + w, G + h + 4, z1, wallDark);         // street parapet
+        box(bx, G + h + 2, z0, bx, G + h + 4, z1, wallDark);                 // party walls
+        box(bx + w, G + h + 2, z0, bx + w, G + h + 4, z1, wallDark);
+        box(bx + 1, G + h + 2, z0 + 2, bx + w - 1, G + h + 2, z1 - 2, P.tarPatch);   // felt
+      }
+
+      // ---- rooftop clutter: a brick chimney stack with pots, and an aerial or a dish
+      {
+        const chx = bx + 4 + ((unit * 5) % Math.max(1, w - 12));
+        const chH = 8 + ((unit * 3) % 5);
+        box(chx, G + h + 2, z0 + 4, chx + 5, G + h + 2 + chH, z0 + 9, P.brick);
+        box(chx, G + h + 2 + chH, z0 + 4, chx + 5, G + h + 2 + chH, z0 + 9, P.concreteD);
+        for (const px of [chx + 1, chx + 4])
+          box(px, G + h + 3 + chH, z0 + 6, px, G + h + 5 + chH, z0 + 7, P.brickDark);
+        if (unit % 2) {
+          const ax = bx + w - 7;
+          box(ax, G + h + 3, z1 - 4, ax, G + h + 14, z1 - 3, P.metalDark);   // mast
+          for (let i = 0; i < 5; i++) {
+            const ay = G + h + 9 + i;
+            box(ax - 3, ay, z1 - 4, ax + 3, ay, z1 - 4, P.metalDark);        // elements
+          }
+        } else {
+          const dxs = bx + 6;
+          box(dxs, G + h + 3, z1 - 3, dxs + 1, G + h + 7, z1 - 2, P.metalDark);
+          box(dxs - 2, G + h + 6, z1 - 5, dxs + 3, G + h + 10, z1 - 4, P.plaster);
+        }
+      }
+
+      // ---- shopfront: recessed glazing + a door, facing the road
       const gx0 = bx + 4, gx1 = bx + w - 4;
+      const shopOpen = unit % 3 !== 2;      // one unit in three is shut up for the night
       for (let x = gx0; x <= gx1; x++)
         for (let y = G + 2; y <= G + 13; y++) {
           world.setRaw(x, y, z1, 0); world.setRaw(x, y, z1 - 1, 0);
-          world.setRaw(x, y, z1 - 2, P.glass);
+          world.setRaw(x, y, z1 - 2, shopOpen ? P.glassLit : P.glass);
         }
       const dx0 = bx + (w >> 1) - 3;
       for (let x = dx0; x <= dx0 + 6; x++)
         for (let y = G; y <= G + 12; y++) { world.setRaw(x, y, z1, 0); world.setRaw(x, y, z1 - 1, 0); }
       // fascia band + awning over the shopfront
-      box(gx0 - 1, G + 14, z1 - 1, gx1 + 1, G + 18, z1, P.signBack ?? wallDark);
-      box(gx0 - 1, G + 19, z1 + 1, gx1 + 1, G + 19, z1 + 4, unit % 2 ? P.barrelRed : P.metalDark);
-      // upper windows, recessed
-      for (let x = bx + 5; x < bx + w - 8; x += 11)
-        for (let y = G + 22; y <= G + Math.min(h - 3, 30); y++)
-          for (let xx = x; xx < x + 6; xx++) {
-            world.setRaw(xx, y, z1, 0); world.setRaw(xx, y, z1 - 1, 0);
-            world.setRaw(xx, y, z1 - 2, P.glass);
-          }
+      box(gx0 - 1, G + 14, z1 - 1, gx1 + 1, G + 18, z1, wallDark);
+      box(gx0 - 1, G + 19, z1 + 1, gx1 + 1, G + 19, z1 + 4, awningCols[unit % awningCols.length]);
+      box(gx0 - 1, G + 19, z1 + 4, gx1 + 1, G + 20, z1 + 4, P.metalDark);      // awning bar
+
+      // ---- the room behind the glass. Pale walls and floor, a counter, and stock on
+      // shelves: enough that the bounce term has something to return through the opening.
+      box(bx + 2, G - 1, z0 + 1, bx + w - 2, G - 1, z1 - 3, P.shopFloor);
+      for (let y = G; y <= G + 13; y++)
+        for (let x = bx + 2; x <= bx + w - 2; x++) world.setRaw(x, y, z0 + 1, P.shopWall);
+      box(bx + 3, G + 14, z0 + 1, bx + w - 3, G + 14, z1 - 3, P.shopWall);     // ceiling
+      box(gx0 + 1, G, z1 - 6, gx1 - 1, G + 6, z1 - 5, P.stock);                // counter
+      for (let i = 0; i < 3; i++)                                              // shelving
+        box(bx + 4, G + 2 + i * 4, z0 + 2, bx + w - 4, G + 2 + i * 4, z0 + 3,
+            i % 2 ? P.stockAlt : P.stock);
+      for (let i = 0; i < 14; i++) {
+        const px = (bx + 4 + rng() * (w - 9)) | 0;
+        const shelf = (rng() * 3) | 0;
+        box(px, G + 3 + shelf * 4, z0 + 2, px + 1, G + 4 + shelf * 4, z0 + 3,
+            rng() < 0.5 ? P.barrelRed : P.barrelYell);
+      }
+
+      // ---- upper windows, recessed, with a floor slab behind so the room has a depth cue
+      for (let s = 1; s < storeys; s++) {
+        const fy = G + 14 + s * 12;
+        box(bx + 2, fy, z0 + 1, bx + w - 2, fy, z1 - 3, P.woodDark);
+        for (let x = bx + 5; x < bx + w - 8; x += 11) {
+          // Rooms are lit or dark independently, and a whole terrace of identically lit
+          // windows reads as a decal — the irregularity is the point.
+          const r = rng();
+          const pane = r < 0.34 ? P.glassLit : r < 0.46 ? P.glassLitC : P.glass;
+          for (let y = fy + 3; y <= fy + 10; y++)
+            for (let xx = x; xx < x + 6; xx++) {
+              world.setRaw(xx, y, z1, 0); world.setRaw(xx, y, z1 - 1, 0);
+              world.setRaw(xx, y, z1 - 2, pane);
+              world.setRaw(xx, y, z1 - 3, 0);
+              world.setRaw(xx, y, z0 + 2, P.shopWall);     // back wall of the room
+            }
+          // glazing bars, so a pane is a window and not a lit rectangle
+          for (let y = fy + 3; y <= fy + 10; y++) world.setRaw(x + 3, y, z1 - 2, P.woodPale);
+          for (let xx = x; xx < x + 6; xx++) world.setRaw(xx, fy + 6, z1 - 2, P.woodPale);
+        }
+        // sill + lintel, so the opening has relief instead of being a hole in a plane
+        for (let x = bx + 4; x < bx + w - 7; x += 11) {
+          box(x, fy + 2, z1, x + 7, fy + 2, z1, P.concreteD);
+          box(x, fy + 11, z1, x + 7, fy + 11, z1, P.concreteD);
+        }
+      }
 
       bx += w + 3;
       unit++;
     }
+  }
+
+  // ---- scaffolding over one unit. Very Teardown: a lattice of poles and boards you can
+  // shoot out from under, and a strong vertical rhythm against a flat facade.
+  // Placed well down the street rather than beside the spawn: hard against the camera it
+  // was a black slab across a third of the frame instead of a piece of scenery.
+  {
+    const s0 = 152, s1 = 192, zf = 18;
+    for (let x = s0; x <= s1; x += 8) box(x, G, zf, x + 1, G + 40, zf + 1, P.steel);
+    for (let x = s0; x <= s1; x += 8) box(x, G, zf + 5, x + 1, G + 40, zf + 6, P.steel);
+    for (let y = G + 12; y <= G + 40; y += 14) {
+      box(s0, y, zf, s1 + 1, y, zf + 6, P.steel);            // ledger
+      box(s0, y + 1, zf + 1, s1 + 1, y + 1, zf + 5, P.woodPale);  // boards
+      box(s0, y + 2, zf + 5, s1 + 1, y + 2, zf + 6, P.steel);     // toe board
+    }
+    for (let x = s0; x < s1; x += 8)                          // diagonal bracing
+      for (let i = 0; i < 14; i++) box(x + ((i * 8 / 14) | 0), G + 12 + i, zf + 5, x + ((i * 8 / 14) | 0), G + 12 + i, zf + 5, P.steel);
   }
 
   // ---- street furniture: poles with wires, bins, crates, kerbside clutter
@@ -445,21 +638,131 @@ export function buildLevel(world, palette) {
       const cx2 = (10 + rng() * (sx - 30)) | 0;
       box(cx2, G, 55, cx2 + 5, G + 7, 60, rng() < 0.5 ? P.woodPale : P.metalDark);
     }
+
+    // bollards and wheelie bins along the shop side, and a signpost at the crossing
+    for (let x = 12; x < sx - 12; x += 19) {
+      box(x, G, 18, x + 1, G + 9, 19, P.bollard);
+      box(x, G + 8, 18, x + 1, G + 8, 19, P.paint);        // reflective band
+    }
+    for (let i = 0; i < 7; i++) {
+      const x = (14 + rng() * (sx - 40)) | 0;
+      box(x, G, 17, x + 5, G + 9, 22, P.binGreen);
+      box(x, G + 10, 17, x + 5, G + 10, 22, P.metalDark);  // lid
+      box(x, G + 1, 22, x + 5, G + 2, 22, P.metalDark);    // bar
+    }
+    box(90, G, 17, 91, G + 26, 18, P.signPost);
+    box(84, G + 20, 17, 97, G + 26, 17, P.signBlue);
+    box(84, G + 22, 16, 97, G + 24, 16, P.paint);
   }
 
-  // ---- horizon. Without this the ground plane visibly stops and the scene reads as a
-  // diorama on a table. Every Teardown frame hides its world edge behind receding
-  // silhouettes fading into haze, which is most of what sells the sense of place.
+  // ---- water tower. Every Teardown map has one thing you can see from anywhere and
+  // navigate by. A flat skyline is the difference between a level and a place, and this
+  // is also the most satisfying thing in the scene to cut the legs out from under.
+  {
+    const tx = 224, tz = 74;
+    const legs = [[-14, -14], [14, -14], [-14, 14], [14, 14]];
+    for (const [ox, oz] of legs) {
+      box(tx + ox, G, tz + oz, tx + ox + 2, G + 70, tz + oz + 2, P.steelDark);
+      // batter: a second, canted stub near the base so the legs splay like a real trestle
+      for (let i = 0; i < 24; i++) {
+        const k = (i * 0.30) | 0;
+        box(tx + ox + Math.sign(ox) * k, G + i, tz + oz + Math.sign(oz) * k,
+            tx + ox + Math.sign(ox) * k + 1, G + i, tz + oz + Math.sign(oz) * k + 1, P.steelDark);
+      }
+    }
+    // horizontal bracing rings + cross bracing between the legs
+    for (const ly of [G + 16, G + 38, G + 60]) {
+      box(tx - 14, ly, tz - 14, tx + 15, ly, tz - 13, P.steel);
+      box(tx - 14, ly, tz + 14, tx + 15, ly, tz + 15, P.steel);
+      box(tx - 14, ly, tz - 14, tx - 13, ly, tz + 15, P.steel);
+      box(tx + 14, ly, tz - 14, tx + 15, ly, tz + 15, P.steel);
+      for (let i = 0; i < 22; i++) {
+        const d = -14 + ((i * 28 / 22) | 0), h = ly + 1 + i;
+        box(tx + d, h, tz - 14, tx + d, h, tz - 14, P.steel);
+        box(tx - d, h, tz + 14, tx - d, h, tz + 14, P.steel);
+      }
+    }
+    // tank: a stepped cylinder, riveted bands, conical roof and a finial
+    const cy0 = G + 70, R = 20;
+    for (let y = 0; y <= 30; y++)
+      for (let dz = -R; dz <= R; dz++)
+        for (let dx = -R; dx <= R; dx++) {
+          const d2 = dx * dx + dz * dz;
+          if (d2 > R * R || d2 < (R - 2) * (R - 2)) {
+            if (y !== 0 || d2 > R * R) continue;            // floor plate
+          }
+          world.setRaw(tx + dx, cy0 + y, tz + dz, (y % 9 === 0) ? P.steelDark : P.steel);
+        }
+    for (let y = 0; y <= 14; y++) {
+      const r = Math.max(1, R - ((y * R) / 14) | 0);
+      for (let dz = -r; dz <= r; dz++)
+        for (let dx = -r; dx <= r; dx++) {
+          const d2 = dx * dx + dz * dz;
+          if (d2 <= r * r && d2 >= (r - 2) * (r - 2))
+            world.setRaw(tx + dx, cy0 + 30 + y, tz + dz, P.rust);
+        }
+    }
+    box(tx - 1, cy0 + 44, tz - 1, tx, cy0 + 50, tz, P.steelDark);
+    // access ladder up one leg
+    for (let y = 0; y < 70; y += 2) box(tx - 15, G + y, tz - 16, tx - 12, G + y, tz - 16, P.steel);
+    box(tx - 15, G, tz - 17, tx - 15, G + 70, tz - 17, P.steel);
+    box(tx - 12, G, tz - 17, tx - 12, G + 70, tz - 17, P.steel);
+  }
+
+  // ---- a box van pulled up on the road. Twice the mass of the car and a much taller
+  // silhouette, so it reads at distance and gives the middle of the street an anchor.
+  {
+    const x0 = 194, z0 = 24, L = 52, W = 20;
+    box(x0, G + 2, z0, x0 + L, G + 6, z0 + W, P.metalDark);           // chassis
+    box(x0, G + 6, z0, x0 + 15, G + 15, z0 + W, P.vanBody);           // cab
+    box(x0 + 15, G + 6, z0 - 1, x0 + L, G + 24, z0 + W + 1, P.vanBody); // box body
+    box(x0 + 15, G + 6, z0 - 1, x0 + 16, G + 24, z0 + W + 1, P.vanTrim);
+    box(x0 + L - 1, G + 6, z0 - 1, x0 + L, G + 24, z0 + W + 1, P.vanTrim);  // rear doors
+    box(x0 + L, G + 12, z0 + 5, x0 + L, G + 13, z0 + W - 5, P.metalDark);   // door handles
+    box(x0 + 1, G + 9, z0 + 2, x0 + 1, G + 14, z0 + W - 2, P.carGlass);     // windscreen
+    box(x0 + 2, G + 9, z0, x0 + 12, G + 14, z0, P.carGlass);
+    box(x0 + 2, G + 9, z0 + W, x0 + 12, G + 14, z0 + W, P.carGlass);
+    box(x0, G + 4, z0 + 2, x0, G + 6, z0 + W - 2, P.barrelYell);      // headlamps/grille
+    for (const wx of [x0 + 4, x0 + L - 14])
+      for (const wz of [z0, z0 + W - 5])
+        box(wx, G, wz, wx + 7, G + 5, wz + 4, P.tyre);
+    // a stack of the same crates that are on the pallets, being loaded alongside
+    box(x0 - 14, G, z0 + 4, x0 - 6, G + 8, z0 + 12, P.woodPale);
+    box(x0 - 13, G + 9, z0 + 5, x0 - 7, G + 15, z0 + 11, P.stock);
+  }
+
+  // ---- a brick chimney stack on the warehouse gable, matching the terrace's roofline
+  {
+    const cxs = WX0 + 14, czs = WZ0 + 30;
+    for (let y = WY1; y <= WY1 + 34; y++) {
+      const c = brickAt(cxs + y, y);
+      box(cxs, y, czs, cxs + 7, y, czs + 7, c);
+    }
+    box(cxs - 1, WY1 + 34, czs - 1, cxs + 8, WY1 + 36, czs + 8, P.concreteD);
+    for (const [px, pz] of [[cxs + 1, czs + 1], [cxs + 5, czs + 1], [cxs + 1, czs + 5], [cxs + 5, czs + 5]])
+      box(px, WY1 + 37, pz, px + 1, WY1 + 40, pz + 1, P.rust);
+  }
+
+  // ---- horizon. The renderer now continues the ground and the ridge lines analytically
+  // beyond the volume (ENVIRONMENT in shaders/common.js), so this no longer has to hide
+  // the world edge on its own. What it still does is give the backdrop something solid
+  // and *near* to sit behind — a treeline you can resolve individual trees in, in front
+  // of hills you cannot. That parallax between the two is the depth cue.
   {
     const pineDark = palette.add(52, 72, 46, MAT.FOLIAGE);
     const pineMid = palette.add(64, 86, 54, MAT.FOLIAGE);
     const ridge = palette.add(96, 104, 92, MAT.DIRT);
+
+    // The shop terrace is built hard against the z = 0 edge, so the boundary ridge and
+    // its conifers used to grow straight through the back of every unit.
+    const inTerrace = (x, z) => z < 22 && x >= 4 && x < sx - 34;
 
     // a low ridge line just inside the boundary, so the ground never ends in mid-air
     for (let i = 0; i < sx; i++) {
       const h = 6 + ((Math.sin(i * 0.11) * 3 + Math.sin(i * 0.043) * 4 + 7) | 0);
       for (const [x, z] of [[i, 3], [i, sz - 4], [3, i], [sx - 4, i]]) {
         if (x < 0 || z < 0 || x >= sx || z >= sz) continue;
+        if (inTerrace(x, z)) continue;
         for (let y = G; y < G + h; y++) world.setRaw(x, y, z, ridge);
       }
     }
@@ -481,7 +784,7 @@ export function buildLevel(world, palette) {
     const roadCorridor = (z) => z > 14 && z < 54;
     for (let i = 6; i < sx - 6; i += 7) {
       const jitter = ((i * 37) % 5) - 2;
-      if (!roadCorridor(6 + jitter)) pine(i, 6 + jitter, 16 + ((i * 13) % 10));
+      if (!roadCorridor(6 + jitter) && !inTerrace(i, 6 + jitter)) pine(i, 6 + jitter, 16 + ((i * 13) % 10));
       if (!roadCorridor(sz - 7 + jitter)) pine(i, sz - 7 + jitter, 16 + ((i * 29) % 10));
     }
     for (let i = 18; i < sz - 18; i += 7) {
@@ -489,6 +792,12 @@ export function buildLevel(world, palette) {
       const jitter = ((i * 41) % 5) - 2;
       pine(6 + jitter, i, 16 + ((i * 17) % 10));
       pine(sx - 7 + jitter, i, 16 + ((i * 23) % 10));
+    }
+    // Depth in the treeline: a second, shorter rank set back from the first, so the far
+    // side of the lot recedes instead of presenting one flat wall of green.
+    for (let i = 10; i < sx - 10; i += 9) {
+      const jitter = ((i * 53) % 7) - 3;
+      pine(i + jitter, sz - 16 + ((i * 19) % 5), 11 + ((i * 7) % 7));
     }
   }
 

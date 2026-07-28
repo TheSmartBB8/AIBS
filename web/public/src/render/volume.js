@@ -68,7 +68,7 @@ export class VoxelVolume {
  * and hand the raytracer a handful of sphere lights instead. One lamp fixture (a few
  * dozen voxels) collapses to one light at its centroid with a radius covering the blob.
  */
-export function findEmissiveLights(world, palette, maxLights = 12) {
+export function findEmissiveLights(world, palette, maxLights = 12, minEmissive = 1.0) {
   const emissiveIdx = [];
   for (let i = 1; i < 256; i++) if (palette.emissive[i] > 0) emissiveIdx.push(i);
   if (!emissiveIdx.length) return [];
@@ -122,8 +122,12 @@ export function findEmissiveLights(world, palette, maxLights = 12) {
       hit.n = tn;
     } else merged.push({ ...c });
   }
+  // An emissive *surface* is not automatically a light source. Lit window panes glow in
+  // the G-buffer (albedo * emissive) but must not each claim one of the eight point-light
+  // slots, or a terrace of them evicts the street lamp and every pixel pays for seven
+  // extra shadow rays. Only genuinely bright fixtures get promoted to lights.
   merged.sort((a, b) => b.n * b.emissive - a.n * a.emissive);
-  return merged.slice(0, maxLights).map(m => ({
+  return merged.filter(m => m.emissive >= minEmissive).slice(0, maxLights).map(m => ({
     pos: [m.x, m.y, m.z],                                  // voxel space
     color: m.col,
     // radiant power scales with the number of glowing voxels

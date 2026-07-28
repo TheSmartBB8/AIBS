@@ -145,6 +145,88 @@ vec3 skyWithSun(vec3 d) {
 }
 `;
 
+// ---------------------------------------------------------------- distant environment
+// The voxel volume is only 25.6 m across. Any ray that leaves it used to return pure sky,
+// which meant every shot looking down or outward showed the world simply *stopping* — a
+// lit diorama sitting on a grey table. That single fact was doing more damage to the
+// Teardown read than any lighting parameter.
+//
+// The fix is not more voxels. It is what a real renderer does beyond its detail budget:
+// an analytic backdrop. A ground plane continuous with the level's own ground gives the
+// world somewhere to go, two bands of azimuthal hills give the horizon a silhouette, and
+// the same aerial-perspective curve used inside the volume dissolves both into the sky —
+// so the join between "real geometry" and "backdrop" lands where the haze already is.
+//
+// Being analytic, it costs one plane intersection and some noise, only on rays that miss,
+// and it shows up correctly in reflections for free.
+export const ENVIRONMENT = /* glsl */`
+uniform float uHorizonY;      // world-space height of the backdrop plane, metres
+uniform vec3  uGroundNear;    // linear albedo of the near/lit distant ground
+uniform vec3  uGroundFar;     // linear albedo of the darker patches (woodland, ploughing)
+uniform vec3  uHillColor;     // linear colour the ridge silhouettes tend toward
+uniform float uHillHeight;    // silhouette elevation, as a tangent (0.03 ~= 1.7 deg)
+uniform float uEnvFog;        // haze density used to dissolve the backdrop, per metre
+
+// Silhouette elevation of a ridge line as a function of azimuth. Built from harmonics of
+// the azimuth so it is seamlessly periodic — a noise lookup would tear at +/-pi.
+float ridgeLine(vec2 hz, float phase, float scale) {
+  float a = atan(hz.y, hz.x) + phase;
+  float e = sin(a * 2.0 + 0.4)  * 0.55
+          + sin(a * 5.0 + 1.9)  * 0.30
+          + sin(a * 11.0 + 3.7) * 0.16
+          + sin(a * 23.0 + 5.5) * 0.07;
+  return uHillHeight * scale * (0.55 + 0.45 * e);
+}
+
+/**
+ * Radiance arriving along rd at a point that hit nothing in the volume.
+ * The sky argument is the term to build on: with the sun disc for anything the camera or
+ * a reflection sees directly, without it for the aerial-perspective blend (mixing a disc
+ * into fogged geometry would paint a second sun over the buildings).
+ */
+vec3 envRadianceOn(vec3 ro, vec3 rd, vec3 sky) {
+  vec3 S = sunDirTo();
+  // What distance dissolves into. NOT skyRadiance(rd): for a downward ray that returns
+  // uSkyGround, which is an ambient-lighting fudge (a dark brown), and it turned the far
+  // landscape into a grey-green void — exactly the failure the backdrop exists to fix.
+  // Real aerial perspective tends toward the *horizon* colour along the same azimuth.
+  vec3 haze = skyRadiance(normalize(vec3(rd.x, 0.03, rd.z)));
+
+  // ---- ground plane, for anything heading downward
+  if (rd.y < -1e-5) {
+    float t = (uHorizonY - ro.y) / rd.y;
+    if (t > 0.0) {
+      vec2 hp = (ro + rd * t).xz;
+      // two octaves of large-scale variation: field-sized patches inside broader country
+      float n = skyFbm(hp * 0.055) * 0.65 + skyFbm(hp * 0.009) * 0.55;
+      vec3 g = mix(uGroundNear, uGroundFar, clamp(n - 0.18, 0.0, 1.0));
+      // drifting cloud shadow, the cue that reads as "a landscape under a real sky"
+      float shade = mix(0.58, 1.0, smoothstep(0.36, 0.72, skyFbm(hp * 0.0065 + uTime * 0.004)));
+      // Matched to how the volume's own ground is lit, or the join at the world edge
+      // shows as a step: full sun term, and a hemisphere-averaged sky rather than zenith.
+      vec3 ambient = mix(skyRadiance(vec3(0.0, 1.0, 0.0)),
+                         skyRadiance(normalize(vec3(rd.x, 0.30, rd.z))), 0.6);
+      vec3 lit = g * (uSunColor * uSunPower * max(S.y, 0.0) * shade + ambient);
+      return mix(lit, haze, clamp(1.0 - exp(-t * uEnvFog), 0.0, 1.0));
+    }
+  }
+
+  // ---- ridge silhouettes just above the horizon. Two layers, because a single band
+  // reads as a painted stripe; two at different heights and haze depths read as distance.
+  float elev = rd.y / max(length(rd.xz), 1e-5);
+  vec2 hz = normalize(rd.xz + vec2(1e-6));
+  float far  = ridgeLine(hz, 0.0, 1.35);
+  float near = ridgeLine(hz, 2.3, 0.80);
+  vec3 c = sky;
+  c = mix(c, mix(haze, uHillColor, 0.30), smoothstep(far,  far  - 0.0035, elev));
+  c = mix(c, mix(haze, uHillColor, 0.55), smoothstep(near, near - 0.0025, elev));
+  return c;
+}
+
+vec3 envRadiance(vec3 ro, vec3 rd)    { return envRadianceOn(ro, rd, skyWithSun(rd)); }
+vec3 envAmbient(vec3 ro, vec3 rd)     { return envRadianceOn(ro, rd, skyRadiance(rd)); }
+`;
+
 // ---------------------------------------------------------------- volume tracing
 // Hierarchical DDA. At every step we ask the coarsest occupancy level first: if the
 // 16^3 block is empty we jump straight to its far face, otherwise try the 4^3 block,

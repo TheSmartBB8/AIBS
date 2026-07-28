@@ -16,7 +16,7 @@
 // ground-truth-quality image in ~100 frames.
 
 import * as THREE from 'three';
-import { RANDOM, SKY, TRACE, PALETTE, FULLSCREEN_VERT } from './shaders/common.js';
+import { RANDOM, SKY, ENVIRONMENT, TRACE, PALETTE, FULLSCREEN_VERT } from './shaders/common.js';
 
 export const TRACE_FRAG = /* glsl */`
 precision highp float;
@@ -55,6 +55,7 @@ uniform float uLightRadius[8]; // voxels
 
 ${RANDOM}
 ${SKY}
+${ENVIRONMENT}
 ${TRACE}
 ${PALETTE}
 
@@ -89,8 +90,8 @@ void main() {
   vec4 nrm = texture(tNormal, vUv);
   vec3 rayDir = rayFromUv(vUv);
 
-  if (dot(nrm.xyz, nrm.xyz) < 0.25) {          // sky
-    oColor = vec4(skyWithSun(rayDir), 1.0);
+  if (dot(nrm.xyz, nrm.xyz) < 0.25) {          // missed the volume entirely
+    oColor = vec4(envRadiance(uCamPos, rayDir), 1.0);
     return;
   }
 
@@ -187,7 +188,9 @@ void main() {
         VHit rh = traceVoxels(ro, R, uSpecRange, 192);
         vec3 Li;
         if (!rh.hit) {
-          Li = skyWithSun(R);
+          // The backdrop reflects too — without it, every window and puddle looking
+          // downward-and-outward mirrored a slab of empty sky where ground should be.
+          Li = envRadiance(P, R);
         } else {
           vec3 hp = ro + R * rh.t;
           Li = secondaryShade(hp, rh.n, rh.pal, rough < 0.45);
@@ -203,7 +206,10 @@ void main() {
   float dist = length(P - uCamPos);
   float hf = exp(-max(P.y - uFogHeight, 0.0) * 0.10);
   float fog = 1.0 - exp(-dist * uFogDensity * hf);
-  color = mix(color, skyRadiance(rayDir), clamp(fog, 0.0, 1.0));
+  // Fade toward what is actually *behind* this surface, not toward the sky. Geometry
+  // below the horizon used to haze out to a pale sky colour, which lit up the base of
+  // every distant building as if it were floating.
+  color = mix(color, envAmbient(uCamPos, rayDir), clamp(fog, 0.0, 1.0));
 
   oColor = vec4(color, 1.0);
 }`;

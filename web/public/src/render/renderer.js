@@ -62,13 +62,16 @@ export const DEFAULTS = {
   sunTint: [0.85, 0.55, 0.30],
 
   aoRays: 2,
-  aoRange: 12,            // voxels (1.2 m). At 46 the gradient was stretched over 4.6 m,
-                          // so contact darkening under debris was invisible.
+  aoRange: 22,            // voxels (2.2 m). 46 stretched the gradient over 4.6 m so contact
+                          // darkening under debris vanished; 12 was the opposite failure —
+                          // anything more than 1.2 m from another surface counted as fully
+                          // open sky, so a street canyon got no canyon at all.
   aoStrength: 1.0,
   bakedAoMix: 0.45,
-  bounce: 0.95,           // albedo-tinted sky bounce. Interiors were collapsing to pure
+  bounce: 1.30,           // albedo-tinted sky bounce. Interiors were collapsing to pure
                           // black: indoors every AO ray hits, so ambient went to zero and
                           // nothing but this term lights a room through its openings.
+                          // It is also the only thing lighting the shaded side of a street.
   specRange: 300,
   emissivePower: 1.0,
   lightScale: 0.22,
@@ -81,6 +84,18 @@ export const DEFAULTS = {
                           // (far ground within 3 luma of near), so the scene stayed uniformly
                           // sharp to the horizon and read as a tabletop diorama.
   fogHeight: 7.0,
+
+  // Analytic backdrop beyond the voxel volume. See ENVIRONMENT in shaders/common.js.
+  // horizonY must match the level's ground surface (groundY * VOXEL) or the join shows.
+  horizonY: 1.2,
+  groundNear: [0.105, 0.200, 0.045],   // linear; the level's grass, so the seam is invisible
+  groundFar: [0.045, 0.085, 0.030],    // woodland / ploughed patches
+  hillColor: [0.085, 0.115, 0.135],
+  hillHeight: 0.032,      // tangent of the ridge elevation — about 1.8 degrees
+  envFog: 0.0035,         // much slacker than fogDensity: the backdrop must survive to the
+                          // horizon rather than dissolving a hundred metres out. At 0.0075
+                          // the countryside just past the world edge was already 20% haze,
+                          // which desaturated it to grey and re-created the void it replaced.
 
   exposure: 1.18,
   bloom: 0.22,
@@ -222,6 +237,13 @@ export class VoxelRenderer {
       uFogDensity: { value: 0.0075 },
       uFogHeight: { value: 3 },
 
+      uHorizonY: { value: 1.2 },
+      uGroundNear: { value: new THREE.Vector3() },
+      uGroundFar: { value: new THREE.Vector3() },
+      uHillColor: { value: new THREE.Vector3() },
+      uHillHeight: { value: 0.032 },
+      uEnvFog: { value: 0.0075 },
+
       uNumLights: { value: 0 },
       uLightPos: { value: Array.from({ length: 8 }, () => new THREE.Vector3()) },
       uLightColor: { value: Array.from({ length: 8 }, () => new THREE.Vector3()) },
@@ -325,6 +347,12 @@ export class VoxelRenderer {
     s.uEmissivePower.value = p.emissivePower;
     s.uFogDensity.value = p.fogDensity;
     s.uFogHeight.value = p.fogHeight;
+    s.uHorizonY.value = p.horizonY;
+    s.uGroundNear.value.set(...p.groundNear);
+    s.uGroundFar.value.set(...p.groundFar);
+    s.uHillColor.value.set(...p.hillColor);
+    s.uHillHeight.value = p.hillHeight;
+    s.uEnvFog.value = p.envFog;
     this.gbufUniforms.uVoxelNoise.value = p.voxelNoise;
     this.gbufUniforms.uVoxelEdge.value = p.voxelEdge;
 

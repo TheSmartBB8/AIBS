@@ -422,7 +422,13 @@ vec3 traceTransmit(vec3 ro, vec3 rd, float tMax, int maxSteps) {
     } else if (mip1Fetch(floor(p * 0.25)) < 0.5) {
       cs = 4.0;
     } else {
-      float idx = volFetch(floor(p));
+      // x255 because volFetch returns the normalised texel, not the palette index.
+      // traceVoxels does the same (h.pal = v * 255.0); leaving it out here indexed entry 0
+      // — air, transmission zero — so every voxel read as opaque and the whole function
+      // was a slower copy of traceShadow. The give-away was luma identical to the previous
+      // build to three significant figures, which is not what "a change did not help"
+      // looks like; it is what "the code did not run" looks like.
+      float idx = volFetch(floor(p)) * 255.0;
       if (idx > 0.0) {
         float tr = palPbr(idx).a;
         if (tr <= 0.001) return vec3(0.0);

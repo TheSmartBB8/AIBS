@@ -44,9 +44,19 @@ await settle();
 writeFileSync(`${out}/1_before.png`, await page.screenshot());
 console.log('wrote before');
 
-// Rocket the warehouse facade, then let the debris fall and settle.
+// Rocket a facade, then let the debris fall and settle.
+//
+// The target is an argument because the default one is not visible from most cameras, and
+// finding that out costs a fifteen-minute software render every time. The warehouse aim
+// point below sits 20 cm *inside* its own near wall, so every exterior view has that wall
+// between it and the event; three separate attempts produced frames with no visible
+// destruction in them. Check a target with tools/seecam.mjs before filming it — for the
+// `street` view, 10.0 2.6 1.8 (the terrace facade) comes out 71% visible at 15 degrees
+// off-axis, where the warehouse point scores 14%.
+const AT = (process.argv[4] || '12.2,2.4,8.0').split(',').map(Number);
+const FROM = (process.argv[5] || '6.0,2.6,4.0').split(',').map(Number);
 const solidBefore = await page.evaluate(() => window.__app.countSolid());
-await page.evaluate(() => window.__app.fireAt('rocket', [6.0, 2.6, 4.0], [12.2, 2.4, 8.0], 1));
+await page.evaluate(([f, a]) => window.__app.fireAt('rocket', f, a, 1), [FROM, AT]);
 // Capture mid-flight first: debris tumbling is the moment worth verifying.
 await page.evaluate(() => window.__app.simulate(0.28));
 await settle(48);

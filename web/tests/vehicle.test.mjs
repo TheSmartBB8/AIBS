@@ -70,6 +70,27 @@ const run = (phys, seconds, dt = 1 / 60) => {
   CHECK(Math.abs(veh.body.pos[1] - y) < 0.05, 'and it stays there rather than slowly sinking or climbing');
 }
 
+// ---- a car standing still sits level
+//
+// Wheel forces used to be applied as each wheel was computed, so the wheels processed
+// first pushed the chassis and the ones processed later read an already-moved body. With
+// a fixed wheel order that is a constant bias: every car in the level sat visibly leaned
+// to the same side with springs at 0.50 and 0.14 of travel, despite perfectly symmetric
+// mass and mounts.
+{
+  const { phys, veh } = scene();
+  run(phys, 6);
+  const c = veh.wheels.map((w) => w.compression);
+  const left = (c[0] + c[2]) / 2, right = (c[1] + c[3]) / 2;
+  CHECK(Math.abs(left - right) < 0.06,
+        `it sits level across its width (${left.toFixed(3)} vs ${right.toFixed(3)} of travel)`);
+  // roll angle, from the chassis' up axis leaning along its own right
+  const R = veh.body.R;
+  const upWorld = [R[1], R[4], R[7]];
+  CHECK(Math.abs(upWorld[2]) < 0.05,
+        `and its roof is level (roll component ${upWorld[2].toFixed(4)})`);
+}
+
 // ---- wheel mounts land symmetrically about the centre of mass
 //
 // Mounts are given in voxel coordinates but the centre of mass is computed from voxel

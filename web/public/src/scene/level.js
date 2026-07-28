@@ -4,6 +4,7 @@
 // destruction and fire systems key off, so the scene is a real testbed and not a diorama.
 
 import { MAT } from '../voxel/palette.js';
+import { buildCar } from './cars.js';
 
 // deterministic PRNG so every screenshot of "the same" scene is byte-identical —
 // essential for the visual-critic loop to compare like with like
@@ -341,51 +342,24 @@ export function buildLevel(world, palette) {
   // scene has deliberately never depended on it.
   const vehicles = [];
 
-  // ---- car on the road
-  {
-    const x0 = 96, z0 = 26, L = 42, W = 18;
-    box(x0, G + 2, z0, x0 + L, G + 7, z0 + W, P.carBody);
-    box(x0 + 10, G + 8, z0 + 2, x0 + 30, G + 13, z0 + W - 2, P.carBody);
-    box(x0 + 11, G + 9, z0 + 1, x0 + 29, G + 12, z0 + 1, P.carGlass);
-    box(x0 + 11, G + 9, z0 + W - 1, x0 + 29, G + 12, z0 + W - 1, P.carGlass);
-    box(x0 + 10, G + 9, z0 + 2, x0 + 10, G + 12, z0 + W - 2, P.carGlass);
-    box(x0 + 30, G + 9, z0 + 2, x0 + 30, G + 12, z0 + W - 2, P.carGlass);
-    for (const wx of [x0 + 6, x0 + 32])
-      for (const wz of [z0 + 1, z0 + W - 4])
-        box(wx, G, wz, wx + 5, G + 4, wz + 3, P.tyre);
-    // Details on the ends. Parked on a narrow street the car is usually seen head- or
-    // tail-on, and from there a plain extruded slab is all it was: no lamps, no glass,
-    // no bumper line to catch the light.
-    box(x0, G + 3, z0 + 2, x0, G + 6, z0 + W - 2, P.carGlass);           // windscreen
-    box(x0 + L, G + 3, z0 + 2, x0 + L, G + 6, z0 + W - 2, P.carGlass);   // rear screen
-    box(x0 - 1, G + 2, z0 + 1, x0 - 1, G + 3, z0 + W - 1, P.metalDark);  // bumpers
-    box(x0 + L + 1, G + 2, z0 + 1, x0 + L + 1, G + 3, z0 + W - 1, P.metalDark);
-    for (const lz2 of [z0 + 2, z0 + W - 5]) {
-      box(x0 - 1, G + 4, lz2, x0 - 1, G + 5, lz2 + 3, P.lampCar);        // headlamps
-      box(x0 + L + 1, G + 4, lz2, x0 + L + 1, G + 5, lz2 + 3, P.brakeLamp);
-    }
-    box(x0 + L + 1, G + 2, z0 + 7, x0 + L + 1, G + 3, z0 + 11, P.paint); // plate
-    box(x0 + 1, G + 8, z0 + 2, x0 + 9, G + 8, z0 + W - 2, P.carBody);    // bonnet lip
-    box(x0 + 31, G + 8, z0 + 2, x0 + L - 1, G + 8, z0 + W - 2, P.carBody);
-
-    // The car faces +x, down the street. Mounts sit at the tyre centres; the front pair
-    // steers and the rear pair drives, which is what makes it rotate about its nose
-    // rather than pivoting round the middle.
-    vehicles.push({
-      name: 'sedan',
-      // y starts at G, not G-1: G-1 is the road surface, and including it lifts a slab of
-      // asphalt into the chassis — which then sits buried in the road it came out of and
-      // is held by contact friction instead of its own suspension.
-      min: [x0 - 2, G, z0 - 2], max: [x0 + L + 2, G + 15, z0 + W + 2],
-      forward: [1, 0, 0],
-      wheels: [
-        { at: [x0 + 33, G + 2, z0 + 2],  steered: true,  driven: false },
-        { at: [x0 + 33, G + 2, z0 + 15], steered: true,  driven: false },
-        { at: [x0 + 8,  G + 2, z0 + 2],  steered: false, driven: true },
-        { at: [x0 + 8,  G + 2, z0 + 15], steered: false, driven: true },
-      ],
-    });
-  }
+  // ---- traffic. Four vehicles, all drivable: the kit in cars.js builds the bodywork
+  // and hands back the descriptor the engine needs to lift each one out of the grid.
+  // Spaced down the street so there is somewhere to drive to and something to hit.
+  // Placed to leave the review cameras' lanes clear. The street is only 2.6 m wide, so a
+  // parked car fills it: anywhere a camera stands, a car cannot. The pickup goes on the
+  // apron by the roller door, which is where a works vehicle belongs anyway.
+  vehicles.push(buildCar(world, P, palette, {
+    at: [60, G, 26], style: 'hatch', color: [168, 62, 54], name: 'hatch',
+  }));
+  vehicles.push(buildCar(world, P, palette, {
+    at: [100, G, 26], style: 'sedan', color: [58, 96, 152], name: 'sedan',
+  }));
+  vehicles.push(buildCar(world, P, palette, {
+    at: [200, G, 25], style: 'van', color: [206, 202, 192], name: 'van',
+  }));
+  vehicles.push(buildCar(world, P, palette, {
+    at: [130, G, 56], style: 'pickup', color: [92, 112, 78], name: 'pickup',
+  }));
 
   // ---- lamp post
   {
@@ -766,25 +740,6 @@ export function buildLevel(world, palette) {
     for (let y = 0; y < 70; y += 2) box(tx - 15, G + y, tz - 16, tx - 12, G + y, tz - 16, P.steel);
     box(tx - 15, G, tz - 17, tx - 15, G + 70, tz - 17, P.steel);
     box(tx - 12, G, tz - 17, tx - 12, G + 70, tz - 17, P.steel);
-  }
-
-  // ---- a box van pulled up on the road. Twice the mass of the car and a much taller
-  // silhouette, so it reads at distance and gives the middle of the street an anchor.
-  {
-    const x0 = 194, z0 = 24, L = 52, W = 20;
-    box(x0, G + 2, z0, x0 + L, G + 6, z0 + W, P.metalDark);           // chassis
-    box(x0, G + 6, z0, x0 + 15, G + 15, z0 + W, P.vanBody);           // cab
-    box(x0 + 15, G + 6, z0 - 1, x0 + L, G + 24, z0 + W + 1, P.vanBody); // box body
-    box(x0 + 15, G + 6, z0 - 1, x0 + 16, G + 24, z0 + W + 1, P.vanTrim);
-    box(x0 + L - 1, G + 6, z0 - 1, x0 + L, G + 24, z0 + W + 1, P.vanTrim);  // rear doors
-    box(x0 + L, G + 12, z0 + 5, x0 + L, G + 13, z0 + W - 5, P.metalDark);   // door handles
-    box(x0 + 1, G + 9, z0 + 2, x0 + 1, G + 14, z0 + W - 2, P.carGlass);     // windscreen
-    box(x0 + 2, G + 9, z0, x0 + 12, G + 14, z0, P.carGlass);
-    box(x0 + 2, G + 9, z0 + W, x0 + 12, G + 14, z0 + W, P.carGlass);
-    box(x0, G + 4, z0 + 2, x0, G + 6, z0 + W - 2, P.barrelYell);      // headlamps/grille
-    for (const wx of [x0 + 4, x0 + L - 14])
-      for (const wz of [z0, z0 + W - 5])
-        box(wx, G, wz, wx + 7, G + 5, wz + 4, P.tyre);
   }
 
   // ---- crates waiting outside the roller door. They used to sit beside the van on the

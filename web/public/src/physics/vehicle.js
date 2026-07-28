@@ -175,8 +175,17 @@ export class Vehicle {
       wh.steer += d;
     }
 
+    // Gather every wheel's force from the *same* body state, then apply them together.
+    // Applying each wheel's impulse as it is computed makes the sweep order matter: the
+    // wheels processed first push the chassis, and the ones processed later then read an
+    // already-moved body and contribute less. With a fixed wheel order that is a constant
+    // bias, and it showed up as every car in the level sitting visibly leaned over to the
+    // same side even though its mass and mounts were exactly symmetric.
     let groundedCount = 0;
-    for (const wh of this.wheels) if (this._stepWheel(world, wh, h, up, fwd, right)) groundedCount++;
+    const pending = this._pending || (this._pending = []);
+    pending.length = 0;
+    for (const wh of this.wheels) if (this._stepWheel(world, wh, h, up, fwd, right, pending)) groundedCount++;
+    for (let i = 0; i < pending.length; i += 2) b.applyImpulse(pending[i], pending[i + 1]);
     this.grounded = groundedCount > 0;
 
     // Aerodynamic downforce through the centre of mass. Without it the car goes light
@@ -198,7 +207,7 @@ export class Vehicle {
     }
   }
 
-  _stepWheel(world, wh, h, up, fwd, right) {
+  _stepWheel(world, wh, h, up, fwd, right, pending) {
     const T = this.tuning;
     const b = this.body;
 
@@ -239,7 +248,7 @@ export class Vehicle {
     // the spring momentarily reads near zero and the tyre would let go of the road for no
     // reason a driver could see. Weight transfer still modulates it, just not to nothing.
     const load = Math.max(Fs, this.restLoad * 0.35);
-    b.applyImpulse(wh.contact, vmul(up, Fs * h));
+    pending.push(wh.contact, vmul(up, Fs * h));
 
     // ---- traction, in the wheel's own frame
     const steerC = Math.cos(wh.steer), steerS = Math.sin(wh.steer);
@@ -281,8 +290,7 @@ export class Vehicle {
     if (this.handbrake && !wh.steered) ft *= 0.35;
     wh.slip = clamp(demand, 0, 2);
 
-    const J = vadd(vmul(wFwd, fl * h), vmul(wRight, ft * h));
-    b.applyImpulse(wh.contact, J);
+    pending.push(wh.contact, vadd(vmul(wFwd, fl * h), vmul(wRight, ft * h)));
     return true;
   }
 

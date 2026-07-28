@@ -32,6 +32,55 @@ class LatticeView {
 }
 
 const MAX_DEBRIS = 6000;
+const MAX_WHEELS = 64;
+
+/**
+ * A wheel, as a stack of voxel-scale boxes swept round its axle.
+ *
+ * Deliberately faceted rather than a smooth cylinder: everything else in the scene is
+ * 10 cm cubes, and a perfectly round tyre is the one object that would give away that it
+ * came from somewhere else. Twelve segments is enough to roll convincingly and coarse
+ * enough to still read as built from the same stuff.
+ */
+function makeWheelGeometry(radius = 1, width = 1, segments = 12) {
+  const parts = [];
+  for (let i = 0; i < segments; i++) {
+    const a = (i / segments) * Math.PI * 2;
+    const seg = new THREE.BoxGeometry(radius * 0.34, radius * 0.62, width);
+    seg.rotateZ(a);
+    seg.translate(Math.cos(a) * radius * 0.7, Math.sin(a) * radius * 0.7, 0);
+    parts.push(seg);
+  }
+  // hub
+  const hub = new THREE.BoxGeometry(radius * 0.8, radius * 0.8, width * 0.72);
+  parts.push(hub);
+
+  let total = 0;
+  for (const g of parts) total += g.attributes.position.count;
+  const pos = new Float32Array(total * 3);
+  const nrm = new Float32Array(total * 3);
+  const ao = new Float32Array(total).fill(1);
+  const idx = [];
+  let vo = 0;
+  for (const g of parts) {
+    const gp = g.attributes.position.array, gn = g.attributes.normal.array;
+    pos.set(gp, vo * 3);
+    nrm.set(gn, vo * 3);
+    const gi = g.index.array;
+    for (let k = 0; k < gi.length; k++) idx.push(gi[k] + vo);
+    vo += g.attributes.position.count;
+    g.dispose();
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
+  geo.setAttribute('aAo', new THREE.BufferAttribute(ao, 1));
+  geo.setIndex(idx);
+  // Per-instance palette so a hub cap and a tyre can differ, and so different vehicles
+  // can run different rubber without a mesh each.
+  geo.setAttribute('aPal', new THREE.InstancedBufferAttribute(new Float32Array(MAX_WHEELS), 1));
+  return geo;
+}
 
 export class BodyRenderer {
   /** @param gbufMaterial the same material the static chunks use, so lighting matches. */
@@ -55,16 +104,36 @@ export class BodyRenderer {
     this.debrisMesh.frustumCulled = false;
     const n = geo.attributes.position.count;
     geo.setAttribute('aAo', new THREE.BufferAttribute(new Float32Array(n).fill(1), 1));
-    // Per-instance palette. Every chip used to take the *first* chip's colour, on the
-    // theory that dust is too small to tell apart — which held while debris was single
-    // voxels and stopped holding the moment fragments became 30 cm lumps of brick lying
-    // on the ground. An instanced attribute of the same name costs one float per voxel.
+    // Wheels. A wheel is not part of its chassis: it steers, spins, and rides its own
+    // suspension travel, none of which a welded block of tyre voxels can do. Each is a
+    // short cylinder built from voxel-sized boxes so it matches the rest of the world's
+    // blockiness rather than reading as a smooth import.
+    this._wheelGeo = makeWheelGeometry();
+    this.wheelMesh = new THREE.InstancedMesh(this._wheelGeo, gbufMaterial, MAX_WHEELS);
+    this.wheelMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.wheelMesh.count = 0;
+    this.wheelMesh.frustumCulled = false;
+    this.group.add(this.wheelMesh);
+    this._wheelM = new THREE.Matrix4();
+    this._wheelQ = new THREE.Quaternion();
+    this._wheelBodyQ = new THREE.Quaternion();
+    this._wheelSpinQ = new THREE.Quaternion();
+    this._wheelAlignQ = new THREE.Quaternion();
+    this._wheelAxis = new THREE.Vector3();
+    this._wheelRight = new THREE.Vector3();
+    this._wheelS = new THREE.Vector3();
+    this._wheelZ = new THREE.Vector3(0, 0, 1);
+
+    // Per-instance palette for debris. Every chip used to take the *first* chip's colour,
+    // on the theory that dust is too small to tell apart — which held while debris was
+    // single voxels and stopped holding the moment fragments became 30 cm lumps of brick
+    // lying on the ground. An instanced attribute costs one float per voxel.
     this._debrisPal = new THREE.InstancedBufferAttribute(new Float32Array(MAX_DEBRIS), 1);
     this._debrisPal.setUsage(THREE.DynamicDrawUsage);
     geo.setAttribute('aPal', this._debrisPal);
     this.group.add(this.debrisMesh);
 
-    this.stats = { bodies: 0, bodyTris: 0, debris: 0 };
+    this.stats = { bodies: 0, bodyTris: 0, debris: 0, wheels: 0 };
   }
 
   _meshFor(body) {
@@ -103,7 +172,7 @@ export class BodyRenderer {
   }
 
   /** Sync to the current body/debris set. Returns true if anything is visible. */
-  update(bodies, debris) {
+  update(bodies, debris, vehicles) {
     const live = new Set();
     let tris = 0;
 
@@ -161,15 +230,60 @@ export class BodyRenderer {
       this.debrisMesh.count = 0;
     }
 
+    const w = this._updateWheels(vehicles);
+
     this.stats.bodies = live.size;
     this.stats.bodyTris = tris;
     this.stats.debris = n;
-    return live.size > 0 || n > 0;
+    this.stats.wheels = w;
+    return live.size > 0 || n > 0 || w > 0;
+  }
+
+  /**
+   * Place one instance per wheel. The wheel spins about its axle and yaws with its
+   * steering angle, both inside the chassis' own rotation — so a steered wheel on a car
+   * that is itself sliding sideways still points where the driver put it.
+   */
+  _updateWheels(vehicles) {
+    if (!vehicles || vehicles.length === 0) { this.wheelMesh.count = 0; return 0; }
+    const palAttr = this._wheelGeo.attributes.aPal;
+    let n = 0;
+    for (const v of vehicles) {
+      if (!v.alive) continue;
+      const bq = v.body.q;
+      this._wheelBodyQ.set(bq[0], bq[1], bq[2], bq[3]);
+      const up = v.upLocal, right = v.rightLocal;
+      // The geometry lies in XY with its axle along +Z, so bring that onto the chassis'
+      // right axis once per vehicle; steer and spin then compose on top of it.
+      this._wheelRight.set(right[0], right[1], right[2]);
+      this._wheelAlignQ.setFromUnitVectors(this._wheelZ, this._wheelRight);
+      for (const t of v.wheelTransforms()) {
+        if (n >= MAX_WHEELS) break;
+        this._wheelQ.setFromAxisAngle(this._wheelAxis.set(up[0], up[1], up[2]), t.steer);
+        this._wheelSpinQ.setFromAxisAngle(this._wheelRight, -t.spin);
+        this._wheelQ.multiply(this._wheelSpinQ).multiply(this._wheelAlignQ);
+        this._wheelQ.premultiply(this._wheelBodyQ);
+
+        const r = t.radius;
+        this._wheelM.compose(
+          this._p.set(t.pos[0], t.pos[1], t.pos[2]),
+          this._wheelQ,
+          this._wheelS.set(r, r, r * 0.55));
+        this.wheelMesh.setMatrixAt(n, this._wheelM);
+        palAttr.array[n] = v.wheelPal || 0;
+        n++;
+      }
+    }
+    this.wheelMesh.count = n;
+    this.wheelMesh.instanceMatrix.needsUpdate = true;
+    palAttr.needsUpdate = true;
+    return n;
   }
 
   dispose() {
     for (const [, mesh] of this.meshes) { this.group.remove(mesh); mesh.geometry.dispose(); }
     this.meshes.clear();
     this._debrisGeo.dispose();
+    this._wheelGeo.dispose();
   }
 }

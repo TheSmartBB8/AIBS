@@ -437,8 +437,22 @@ export class VoxelRenderer {
    * Sync the in-flight debris. Anything moving invalidates the accumulated history, so
    * this resets it — otherwise tumbling chunks smear across the temporal buffer.
    */
-  setBodies(bodies, debris) {
-    const moving = this.bodyRenderer.update(bodies || [], debris);
+  setBodies(bodies, debris, vehicles) {
+    this.bodyRenderer.update(bodies || [], debris, vehicles);
+    // "Moving" has to mean actually moving, not merely present. The renderer's own
+    // return value counts anything it drew, which was fine while bodies existed only
+    // while they were in flight — and became wrong the moment parked vehicles started
+    // living in the body list permanently. Every frame then reported motion, the
+    // accumulator was pinned at motionSamples, and the whole image stayed grainy for
+    // the entire session because there is always a car in the street.
+    const list = bodies || [];
+    let moving = (debris?.parts?.length || 0) > 0;
+    for (let i = 0; !moving && i < list.length; i++) {
+      const b = list[i];
+      if (!b.alive) continue;
+      if (b.v[0] * b.v[0] + b.v[1] * b.v[1] + b.v[2] * b.v[2] > 4e-4) moving = true;
+      else if (b.w[0] * b.w[0] + b.w[1] * b.w[1] + b.w[2] * b.w[2] > 2.5e-3) moving = true;
+    }
     this._movingBodies = moving || !!this._hadBodies;
     if (this._movingBodies) this.holdAccumulation();
     this._hadBodies = moving;

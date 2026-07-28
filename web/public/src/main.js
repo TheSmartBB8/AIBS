@@ -117,7 +117,7 @@ function step(dt) {
   const rebuilt = renderer.updateMeshes(6);
   if (rebuilt > 0) renderer.resetAccumulation?.();
   renderer.setLights?.(engine.lights);
-  renderer.setBodies?.(engine.physics.bodies, engine.physics.debris);
+  renderer.setBodies?.(engine.physics.bodies, engine.physics.debris, engine.physics.vehicles);
   renderer.setParticles?.(engine.particles.buildInstances());
   if (!freeCam) {
     if (engine.driving) {

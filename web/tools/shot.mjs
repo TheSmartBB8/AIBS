@@ -37,11 +37,17 @@ for (const v of views) {
   let last = -1, stalled = 0;
   for (let i = 0; i < 200; i++) {
     await page.evaluate(() => window.__app.renderFrames(4));
-    const s = await page.evaluate(() => window.__app.renderer?.samples ?? window.__app.stats().samples ?? 0);
-    if (s >= TARGET) break;
-    if (s === last && ++stalled > 3) break;   // accumulation isn't advancing; don't spin
-    if (s !== last) stalled = 0;
-    last = s;
+    const st = await page.evaluate(() => {
+      const R = window.__app.renderer;
+      return { s: R?.samples ?? 0, motion: !!R?.inMotion, hold: R?.params?.motionSamples ?? 6 };
+    });
+    if (st.s >= TARGET) break;
+    // While debris or smoke is live the renderer holds its history instead of averaging,
+    // so the sample count plateaus by design and waiting for TARGET never returns.
+    if (st.motion && st.s >= st.hold) break;
+    if (st.s === last && ++stalled > 3) break;   // accumulation isn't advancing; don't spin
+    if (st.s !== last) stalled = 0;
+    last = st.s;
   }
   const s = await page.evaluate(() => window.__app.renderer?.samples ?? 0);
   await page.waitForTimeout(80);

@@ -13,14 +13,23 @@ await page.goto('http://127.0.0.1:8899/index.html', { waitUntil: 'load', timeout
 await page.waitForFunction(() => window.__app?.ready === true, { timeout: 120000 });
 console.log('stats:', JSON.stringify(await page.evaluate(() => window.__app.stats())));
 
+// The renderer deliberately stops converging while anything is moving: it holds a few
+// frames of history and clamps rather than accumulating a mean (see motionSamples in
+// renderer.js). Waiting for a sample count that will never arrive just spins for
+// hundreds of software-rendered frames, so stop as soon as it is as resolved as it is
+// going to get.
 const settle = async (target = 96) => {
   let last = -1, stall = 0;
   for (let i = 0; i < 200; i++) {
     await page.evaluate(() => window.__app.renderFrames(4));
-    const s = await page.evaluate(() => window.__app.renderer.samples ?? 0);
-    if (s >= target) break;
-    if (s === last && ++stall > 3) break; else if (s !== last) stall = 0;
-    last = s;
+    const st = await page.evaluate(() => {
+      const R = window.__app.renderer;
+      return { s: R.samples ?? 0, motion: !!R.inMotion, hold: R.params.motionSamples };
+    });
+    if (st.s >= target) break;
+    if (st.motion && st.s >= st.hold) break;
+    if (st.s === last && ++stall > 3) break; else if (st.s !== last) stall = 0;
+    last = st.s;
   }
 };
 

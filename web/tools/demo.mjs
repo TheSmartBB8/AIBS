@@ -13,6 +13,12 @@ await page.goto('http://127.0.0.1:8899/index.html', { waitUntil: 'load', timeout
 await page.waitForFunction(() => window.__app?.ready === true, { timeout: 120000 });
 console.log('stats:', JSON.stringify(await page.evaluate(() => window.__app.stats())));
 
+// Freeze for the same reason shot.mjs does: with the rAF loop running, physics advances
+// between our calls and the sky clock moves on every accumulation reset, so the explicit
+// simulate() timings below are not the only thing driving the world and two runs of the
+// same demolition are not the same event.
+await page.evaluate(() => window.__app.freeze());
+
 // The renderer deliberately stops converging while anything is moving: it holds a few
 // frames of history and clamps rather than accumulating a mean (see motionSamples in
 // renderer.js). Waiting for a sample count that will never arrive just spins for

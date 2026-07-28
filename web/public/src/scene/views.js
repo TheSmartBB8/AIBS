@@ -15,6 +15,15 @@ export const VIEWS = {
   // On the road looking down it: shopfronts to one side, the warehouse to the other.
   // Pulled back from x 2.6 once the hatch moved to x 3.0 to open the car view: from there
   // the hatch sat a metre ahead and filled the bottom half of the frame.
+  // The hatch fills the lower middle of this shot and cannot be framed out from here.
+  // The lens sits inside the car's z-footprint (road z 2.0-4.6, car z 2.6-4.2), but the
+  // free strips either side are 0.6 m and 0.4 m wide: moving to z 2.2 was tried and put
+  // the camera 0.6 m off the terrace wall instead, scoring 0.65 on the frame-openness
+  // check below — a wall in the lens traded for a car in the lens.
+  //
+  // This is the 2.6 m carriageway showing up again, the same constraint that stops you
+  // driving past a parked car. It is a level-geometry problem and no camera position in
+  // this file solves it; the fix is widening the road into the yard behind the fence.
   street:   { pos: [1.0,  2.9,  3.4], look: [22.0, 3.4,  4.8], fov: 70 },
   // From the road, diagonally across at the warehouse. Off the verge at z 6.0, where the
   // kerbside crate row stood right against the lens.

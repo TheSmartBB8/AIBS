@@ -197,16 +197,29 @@ vec3 envRadianceOn(vec3 ro, vec3 rd, vec3 sky) {
     float t = (uHorizonY - ro.y) / rd.y;
     if (t > 0.0) {
       vec2 hp = (ro + rd * t).xz;
-      // two octaves of large-scale variation: field-sized patches inside broader country
+
+      // Relief. A mathematically flat plane stays a flat wash however it is coloured —
+      // it was the remaining tell that the distance was painted on. Rather than raymarch
+      // a heightfield, perturb the *shading normal* by the gradient of a low-frequency
+      // height function: two extra noise taps buy sunlit and shaded slopes, which is
+      // where the sense of rolling country actually comes from.
+      const float HF = 0.0075, EPS = 6.0, AMP = 26.0;
+      float h0 = skyFbm(hp * HF);
+      float hx = skyFbm((hp + vec2(EPS, 0.0)) * HF);
+      float hz = skyFbm((hp + vec2(0.0, EPS)) * HF);
+      vec3 N = normalize(vec3(-(hx - h0) * AMP, 1.0, -(hz - h0) * AMP));
+
+      // field-sized patches inside broader country, plus darker woodland on the tops
       float n = skyFbm(hp * 0.055) * 0.65 + skyFbm(hp * 0.009) * 0.55;
       vec3 g = mix(uGroundNear, uGroundFar, clamp(n - 0.18, 0.0, 1.0));
+      g = mix(g, uGroundFar * 0.75, smoothstep(0.56, 0.70, h0) * 0.8);
       // drifting cloud shadow, the cue that reads as "a landscape under a real sky"
       float shade = mix(0.58, 1.0, smoothstep(0.36, 0.72, skyFbm(hp * 0.0065 + uTime * 0.004)));
       // Matched to how the volume's own ground is lit, or the join at the world edge
       // shows as a step: full sun term, and a hemisphere-averaged sky rather than zenith.
       vec3 ambient = mix(skyRadiance(vec3(0.0, 1.0, 0.0)),
                          skyRadiance(normalize(vec3(rd.x, 0.30, rd.z))), 0.6);
-      vec3 lit = g * (uSunColor * uSunPower * max(S.y, 0.0) * shade + ambient);
+      vec3 lit = g * (uSunColor * uSunPower * max(dot(N, S), 0.0) * shade + ambient * (0.55 + 0.45 * N.y));
       return mix(lit, haze, clamp(1.0 - exp(-t * uEnvFog), 0.0, 1.0));
     }
   }

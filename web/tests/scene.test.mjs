@@ -8,6 +8,7 @@
 import { VoxelWorld, VOXEL } from '../public/src/voxel/world.js';
 import { Palette, MAT } from '../public/src/voxel/palette.js';
 import { buildLevel } from '../public/src/scene/level.js';
+import { VIEWS } from '../public/src/scene/views.js';
 import { findEmissiveLights } from '../public/src/render/volume.js';
 import { DEFAULTS } from '../public/src/render/renderer.js';
 import { TRACE_FRAG } from '../public/src/render/trace.js';
@@ -41,6 +42,35 @@ const level = buildLevel(world, palette);
   let tallest = 0;
   for (let x = 0; x < 256; x += 2) for (let z = 0; z < 256; z += 2) tallest = Math.max(tallest, heightAt(x, z));
   CHECK(tallest > 110, `something breaks the skyline well above the roofs (tallest voxel y=${tallest})`);
+}
+
+// ---- every review camera stands in open air and can see something
+//
+// Adding the box van put the `reverse` camera inside its cargo body. The shot came back
+// as a dark slab and the cost of finding out was a full screenshot round trip.
+{
+  const clear = (m) => {
+    const [x, y, z] = m.map(v => Math.round(v / VOXEL));
+    for (let dy = -1; dy <= 1; dy++)
+      for (let dz = -1; dz <= 1; dz++)
+        for (let dx = -1; dx <= 1; dx++)
+          if (world.get(x + dx, y + dy, z + dz) !== 0) return false;
+    return true;
+  };
+  const buried = Object.entries(VIEWS).filter(([, v]) => !clear(v.pos)).map(([k]) => k);
+  CHECK(buried.length === 0, `every review camera stands in open air (inside geometry: ${JSON.stringify(buried)})`);
+
+  // ...and is aimed somewhere, not at its own position
+  const degenerate = Object.entries(VIEWS).filter(([, v]) =>
+    Math.hypot(v.look[0] - v.pos[0], v.look[1] - v.pos[1], v.look[2] - v.pos[2]) < 0.5).map(([k]) => k);
+  CHECK(degenerate.length === 0, `every review camera has a real look direction (${JSON.stringify(degenerate)})`);
+
+  // Horizontally inside the world. Height is deliberately unbounded above: the aerial
+  // view sits over the top of the volume looking down, which is legitimate.
+  const oob = Object.entries(VIEWS).filter(([, v]) =>
+    v.pos[0] < 0 || v.pos[0] > world.sx * VOXEL ||
+    v.pos[2] < 0 || v.pos[2] > world.sz * VOXEL || v.pos[1] < 0).map(([k]) => k);
+  CHECK(oob.length === 0, `every review camera is over the world footprint (${JSON.stringify(oob)})`);
 }
 
 // ---- lit windows glow without eating the point-light budget

@@ -62,7 +62,9 @@ export function buildLevel(world, palette) {
     carGlass:   palette.add(34, 48, 60, MAT.GLASS),
     leaf:       palette.add(72, 104, 52, MAT.FOLIAGE),
     trunk:      palette.add(92, 68, 46, MAT.WOOD),
-    lamp:       palette.add(255, 244, 214, MAT.GLASS, 6.0),
+    // 6.0 blew the lamp head into a featureless white disc with a bloom halo over a
+    // quarter of the frame — a streetlight outglaring the sun in a daylight scene.
+    lamp:       palette.add(255, 244, 214, MAT.GLASS, 2.6),
     bedrock:    palette.add(58, 56, 54, MAT.UNBREAKABLE),
 
     // street surface + furniture

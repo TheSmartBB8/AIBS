@@ -91,7 +91,9 @@ export const DEFAULTS = {
   groundNear: [0.105, 0.200, 0.045],   // linear; the level's grass, so the seam is invisible
   groundFar: [0.045, 0.085, 0.030],    // woodland / ploughed patches
   hillColor: [0.085, 0.115, 0.135],
-  hillHeight: 0.032,      // tangent of the ridge elevation — about 1.8 degrees
+  hillHeight: 0.062,      // tangent of the ridge elevation — about 3.5 degrees. At 0.032
+                          // the bands were ~13 px tall at review resolution and the horizon
+                          // still read as a ruled line.
   envFog: 0.0035,         // much slacker than fogDensity: the backdrop must survive to the
                           // horizon rather than dissolving a hundred metres out. At 0.0075
                           // the countryside just past the world edge was already 20% haze,

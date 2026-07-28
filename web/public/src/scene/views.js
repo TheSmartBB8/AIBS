@@ -30,6 +30,12 @@ export const VIEWS = {
   // On the apron looking at the shipping container. Was at z 5.2, inside the picket fence.
   container:{ pos: [19.0, 2.9,  8.0], look: [22.0, 2.2, 11.0], fov: 66 },
   aerial:   { pos: [2.0, 19.0,  2.0], look: [13.0, 1.0, 13.0], fov: 60 },
+  // Three-quarter view of the parked sedan from its sunlit side, close enough to judge
+  // the wheels and the panel work. Every other street view looks *down* the road, which
+  // means every car is seen nose- or tail-on with its flanks in shadow — so the wheels,
+  // the thing most recently rebuilt, could not be assessed from any existing shot.
+  car:      { pos: [8.2,  2.8,  2.4], look: [12.2, 1.9,  3.5], fov: 50 },
+
   // Down the street the other way, so the backdrop and the far end are in frame. Kept
   // upstream of the parked van (x 19.4-24.6) rather than out at the far end, where the
   // van fills the lane and pressing in to the kerb only buries the lens in an awning.

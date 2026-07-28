@@ -39,6 +39,19 @@ const METALNESS = {
   [MAT.HEAVY_METAL]: 0.72,
 };
 
+// What counts as a body actually moving, rather than merely existing.
+//
+// These have to clear the velocity ripple a spring-supported body shows at equilibrium.
+// A parked car is not still: the suspension pushes up and gravity pulls down within each
+// substep, so its velocity oscillates by roughly g*h — 0.167 m/s at 120 Hz — and measured
+// peaks are 0.19 m/s and 0.76 rad/s. Thresholds below that make every parked car in the
+// level read as motion forever, which pins the temporal accumulator and leaves the whole
+// image grainy for the entire session. tests/vehicle.test.mjs asserts the margin holds.
+export const MOTION_SPEED = 0.35;      // m/s
+export const MOTION_SPIN = 1.2;        // rad/s
+const MOTION_V2 = MOTION_SPEED * MOTION_SPEED;
+const MOTION_W2 = MOTION_SPIN * MOTION_SPIN;
+
 function halton(i, b) {
   let f = 1, r = 0;
   while (i > 0) { f /= b; r += f * (i % b); i = Math.floor(i / b); }
@@ -450,8 +463,8 @@ export class VoxelRenderer {
     for (let i = 0; !moving && i < list.length; i++) {
       const b = list[i];
       if (!b.alive) continue;
-      if (b.v[0] * b.v[0] + b.v[1] * b.v[1] + b.v[2] * b.v[2] > 4e-4) moving = true;
-      else if (b.w[0] * b.w[0] + b.w[1] * b.w[1] + b.w[2] * b.w[2] > 2.5e-3) moving = true;
+      if (b.v[0] * b.v[0] + b.v[1] * b.v[1] + b.v[2] * b.v[2] > MOTION_V2) moving = true;
+      else if (b.w[0] * b.w[0] + b.w[1] * b.w[1] + b.w[2] * b.w[2] > MOTION_W2) moving = true;
     }
     this._movingBodies = moving || !!this._hadBodies;
     if (this._movingBodies) this.holdAccumulation();

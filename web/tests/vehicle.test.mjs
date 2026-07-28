@@ -8,6 +8,7 @@ import { VoxelWorld, VOXEL } from '../public/src/voxel/world.js';
 import { Palette, MAT } from '../public/src/voxel/palette.js';
 import { PhysicsWorld } from '../public/src/physics/physics.js';
 import { vehicleFromVoxels, CAR_TUNING } from '../public/src/physics/vehicle.js';
+import { MOTION_SPEED, MOTION_SPIN } from '../public/src/render/renderer.js';
 
 let fails = 0, checks = 0;
 const CHECK = (c, m) => { checks++; if (c) console.log(`[ OK ] ${m}`); else { console.log(`[FAIL] ${m}`); fails++; } };
@@ -89,6 +90,29 @@ const run = (phys, seconds, dt = 1 / 60) => {
   const upWorld = [R[1], R[4], R[7]];
   CHECK(Math.abs(upWorld[2]) < 0.05,
         `and its roof is level (roll component ${upWorld[2].toFixed(4)})`);
+}
+
+// ---- a parked car reads as stationary to the renderer
+//
+// A car on springs is never numerically still: suspension pushes up and gravity pulls
+// down inside each substep, so its velocity ripples by about g*h. If the renderer's
+// "is anything moving" threshold sits below that ripple, every parked car in the level
+// counts as motion forever — the temporal accumulator is pinned at motionSamples and the
+// whole image stays grainy for the entire session. This ties the two together so a change
+// to the substep rate or the spring tuning cannot silently re-break the picture.
+{
+  const { phys, veh } = scene();
+  run(phys, 8);
+  let vmax = 0, wmax = 0;
+  for (let i = 0; i < 120; i++) {
+    phys.step(1 / 60);
+    vmax = Math.max(vmax, Math.hypot(...veh.body.v));
+    wmax = Math.max(wmax, Math.hypot(...veh.body.w));
+  }
+  CHECK(vmax < MOTION_SPEED,
+        `at-rest speed ripple stays under the renderer's motion threshold (${vmax.toFixed(3)} < ${MOTION_SPEED})`);
+  CHECK(wmax < MOTION_SPIN,
+        `and so does the spin ripple (${wmax.toFixed(3)} < ${MOTION_SPIN})`);
 }
 
 // ---- wheel mounts land symmetrically about the centre of mass

@@ -28,7 +28,13 @@ const W = parseInt(process.argv[4] || '480', 10);
 const H = parseInt(process.argv[5] || '300', 10);
 const REF = parseInt(process.env.REF || '512', 10);
 const PASSES = parseInt(process.env.PASSES || '5', 10);
-const STEPS = (process.env.STEPS || '4,8,16,32,64').split(',').map(Number);
+// Starts at 1, deliberately. The original default began at 4, and that omission hid a real
+// defect for several commits: the denoiser measured -35% at 4 samples and -61% in a dim
+// interior, all of it from a *stationary* camera, while at 2 and 3 samples it was +15% and
+// +39% — worse than not filtering. Any camera movement resets accumulation, so 1 sample is
+// what you see while moving and 2-3 is what you pass through as it settles. Measuring only
+// the range that converges nicely is measuring the case the player is least often in.
+const STEPS = (process.env.STEPS || '1,2,3,8,32').split(',').map(Number);
 mkdirSync(OUT, { recursive: true });
 
 const browser = await launchChromium();

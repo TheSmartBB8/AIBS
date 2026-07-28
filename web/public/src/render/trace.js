@@ -43,7 +43,6 @@ uniform float uAoRange;      // voxels
 uniform float uAoStrength;
 uniform float uBakedAoMix;
 uniform float uBounce;
-uniform float uBounceSun;
 uniform float uSpecRange;    // voxels
 uniform float uEmissivePower;
 uniform float uFogDensity;
@@ -79,7 +78,13 @@ vec3 secondaryShade(vec3 p, vec3 n, float pal, bool doSun) {
     vec3 S = sunDirTo();
     float nl = dot(n, S);
     if (nl > 0.0) {
-      float d = traceShadow(p + n * 0.05, S, 400.0, 160);
+      // Quarter-voxel, matching the primary sun ray's offset above rather than the 0.05
+      // this used. That number was survivable while only reflections called this — a
+      // reflection hit that self-shadows loses a highlight nobody misses. It is not
+      // survivable now the indirect bounce comes through here: 0.05 voxels is 5 mm, the
+      // first volFetch can land back in the originating voxel, and the bounce then reads
+      // as shadowed precisely where the surface is most brightly lit.
+      float d = traceShadow(p + n * 0.25, S, 400.0, 160);
       if (d >= 400.0) c += alb * uSunColor * uSunPower * nl;
     }
   }
@@ -184,16 +189,19 @@ void main() {
       f = f * f * (3.0 - 2.0 * f);
       amb += skyRadiance(D) * f;
       if (uBounce > 0.0) {
-        // What the blocker bounces back. Using sky alone made every bounce cold and weak:
-        // in a real street the shaded side is lit mostly by *sunlight* coming off the
-        // sunlit facade opposite, which is why shaded walls read warm rather than blue.
-        // Weighted by how sun-facing the blocker is, with no shadow ray of its own —
-        // uBounceSun is the discount for not knowing whether it is really in sun.
-        vec4 hc = palColor(h.pal);
-        float sunFacing = max(dot(h.n, S), 0.0);
-        vec3 incident = skyRadiance(vec3(0.0, 1.0, 0.0))
-                      + uSunColor * uSunPower * sunFacing * uBounceSun;
-        amb += srgbToLinear(hc.rgb) * incident * uBounce * (1.0 - f * 0.5);
+        // A real second bounce. This used to weight the blocker's albedo by how sun-facing
+        // it was and multiply by uBounceSun — "the discount for not knowing whether it is
+        // really in sun". That guess is wrong in both directions at once: a wall in shadow
+        // still bounced 40% of full sunlight into the room, and a wall in full sun bounced
+        // only 40% of what it should. The two errors do not cancel, they just flatten the
+        // indirect until every shaded surface sits at the same middling brightness.
+        //
+        // secondaryShade traces the blocker's own shadow ray, so now the bounce carries
+        // sunlight only where sunlight actually lands. That is what produces real colour
+        // bleeding — a red wall throwing red onto the pavement beside it, and nothing
+        // where the wall is shaded.
+        vec3 hp = ro + D * h.t;
+        amb += secondaryShade(hp, h.n, h.pal, true) * uBounce * (1.0 - f * 0.5);
       }
     }
   }

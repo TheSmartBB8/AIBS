@@ -297,6 +297,7 @@ uniform float uVignette;
 uniform float uSaturation;
 uniform float uContrast;
 uniform float uLift;
+uniform float uSharpen;   // 0 = off
 
 // ACES, Stephen Hill's fit (RRT+ODT baked). The shoulder is what stops the sun-facing
 // brick from clipping to a flat orange slab and is a big part of the filmic feel.
@@ -323,11 +324,50 @@ vec3 linearToSrgb(vec3 c) {
   return mix(c * 12.92, 1.055 * pow(max(c, vec3(1e-5)), vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
 }
 
+/**
+ * Contrast-adaptive sharpen, in the shape AMD's CAS uses.
+ *
+ * The à-trous denoiser buys its noise reduction by spending high-frequency detail, and no
+ * amount of tuning gets that for free — a spatial filter cannot tell a voxel edge from a
+ * noisy one with perfect confidence, so some real signal always goes with the grain. Every
+ * renderer that denoises pairs it with a sharpen for exactly this reason.
+ *
+ * What makes it "contrast-adaptive" rather than a plain unsharp mask is the local weight:
+ * the amount is scaled by how much headroom the neighbourhood has (min/max of the cross),
+ * so flat regions — where any residual noise lives — are left alone, and only areas that
+ * already have structure get their contrast restored. A uniform sharpen would amplify the
+ * noise the denoiser just removed, which is worse than not denoising at all.
+ *
+ * Applied after the tonemap, in display space, which is where CAS is defined: sharpening
+ * linear HDR lets one bright pixel throw a huge ring around itself.
+ */
+vec3 tonemapAt(vec2 uv) {
+  vec3 c = texture(tColor, uv).rgb + texture(tBloom, uv).rgb * uBloom;
+  return acesFitted(c * uExposure);
+}
+
+vec3 sharpen(vec3 c, vec2 uv, vec2 texel) {
+  vec3 n = tonemapAt(uv + vec2(0.0, -texel.y));
+  vec3 s = tonemapAt(uv + vec2(0.0,  texel.y));
+  vec3 w = tonemapAt(uv + vec2(-texel.x, 0.0));
+  vec3 e = tonemapAt(uv + vec2( texel.x, 0.0));
+
+  vec3 mn = min(min(n, s), min(w, e));
+  vec3 mx = max(max(n, s), max(w, e));
+  mn = min(mn, c); mx = max(mx, c);
+  // Headroom either side, whichever is tighter: near white there is no room to brighten,
+  // near black none to darken, and pushing anyway only clips.
+  vec3 room = min(mn, 1.0 - mx) / max(mx, vec3(1e-4));
+  vec3 amount = sqrt(clamp(room, 0.0, 1.0)) * uSharpen;
+  // Standard 5-tap unsharp: centre against the cross mean, weighted per channel. Bloom is
+  // included in every tap, so a glow — which has almost no local contrast — produces a
+  // near-zero correction and is left soft, which is what a glow is for.
+  return clamp(c + (c * 4.0 - (n + s + w + e)) * amount * 0.25, 0.0, 1.0);
+}
+
 void main() {
-  vec3 c = texture(tColor, vUv).rgb;
-  c += texture(tBloom, vUv).rgb * uBloom;
-  c *= uExposure;
-  c = acesFitted(c);
+  vec3 c = tonemapAt(vUv);
+  if (uSharpen > 0.0) c = sharpen(c, vUv, 1.0 / uRes);
 
   float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
   c = mix(vec3(l), c, uSaturation);

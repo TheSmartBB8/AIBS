@@ -90,9 +90,6 @@ export const DEFAULTS = {
                           // black: indoors every AO ray hits, so ambient went to zero and
                           // nothing but this term lights a room through its openings.
                           // It is also the only thing lighting the shaded side of a street.
-  bounceSun: 0.40,        // how much of the sun a bounce surface is assumed to be catching.
-                          // Below 1 because the bounce gets no shadow ray of its own, so
-                          // this is the discount for not knowing if it is really in sun.
   specRange: 300,
   emissivePower: 1.0,
   lightScale: 0.22,
@@ -129,6 +126,16 @@ export const DEFAULTS = {
                           // palette is dusty, not toybox.
   contrast: 1.03,
   lift: 0.0,
+  sharpen: 0.45,          // contrast-adaptive; puts back the high frequencies the à-trous
+                          // spends to buy its noise reduction.
+                          //
+                          // PROVISIONAL. This number is a guess and is not yet backed by
+                          // the RMSE sweep that is meant to set it. The whole argument for
+                          // sharpening here is that it restores real detail rather than
+                          // merely adding acutance, and that claim is exactly the kind the
+                          // eye cannot adjudicate — a too-strong sharpen looks *better*
+                          // while measuring worse. Until the sweep says otherwise, treat
+                          // this as untested.
 
   maxSamples: 512,
   denoise: 1,
@@ -271,7 +278,6 @@ export class VoxelRenderer {
       uAoStrength: { value: 1 },
       uBakedAoMix: { value: 0.45 },
       uBounce: { value: 0.28 },
-      uBounceSun: { value: 0.4 },
       uSpecRange: { value: 300 },
       uEmissivePower: { value: 1 },
       uFogDensity: { value: 0.0075 },
@@ -335,6 +341,7 @@ export class VoxelRenderer {
       uRes: { value: new THREE.Vector2(960, 540) },
       uExposure: { value: 1.1 }, uBloom: { value: 0.6 }, uVignette: { value: 0.4 },
       uSaturation: { value: 1.1 }, uContrast: { value: 1.05 }, uLift: { value: 0 },
+      uSharpen: { value: 0 },
     });
   }
 
@@ -390,7 +397,6 @@ export class VoxelRenderer {
     s.uAoStrength.value = p.aoStrength;
     s.uBakedAoMix.value = p.bakedAoMix;
     s.uBounce.value = p.bounce;
-    s.uBounceSun.value = p.bounceSun;
     s.uSpecRange.value = p.specRange;
     s.uEmissivePower.value = p.emissivePower;
     s.uFogDensity.value = p.fogDensity;
@@ -416,6 +422,7 @@ export class VoxelRenderer {
     c.uSaturation.value = p.saturation;
     c.uContrast.value = p.contrast;
     c.uLift.value = p.lift;
+    c.uSharpen.value = p.sharpen;
     this.bloomPreMaterial.uniforms.uThreshold.value = p.bloomThreshold;
     this.bloomPreMaterial.uniforms.uKnee.value = p.bloomKnee;
 

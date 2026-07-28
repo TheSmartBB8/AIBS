@@ -29,7 +29,6 @@ layout(location = 0) out vec4 oColor;
 uniform sampler2D tAlbedo;
 uniform sampler2D tNormal;
 uniform sampler2D tPosition;
-uniform sampler2D uPalPbr;
 
 uniform vec2  uRes;
 uniform vec3  uCamPos;
@@ -57,8 +56,8 @@ uniform float uLightRadius[8]; // voxels
 ${RANDOM}
 ${SKY}
 ${ENVIRONMENT}
-${TRACE}
 ${PALETTE}
+${TRACE}
 
 vec3 srgbToLinear(vec3 c) { return pow(max(c, vec3(0.0)), vec3(2.2)); }
 
@@ -154,9 +153,13 @@ void main() {
     vec3 L = sampleCone(S, cosMax, rnd2());
     float NoL = dot(N, L);
     if (NoL > 0.0) {
-      float d = traceShadow(ro, L, 512.0, 320);
-      if (d >= 512.0) {
-        vec3 E = uSunColor * uSunPower * NoL;
+      // Transmittance rather than a binary occlusion test. Glass is an ordinary voxel to
+      // traceShadow, so every window in the level used to block the sun completely and
+      // interiors could not be lit through them at all. This is what puts a shaft of
+      // sunlight on an interior floor.
+      vec3 T = traceTransmit(ro, L, 512.0, 320);
+      if (max(T.r, max(T.g, T.b)) > 0.002) {
+        vec3 E = uSunColor * uSunPower * NoL * T;
         direct += E;
         // Clamped for the same reason the reflection weight is: a near-grazing view of a
         // smooth surface sends the BRDF to hundreds and leaves a permanent white speck.

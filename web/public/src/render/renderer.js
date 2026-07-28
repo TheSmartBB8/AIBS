@@ -243,10 +243,16 @@ export class VoxelRenderer {
       const rough = Math.min(1, Math.max(0.03, 1 - m.smoothness));
       const metal = METALNESS[mi] ?? 0.0;
       const f0 = Math.min(0.11, 0.02 + m.reflectivity * 0.10);
+      // Alpha is how much light gets *through* a voxel of this material. It was unused,
+      // and every material was effectively 0 — which made each pane of glass in the level
+      // a solid light-blocker and every room a sealed box. Only glass transmits; 0.62 per
+      // voxel means the 1-voxel panes here pass most of the light while a deep stack still
+      // attenuates, and it keeps a visible pane rather than a hole.
+      const transmit = mi === MAT.GLASS ? 0.62 : 0.0;
       d[i * 4 + 0] = Math.round(rough * 255);
       d[i * 4 + 1] = Math.round(metal * 255);
       d[i * 4 + 2] = Math.round(f0 * 255);
-      d[i * 4 + 3] = 255;
+      d[i * 4 + 3] = Math.round(transmit * 255);
     }
     return d;
   }

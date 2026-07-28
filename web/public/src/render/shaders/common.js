@@ -379,14 +379,81 @@ float traceShadow(vec3 ro, vec3 rd, float tMax, int maxSteps) {
   // lamp glow bleeding through an exterior wall. Fail closed instead.
   return -1.0;
 }
+
+/**
+ * Fraction of light that survives the trip: 1.0 clear, 0.0 fully blocked.
+ *
+ * traceShadow treats every non-zero voxel as opaque, and glass is an ordinary palette
+ * entry, so every window in the level was a solid light-blocker. That is why interiors
+ * were dark, and it is a far more basic cause than the one I spent a while chasing: no
+ * number of GI bounces can light a sealed box, because there is no path in. The palette
+ * comment saying "a pane is opaque in this renderer" had been sitting there the whole
+ * time describing exactly this.
+ *
+ * Rather than stopping at the first hit, this keeps going through anything with non-zero
+ * transmission, attenuating as it passes and tinting by the glass colour. It gives
+ * sunlight through windows — shafts across an interior floor, coloured light under
+ * stained panes — which is the effect doing most of the work in a Teardown interior.
+ *
+ * Bails once the remaining transmission is negligible, so a stack of panes costs no more
+ * than the opaque version.
+ */
+vec3 traceTransmit(vec3 ro, vec3 rd, float tMax, int maxSteps) {
+  vec3 sg = vec3(greaterThanEqual(rd, vec3(0.0))) * 2.0 - 1.0;
+  rd = sg * max(abs(rd), vec3(1e-6));
+  vec3 inv = 1.0 / rd;
+  vec3 pos01 = max(sg, 0.0);
+
+  vec3 ta = (vec3(0.0) - ro) * inv;
+  vec3 tb = (uGrid - ro) * inv;
+  vec3 tn = min(ta, tb), tf = max(ta, tb);
+  float tEnter = max(max(tn.x, tn.y), tn.z);
+  float tLeave = min(min(tf.x, tf.y), tf.z);
+  float tEnd = min(tMax, tLeave);
+  float t = max(tEnter, 0.0) + 1e-3;
+
+  vec3 T = vec3(1.0);
+  for (int i = 0; i < maxSteps; i++) {
+    if (t >= tEnd) return T;
+    vec3 p = ro + rd * t;
+    float cs;
+    if (mip2Fetch(floor(p * 0.0625)) < 0.5) {
+      cs = 16.0;
+    } else if (mip1Fetch(floor(p * 0.25)) < 0.5) {
+      cs = 4.0;
+    } else {
+      float idx = volFetch(floor(p));
+      if (idx > 0.0) {
+        float tr = palPbr(idx).a;
+        if (tr <= 0.001) return vec3(0.0);
+        // Tint toward the pane's own colour as it attenuates, so light through coloured
+        // glass arrives coloured rather than merely dimmer.
+        T *= mix(vec3(1.0), palColor(idx).rgb, 0.5) * tr;
+        if (max(T.r, max(T.g, T.b)) < 0.01) return vec3(0.0);
+      }
+      cs = 1.0;
+    }
+    vec3 cmin = floor(p / cs) * cs;
+    vec3 te = (cmin + cs * pos01 - ro) * inv;
+    t = min(min(te.x, te.y), te.z) + 1e-3;
+  }
+  // Same fail-closed reasoning as traceShadow: a budget overrun must not read as clear.
+  return vec3(0.0);
+}
 `;
 
 // ---------------------------------------------------------------- palette lookup
+//
+// Included *before* TRACE, because traceTransmit needs to ask a voxel whether light gets
+// through it. It has no dependency of its own, so the ordering costs nothing.
 export const PALETTE = /* glsl */`
 uniform sampler2D uPalCol;
 uniform sampler2D uPalMat;
+uniform sampler2D uPalPbr;
 vec4 palColor(float idx) { return texture(uPalCol, vec2((idx + 0.5) / 256.0, 0.5)); }
 vec4 palMat(float idx)   { return texture(uPalMat, vec2((idx + 0.5) / 256.0, 0.5)); }
+// r = roughness, g = metalness, b = F0, a = transmission (0 opaque, 1 clear)
+vec4 palPbr(float idx)   { return texture(uPalPbr, vec2((idx + 0.5) / 256.0, 0.5)); }
 `;
 
 export const FULLSCREEN_VERT = /* glsl */`

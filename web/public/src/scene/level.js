@@ -129,12 +129,18 @@ export function buildLevel(world, palette) {
   // renderer's illusion breaks first. Everything below is one voxel deep — it costs
   // nothing structurally and gives the ray-traced AO and reflections something to bite on.
   {
-    // resurfaced strips and trench patches, with a lighter seam around the edge
+    // Resurfaced strips. Weathered *paler* than the road around them and edged raggedly,
+    // because the road here is usually in shadow: a darker rectangle with a bright seam
+    // read as an open trapdoor rather than a repair.
     for (let i = 0; i < 9; i++) {
       const px = (rng() * sx) | 0, pz = (21 + rng() * 22) | 0;
       const w = 6 + ((rng() * 20) | 0), d = 4 + ((rng() * 8) | 0);
-      box(px - 1, G - 1, pz - 1, px + w + 1, G - 1, pz + d + 1, P.tarPale);
-      box(px, G - 1, pz, px + w, G - 1, pz + d, P.tarPatch);
+      for (let z = pz; z <= pz + d; z++)
+        for (let x = px; x <= px + w; x++) {
+          const edge = (x === px || x === px + w || z === pz || z === pz + d);
+          if (edge && rng() < 0.45) continue;
+          world.setRaw(x, G - 1, z, rng() < 0.22 ? P.tarPatch : P.tarPale);
+        }
     }
     // cracks: short random walks, so they wander rather than reading as scratches
     for (let i = 0; i < 26; i++) {
@@ -540,17 +546,29 @@ export function buildLevel(world, palette) {
         }
       }
 
-      // ---- shopfront: recessed glazing + a door, facing the road
+      // ---- shopfront: glazing, a stallriser, pilasters and a door, facing the road
+      //
+      // The glazing sits ONE voxel back, not two. Looking down a street the facades are
+      // seen almost edge-on, and at that angle a two-voxel reveal hides the glass behind
+      // its own jamb — the whole terrace read as one blank cream wall. The pilasters and
+      // stallriser do the rest: they are what still has rhythm at a grazing angle.
       const gx0 = bx + 4, gx1 = bx + w - 4;
       const shopOpen = unit % 3 !== 2;      // one unit in three is shut up for the night
       for (let x = gx0; x <= gx1; x++)
-        for (let y = G + 2; y <= G + 13; y++) {
-          world.setRaw(x, y, z1, 0); world.setRaw(x, y, z1 - 1, 0);
-          world.setRaw(x, y, z1 - 2, shopOpen ? P.glassLit : P.glass);
+        for (let y = G + 3; y <= G + 13; y++) {
+          world.setRaw(x, y, z1, 0);
+          world.setRaw(x, y, z1 - 1, shopOpen ? P.glassLit : P.glass);
         }
+      box(gx0 - 1, G, z1, gx1 + 1, G + 2, z1, P.concreteD);          // stallriser
+      for (let x = gx0 - 1; x <= gx1 + 1; x += 12)                   // pilasters
+        box(x, G, z1, x + 1, G + 14, z1 + 1, wallDark);
+      box(gx0 - 1, G + 14, z1, gx1 + 1, G + 14, z1 + 1, wallDark);   // head over the lot
       const dx0 = bx + (w >> 1) - 3;
       for (let x = dx0; x <= dx0 + 6; x++)
         for (let y = G; y <= G + 12; y++) { world.setRaw(x, y, z1, 0); world.setRaw(x, y, z1 - 1, 0); }
+      box(dx0 - 1, G, z1, dx0 - 1, G + 13, z1 + 1, wallDark);        // door jambs
+      box(dx0 + 7, G, z1, dx0 + 7, G + 13, z1 + 1, wallDark);
+      box(dx0 - 1, G + 13, z1, dx0 + 7, G + 13, z1 + 1, wallDark);
       // fascia band + awning over the shopfront
       box(gx0 - 1, G + 14, z1 - 1, gx1 + 1, G + 18, z1, wallDark);
       box(gx0 - 1, G + 19, z1 + 1, gx1 + 1, G + 19, z1 + 4, awningCols[unit % awningCols.length]);

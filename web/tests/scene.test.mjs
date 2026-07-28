@@ -60,6 +60,18 @@ const level = buildLevel(world, palette);
   const buried = Object.entries(VIEWS).filter(([, v]) => !clear(v.pos)).map(([k]) => k);
   CHECK(buried.length === 0, `every review camera stands in open air (inside geometry: ${JSON.stringify(buried)})`);
 
+  // Standing in air is not enough — a lens 30 cm from a wall still renders a slab. The
+  // near metre along the view direction has to be open too. Not further than that:
+  // `closeup` is supposed to have its subject about two metres out.
+  const blocked = Object.entries(VIEWS).filter(([, v]) => {
+    const d = [0, 1, 2].map(i => v.look[i] - v.pos[i]);
+    const L = Math.hypot(...d) || 1;
+    for (const t of [0.4, 0.7, 1.0])
+      if (!clear([0, 1, 2].map(i => v.pos[i] + (d[i] / L) * t))) return true;
+    return false;
+  }).map(([k]) => k);
+  CHECK(blocked.length === 0, `no review camera is pressed against geometry (${JSON.stringify(blocked)})`);
+
   // ...and is aimed somewhere, not at its own position
   const degenerate = Object.entries(VIEWS).filter(([, v]) =>
     Math.hypot(v.look[0] - v.pos[0], v.look[1] - v.pos[1], v.look[2] - v.pos[2]) < 0.5).map(([k]) => k);

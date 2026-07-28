@@ -60,7 +60,12 @@ function halton(i, b) {
 
 export const DEFAULTS = {
   // A low, warm sun is the single most recognisable thing about Teardown's lighting.
-  sunAzimuth: 208,        // degrees; where the sun sits in the sky
+  // Degrees. This runs the sun roughly *down* the street rather than across it, and that
+  // is not a taste call — at 208 the sun crossed the road, so a 3-4 storey terrace 2.6 m
+  // away put the entire carriageway, and every car parked on it, in its own shadow. No
+  // camera angle or ambient tweak fixes a street that is 100% in shade; measured side by
+  // side, 208 renders the car's front face and the road black, 275 renders both lit.
+  sunAzimuth: 275,
   sunElevation: 23,       // degrees above the horizon
   sunColor: [1.0, 0.76, 0.50],
   sunPower: 3.9,

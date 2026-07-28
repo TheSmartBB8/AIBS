@@ -347,7 +347,8 @@ vec3 linearToSrgb(vec3 c) {
 }
 
 void main() {
-  vec3 c = tonemapAt(vUv);
+  vec3 c = texture(tColor, vUv).rgb + texture(tBloom, vUv).rgb * uBloom;
+  c = acesFitted(c * uExposure);
 
   float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
   c = mix(vec3(l), c, uSaturation);

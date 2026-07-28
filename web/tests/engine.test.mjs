@@ -87,24 +87,88 @@ const FWD = [1, 0, 0];
 {
   const { w, p } = scene();
   const e = new Engine(w, p);
-  const lit = e.tools.ctx.igniteAt(20.5 * VOXEL, 1.0, 1.0, { r: 0.2 });
+  const lit = e.tools.ctx.igniteAt(20.5 * VOXEL, 1.0, 1.0, 0.4, 2);
   CHECK(lit > 0, `igniteAt lights flammable voxels (${lit})`);
   CHECK(e.fire.count > 0, 'the fire sim is tracking them');
+  CHECK(e.stats.ignitions === lit, 'the stat counts voxels lit, not calls made');
 
   // concrete must never light
   const e2 = new Engine(scene().w, p);
-  const litConc = e2.tools.ctx.igniteAt(40.5 * VOXEL, 1.0, 1.0, { r: 0.2 });
+  const litConc = e2.tools.ctx.igniteAt(40.5 * VOXEL, 1.0, 1.0, 0.4, 2);
   CHECK(litConc === 0, 'concrete cannot be ignited');
+}
+
+// ---- the tool contract is positional: a radius passed as a number must be honoured.
+// Regression guard. The engine used to take an options object here while every caller
+// (explosion.js, blowtorch.js) passed a number, so the radius silently collapsed to its
+// default and explosions started no fires at all.
+{
+  const { w, p } = scene();
+  const e = new Engine(w, p);
+  const near = e.tools.ctx.igniteAt(20.5 * VOXEL, 1.0, 1.0, 0.15, 2);
+  e.fire.extinguishAll();
+  const far = e.tools.ctx.igniteAt(20.5 * VOXEL, 1.0, 1.0, 0.9, 2);
+  CHECK(far > near, `a larger radius lights more voxels (${near} -> ${far})`);
 }
 
 // ---- burning long enough actually consumes wood, through the normal edit path
 {
   const { w, p } = scene();
   const e = new Engine(w, p);
-  for (let i = 0; i < 12; i++) e.tools.ctx.igniteAt((20.5 + 0) * VOXEL, (4 + i) * VOXEL, (10 + i) * VOXEL, { r: 0.15 });
+  for (let i = 0; i < 12; i++) e.tools.ctx.igniteAt((20.5 + 0) * VOXEL, (4 + i) * VOXEL, (10 + i) * VOXEL, 0.15, 2);
   const before = w.countSolid();
   for (let i = 0; i < 60 * 30; i++) e.update(1 / 60, { eye: EYE, dir: FWD });
   CHECK(w.countSolid() < before, `fire burns wood away over time (${before - w.countSolid()} voxels)`);
+}
+
+// ---- an explosive on wood leaves the place burning.
+//
+// This is the check that was missing. Every part in isolation was fine — FireSim spreads,
+// detonate() calls igniteAt, the engine implements it — and the whole chain still did
+// nothing, because the blast carved the crater before igniting its own centre and the
+// radius was being dropped on the way through. Nothing short of end to end catches that,
+// and a screenshot is a poor substitute: fire was invisible here for the same reason it
+// was invisible on screen, but this runs in milliseconds and says which link broke.
+// The shared scene() wall is deliberately not used: it is 3.6 m long against a 3.4 m blast
+// radius, so a rocket removes its entire base and the whole free-standing slab drops. That
+// is correct physics and it leaves nothing standing to burn. A real wall outlives its
+// crater, so this one runs the full width of the world and stays grounded at the ends.
+{
+  const w = new VoxelWorld(64, 64, 64);
+  const p = new Palette();
+  const rock = p.add(70, 70, 70, MAT.UNBREAKABLE);
+  const wood = p.add(150, 110, 68, MAT.WOOD);
+  for (let z = 0; z < 64; z++) for (let x = 0; x < 64; x++) { w.setRaw(x, 0, z, rock); w.setRaw(x, 1, z, rock); }
+  for (let y = 2; y < 24; y++) for (let z = 0; z < 64; z++) for (let x = 20; x <= 21; x++) w.setRaw(x, y, z, wood);
+  w.rebuildMips();
+
+  const e = new Engine(w, p);
+  e.selectTool(TOOL.ROCKET);
+  e.triggerDown([1.0, 1.2, 3.2], FWD);
+  for (let i = 0; i < 60 * 3; i++) e.update(1 / 60, { eye: EYE, dir: FWD });
+  CHECK(e.fire.count > 0, `a rocket into a wooden wall leaves it burning (${e.fire.count} fires)`);
+  CHECK(e.fire.totalIgnitions > 1, `and the fire spreads rather than sitting still (${e.fire.totalIgnitions} ignitions)`);
+}
+
+// ---- and it lights the surface even when the blast knocks that surface clean off.
+//
+// This is the case the grounded wall above cannot see. scene()'s wall is free-standing and
+// shorter than the blast radius, so the rocket takes out its whole base and the slab lifts
+// into rigid bodies — at which point the voxel grid near the impact is momentarily empty.
+// Igniting after the carve finds nothing there and returns zero. Hence ignition runs first.
+//
+// The assertion is on ignitions, not on surviving fires: those flames ride voxels that have
+// just left the grid, and FireSim is indexed by grid position, so they go out. Burning
+// debris — a lit plank that keeps burning as it tumbles — is a separate feature this
+// engine does not have.
+{
+  const { w, p } = scene();
+  const e = new Engine(w, p);
+  e.selectTool(TOOL.ROCKET);
+  e.triggerDown([1.0, 1.2, 1.6], FWD);
+  for (let i = 0; i < 60 * 3; i++) e.update(1 / 60, { eye: EYE, dir: FWD });
+  CHECK(e.fire.totalIgnitions > 0,
+        `a blast lights what it hits before demolishing it (${e.fire.totalIgnitions} ignitions)`);
 }
 
 // ---- every tool in the roster can be selected and fired without throwing

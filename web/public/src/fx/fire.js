@@ -251,10 +251,19 @@ export class FireSim {
    * @param pos    [x,y,z] in metres
    * @param radius metres
    * @param chance per-voxel probability (default 0.35: a scorched patch, not a fireball)
+   * @param inner  metres; skip everything nearer than this and measure the falloff from
+   *               here outward. Zero — the default — gives a plain solid sphere brightest
+   *               at the centre, which is what a molotov wants. An explosion wants a shell:
+   *               it is about to remove everything inside its crater, so spending the
+   *               hundred-fire budget there would light material that ceases to exist a
+   *               millisecond later and leave nothing for the rim, which is the part you
+   *               actually see burning.
    */
-  igniteSphere(pos, radius, chance = 0.35) {
+  igniteSphere(pos, radius, chance = 0.35, inner = 0) {
     const cx = readVec(pos, 0) / VOXEL, cy = readVec(pos, 1) / VOXEL, cz = readVec(pos, 2) / VOXEL;
     const r = radius / VOXEL, r2 = r * r;
+    const ri = Math.max(0, Math.min(inner / VOXEL, r - 1e-3)), ri2 = ri * ri;
+    const span = Math.max(r - ri, 1e-3);
     const x0 = Math.floor(cx - r), x1 = Math.ceil(cx + r);
     const y0 = Math.floor(cy - r), y1 = Math.ceil(cy + r);
     const z0 = Math.floor(cz - r), z1 = Math.ceil(cz + r);
@@ -265,9 +274,9 @@ export class FireSim {
           if (this.count >= this.maxFires) return lit;
           const dx = x + 0.5 - cx, dy = y + 0.5 - cy, dz = z + 0.5 - cz;
           const d2 = dx * dx + dy * dy + dz * dz;
-          if (d2 > r2) continue;
-          // Fall off with distance: the middle of a blast lights reliably, the rim rarely.
-          const p = chance * (1 - Math.sqrt(d2) / r);
+          if (d2 > r2 || d2 < ri2) continue;
+          // Fall off outward from the inner edge: nearest lights reliably, the far rim rarely.
+          const p = chance * (1 - (Math.sqrt(d2) - ri) / span);
           if (!this.rng.chance(p)) continue;
           if (this.ignite(x, y, z)) lit++;
           else this._charAdd(this.world.idx(x, y, z), 0.15);

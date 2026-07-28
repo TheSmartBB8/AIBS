@@ -174,15 +174,19 @@ export class Engine {
         }
       },
 
-      igniteAt: (x, y, z, opts = {}) => {
-        this.stats.ignitions++;
-        const r = Math.max(1, Math.round((opts.r ?? 0.2) / VOXEL));
-        const vx = Math.floor(x / VOXEL), vy = Math.floor(y / VOXEL), vz = Math.floor(z / VOXEL);
-        let lit = 0;
-        for (let dz = -r; dz <= r; dz++)
-          for (let dy = -r; dy <= r; dy++)
-            for (let dx = -r; dx <= r; dx++)
-              if (this.fire.ignite(vx + dx, vy + dy, vz + dz)) lit++;
+      // Signature is positional — (x, y, z, radius, intensity) — as documented in
+      // tools/context.js and as every caller writes it. It used to take an options object
+      // and read opts.r, so each call passed a number where an object was expected, the
+      // radius silently fell back to 0.2 m, and a rocket lit a five-voxel box at the exact
+      // centre of the crater it had just carved to air. Nothing ever caught fire.
+      igniteAt: (x, y, z, radius = 0.2, intensity = 1, inner = 0) => {
+        // igniteSphere, not a cube of unconditional ignites: it falls off with distance so
+        // the near edge lights reliably and the far rim rarely, it stops at the
+        // concurrent-fire cap instead of blowing through it, and it scorches what it fails
+        // to light. `inner` hollows it out — see the note on igniteSphere.
+        const lit = this.fire.igniteSphere([x, y, z], Math.max(VOXEL, radius),
+          Math.min(1, 0.5 * intensity), inner);
+        this.stats.ignitions += lit;
         return lit;
       },
       extinguishAt: (x, y, z, opts = {}) => {

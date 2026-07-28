@@ -39,7 +39,11 @@
 //   spawnParticles(kind, x, y, z, opts)   kind: 'debris'|'sparks'|'dust'|'smoke'|
 //                                               'explosion'|'muzzle'|'mist'|'paint'|
 //                                               'torch_sparks'|'ricochet'|'splinters'
-//   igniteAt(x, y, z, radius, intensity)      start/feed fire on flammable voxels
+//   igniteAt(x, y, z, radius, intensity, inner)
+//       Start/feed fire on flammable voxels. Positional, not an options object.
+//       inner — optional metres; hollows the sphere out so nothing nearer than this is
+//       lit and the falloff runs outward from there. Explosions use it to keep their
+//       fire on the rim of the crater instead of inside it.
 //   extinguishAt(x, y, z, radius, power)      suppress fire
 //   playSound(name, x, y, z, opts)
 //   addLight(x, y, z, opts)                   opts: { color:[r,g,b], intensity, radius, ttl }

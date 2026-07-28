@@ -92,13 +92,21 @@ export function buildCar(world, P, palette, opts) {
   }
 
   // ---- lamps, bumpers, grille and plate
-  box(-1, sill + 1, 1, -1, bodyTop - 1, W - 1, P.metalDark);          // front bumper
-  box(L + 1, sill + 1, 1, L + 1, bodyTop - 1, W - 1, P.metalDark);    // rear bumper
+  // Bumpers are a bar across the bottom of each end, not the whole end. At sill+1 to
+  // bodyTop-1 they covered six of the nose's seven rows, so once the sun actually reached
+  // the front of the car it rendered as a grey slab with two lamps in it — the paint was
+  // never visible from the front at all.
+  box(-1, sill, 1, -1, bodyTop, W - 1, paint);                        // nose panel
+  box(L + 1, sill, 1, L + 1, bodyTop, W - 1, paint);                  // tail panel
+  box(-1, sill + 1, 1, -1, sill + 2, W - 1, P.metalDark);             // front bumper
+  box(L + 1, sill + 1, 1, L + 1, sill + 2, W - 1, P.metalDark);       // rear bumper
+  box(-1, bodyTop, 1, -1, bodyTop, W - 1, paintDark);                 // bonnet shut line
+  box(L + 1, bodyTop, 1, L + 1, bodyTop, W - 1, paintDark);
   box(-1, sill + 2, 2, -1, sill + 2, 3, P.lampCar);
   box(-1, sill + 2, W - 3, -1, sill + 2, W - 2, P.lampCar);
   box(L + 1, sill + 2, 2, L + 1, sill + 2, 3, P.brakeLamp);
   box(L + 1, sill + 2, W - 3, L + 1, sill + 2, W - 2, P.brakeLamp);
-  box(-1, sill + 4, 4, -1, sill + 5, W - 4, P.metalDark);             // grille
+  box(-1, sill + 4, 5, -1, sill + 5, W - 5, P.metalDark);             // grille
   box(L + 1, sill + 1, (W >> 1) - 2, L + 1, sill + 1, (W >> 1) + 1, P.paint);
 
   // ---- wheel arches: cut the body away above each wheel so the rendered wheel has

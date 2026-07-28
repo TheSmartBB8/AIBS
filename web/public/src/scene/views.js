@@ -41,7 +41,7 @@ export const VIEWS = {
   // lower x AND lower z than the car. Standing beside it framed the next car along at
   // 20 cm; standing ahead of it framed the shaded rear. The hatch was moved back to x 3.0
   // to open this approach up at all.
-  car:      { pos: [8.4,  2.5,  2.15], look: [11.8, 1.85, 3.4], fov: 56, tight: true },
+  car:      { pos: [7.6,  2.7,  2.1], look: [11.9, 1.85, 3.4], fov: 46, tight: true },
 
   // Down the street the other way, so the backdrop and the far end are in frame. Kept
   // upstream of the parked van (x 19.4-24.6) rather than out at the far end, where the

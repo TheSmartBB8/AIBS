@@ -798,7 +798,19 @@ export class VoxelRenderer {
       // times over, which is the right order for something that is meant to be a light
       // source next to brick that lands near 2.
       this.particleRenderer.additive.mat.uniforms.uGain.value = p.fireEmissive;
-      this.particleRenderer.render(this.renderer, this.camera, 'additive');
+      // Both layers, in scene order (blend then additive), not just the emissive one.
+      //
+      // Splitting them across the tonemap inverted their depth relationship: the scene
+      // deliberately draws additive last "so emissive sits over the smoke it is lighting",
+      // and drawing smoke after the composite put it unconditionally in front of the fire
+      // instead. The first frame that actually showed a blast showed a black plume with no
+      // glow behind it, which is worse than what this replaced.
+      //
+      // Smoke belongs in HDR anyway. It is a physical medium: alpha-blending it against
+      // scene radiance and then tonemapping the result is more correct than compositing it
+      // over an already-tonemapped image, and it is dark enough that the bloom threshold
+      // ignores it.
+      this.particleRenderer.render(this.renderer, this.camera, 'all');
       this.renderer.autoClear = prevAuto;
       color = this.fxRT.texture;
     }
@@ -836,15 +848,7 @@ export class VoxelRenderer {
     this.renderer.setRenderTarget(null);
     this._blit(this.compositeMaterial, null);
 
-    // Smoke and dust, over the tonemapped image, occlusion-tested against the G-buffer's
-    // world-position target. These absorb rather than emit, so display space is where they
-    // belong and bloom would only fog the frame. The emissive half went in before bloom.
-    if (this.stats.particles > 0) {
-      const prevAuto = this.renderer.autoClear;
-      this.renderer.autoClear = false;
-      this.particleRenderer.render(this.renderer, this.camera, 'blend');
-      this.renderer.autoClear = prevAuto;
-    }
+
   }
 
   /**

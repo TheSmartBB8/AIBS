@@ -119,8 +119,19 @@ void main() {
 
   seedRng(uvec3(uvec2(gl_FragCoord.xy), uint(uFrameSeed)));
 
+  vec3 V = normalize(uCamPos - P);
+
   // ---------------------------------------------------------------- sun
+  //
+  // The sun is sampled explicitly for *both* lobes. Specular used to be left entirely to
+  // the GGX reflection ray below, which meant a highlight only appeared when that one ray
+  // happened to land on the sun disc — a fraction of a percent of the time on car paint.
+  // Averaged over hundreds of samples that is unbiased and correct; at the 6-20 samples an
+  // interactive frame has, it is the difference between painted metal and matte plastic.
+  // Sampling the light directly instead gives a stable highlight from the very first
+  // frame, and reuses the shadow ray the diffuse term already paid for.
   vec3 direct = vec3(0.0);
+  vec3 sunSpec = vec3(0.0);
   vec3 S = sunDirTo();
   {
     float cosMax = cos(uSunAngle * uSunSoftness);
@@ -128,7 +139,13 @@ void main() {
     float NoL = dot(N, L);
     if (NoL > 0.0) {
       float d = traceShadow(ro, L, 512.0, 320);
-      if (d >= 512.0) direct += uSunColor * uSunPower * NoL;
+      if (d >= 512.0) {
+        vec3 E = uSunColor * uSunPower * NoL;
+        direct += E;
+        // Clamped for the same reason the reflection weight is: a near-grazing view of a
+        // smooth surface sends the BRDF to hundreds and leaves a permanent white speck.
+        sunSpec += E * min(specularBRDF(N, V, L, rough, F0), vec3(8.0));
+      }
     }
   }
 
@@ -146,7 +163,12 @@ void main() {
     vec3 contrib = uLightColor[i] * (NoL * atten);
     if (max(contrib.r, max(contrib.g, contrib.b)) < 0.002) continue;
     float d = traceShadow(ro, Ld, dist - uLightRadius[i] * 0.02, 220);
-    if (d >= dist - uLightRadius[i] * 0.02) direct += contrib;
+    if (d >= dist - uLightRadius[i] * 0.02) {
+      direct += contrib;
+      // Lamps get a highlight too. No double-counting risk here: the reflection ray only
+      // ever sees emissive *surfaces*, and secondaryShade does not evaluate point lights.
+      sunSpec += contrib * min(specularBRDF(N, V, Ld, rough, F0), vec3(8.0));
+    }
   }
 
   // ---------------------------------------------------------------- ambient / AO
@@ -179,7 +201,9 @@ void main() {
   amb *= mix(1.0, bakedAo, uBakedAoMix);
 
   // ---------------------------------------------------------------- specular
-  vec3 V = normalize(uCamPos - P);
+  // Everything *except* the sun: the sky, the backdrop, and other geometry. The sun is
+  // handled above, so this ray must not see it again — hence envAmbient rather than
+  // envRadiance when it escapes.
   vec3 spec = vec3(0.0);
   {
     vec3 H = sampleGGX(N, rough, rnd2());
@@ -199,7 +223,7 @@ void main() {
         if (!rh.hit) {
           // The backdrop reflects too — without it, every window and puddle looking
           // downward-and-outward mirrored a slab of empty sky where ground should be.
-          Li = envRadiance(P, R);
+          Li = envAmbient(P, R);
         } else {
           vec3 hp = ro + R * rh.t;
           Li = secondaryShade(hp, rh.n, rh.pal, rough < 0.45);
@@ -209,7 +233,7 @@ void main() {
     }
   }
 
-  vec3 color = diffAlb * (direct + amb) + spec + albedo * emissive * uEmissivePower;
+  vec3 color = diffAlb * (direct + amb) + spec + sunSpec + albedo * emissive * uEmissivePower;
 
   // ---------------------------------------------------------------- aerial perspective
   float dist = length(P - uCamPos);

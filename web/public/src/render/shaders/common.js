@@ -63,6 +63,34 @@ float smithG1(float nv, float a) {
   float k = a * 0.5;
   return nv / (nv * (1.0 - k) + k);
 }
+// Trowbridge-Reitz NDF, for evaluating the specular lobe toward a light we already know
+// the direction of, rather than importance-sampling and hoping to hit it.
+float distGGX(float noh, float a) {
+  float a2 = a * a;
+  float d = noh * noh * (a2 - 1.0) + 1.0;
+  return a2 / max(3.14159265 * d * d, 1e-7);
+}
+/**
+ * Specular BRDF toward an explicit light direction L, times pi.
+ *
+ * The pi is deliberate and matches the convention used everywhere else in this renderer:
+ * diffuse is written "albedo * irradiance", not "albedo / pi * irradiance", so the 1/pi
+ * is already folded into the light powers. Evaluating specular physically here and
+ * leaving it out would make every highlight 3.1x too dim relative to the diffuse it sits
+ * on, which is exactly the kind of mismatch that gets "fixed" later with a magic
+ * multiplier nobody can explain.
+ */
+vec3 specularBRDF(vec3 N, vec3 V, vec3 L, float rough, vec3 F0) {
+  vec3 H = normalize(V + L);
+  float a = max(rough * rough, 1e-4);
+  float NoV = max(dot(N, V), 1e-4);
+  float NoL = max(dot(N, L), 1e-4);
+  float NoH = max(dot(N, H), 0.0);
+  float VoH = max(dot(V, H), 1e-4);
+  vec3 F = F0 + (1.0 - F0) * pow(1.0 - VoH, 5.0);
+  float G = smithG1(NoV, a) * smithG1(NoL, a);
+  return F * (distGGX(NoH, a) * G / (4.0 * NoV * NoL)) * 3.14159265;
+}
 `;
 
 // ---------------------------------------------------------------- sky model

@@ -24,7 +24,11 @@ await page.evaluate(() => window.__app.freeze());
 // renderer.js). Waiting for a sample count that will never arrive just spins for
 // hundreds of software-rendered frames, so stop as soon as it is as resolved as it is
 // going to get.
-const settle = async (target = 96) => {
+// Default 40, not 96. The variance-guided denoiser makes those visually indistinguishable
+// — checked side by side — and 96 costs roughly three times the wall clock in software
+// rendering. SAMPLES overrides it.
+const SAMPLES = parseInt(process.env.SAMPLES || '40', 10);
+const settle = async (target = SAMPLES) => {
   let last = -1, stall = 0;
   for (let i = 0; i < 200; i++) {
     await page.evaluate(() => window.__app.renderFrames(4));
@@ -59,7 +63,7 @@ const solidBefore = await page.evaluate(() => window.__app.countSolid());
 await page.evaluate(([f, a]) => window.__app.fireAt('rocket', f, a, 1), [FROM, AT]);
 // Capture mid-flight first: debris tumbling is the moment worth verifying.
 await page.evaluate(() => window.__app.simulate(0.28));
-await settle(48);
+await settle(Math.min(SAMPLES, 48));
 writeFileSync(`${out}/2_midair.png`, await page.screenshot());
 console.log('midair stats:', JSON.stringify(await page.evaluate(() => window.__app.stats())));
 await page.evaluate(() => window.__app.simulate(5));

@@ -21,7 +21,7 @@ import { VOXEL } from '../voxel/world.js';
 import { sphereVsWorld, SAMPLE_RADIUS } from './collision.js';
 import { matPhys } from './materials.js';
 import { markRegionDirty } from './destruction.js';
-import { Rng } from './math3d.js';
+import { Rng, qIdentity, qIntegrate, snapToCubeRotation, m3MulVec } from './math3d.js';
 
 /** Shared by every single-voxel chip; never mutated. */
 const SINGLE_CELL = Object.freeze([Object.freeze([0, 0, 0, 0])]);
@@ -55,6 +55,8 @@ export class DebrisSystem {
       // present (rather than null) means step/weld/render never need a special case.
       cells: (opts && opts.cells) || SINGLE_CELL,
       radius: (opts && opts.radius) || SAMPLE_RADIUS,
+      // A single voxel is a cube: rotating it changes nothing, so chips never spin.
+      q: null, w: null,
       // Pulverised material (crush splinters) must not weld back into the grid. Letting
       // it re-weld restores the exact voxels that were just smashed, so a wall landing on
       // a wooden deck leaves the deck visually untouched — the crater heals itself.
@@ -109,6 +111,13 @@ export class DebrisSystem {
       friction: Math.min(1, mp.friction * 1.25),
       cells: local,
       radius: VOXEL * (half + 0.5),
+      // Tumble. A fragment that translates without rotating reads as a sprite being slid
+      // across the screen; the spin is most of what makes flying rubble look like mass.
+      // Spun proportionally to how hard it was thrown and inversely to its size, so a
+      // small chip whirls and a big slab turns over slowly.
+      q: qIdentity(),
+      w: [this.rng.sym(), this.rng.sym(), this.rng.sym()].map(
+        (r) => r * Math.hypot(vx, vy, vz) * 2.2 / (half + 1)),
       noWeld: !!(opts && opts.noWeld),
     });
   }
@@ -163,6 +172,7 @@ export class DebrisSystem {
       const p = parts[i];
       p.age += h;
       p.vy += g * h;
+      if (p.q) { p.q = qIntegrate(p.q, p.w, h); }
       const nx = p.x + p.vx * h, ny = p.y + p.vy * h, nz = p.z + p.vz * h;
       const c = sphereVsWorld(this.world, nx, ny, nz, p.radius);
       if (c) {
@@ -179,6 +189,9 @@ export class DebrisSystem {
           p.vx = c.nx * vnOut + tvx * damp;
           p.vy = c.ny * vnOut + tvy * damp;
           p.vz = c.nz * vnOut + tvz * damp;
+          // Scrubbing on the ground kills spin far faster than it kills travel — rubble
+          // that keeps spinning as it slides to a halt looks like it is on ice.
+          if (p.w) { const k = damp * 0.5; p.w[0] *= k; p.w[1] *= k; p.w[2] *= k; }
         }
         const sp2 = p.vx * p.vx + p.vy * p.vy + p.vz * p.vz;
         if (sp2 < this.settleSpeed * this.settleSpeed) p.rest += h; else p.rest = 0;
@@ -224,7 +237,25 @@ export class DebrisSystem {
     const w = this.world;
     const x = Math.floor(p.x / VOXEL), y = Math.floor(p.y / VOXEL), z = Math.floor(p.z / VOXEL);
     if (!w.inBounds(x, y, z)) return null;
-    const cells = p.cells;
+
+    // The grid has no way to store a fragment lying at 37 degrees, so the tumble is
+    // snapped to the nearest of the 24 axis-aligned orientations and baked into the cell
+    // offsets. Snapping rather than resetting to identity is what stops a long fragment
+    // that landed across the road from suddenly lying along it.
+    let cells = p.cells;
+    if (p.q && cells.length > 1) {
+      const m = snapToCubeRotation(p.q).m;
+      const rot = new Array(cells.length);
+      for (let k = 0; k < cells.length; k++) {
+        const c = cells[k];
+        const v = m3MulVec(m, [c[0], c[1], c[2]]);
+        rot[k] = [Math.round(v[0]), Math.round(v[1]), Math.round(v[2]), c[3]];
+      }
+      cells = rot;
+      p.cells = rot;
+      p.q = qIdentity();
+      p.w = null;
+    }
 
     // Nudge upward until enough of the fragment fits. A single chip only ever needs one
     // free cell; a lump of masonry landing on uneven rubble will always have some of its

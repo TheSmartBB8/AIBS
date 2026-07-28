@@ -154,6 +154,66 @@ function scene() {
   CHECK(d.parts.length === 0, 'and still retires rather than accumulating forever');
 }
 
+// ---- fragments tumble in flight and land grid-aligned
+{
+  const { w, p } = scene();
+  const ph = new PhysicsWorld(w, p, { seed: 9, debrisChunk: 3 });
+  ph.explode([3.05, 1.6, 3.2], 1.6, 7.0, {});
+  const lumps = ph.debris.parts.filter(d => d.cells.length > 1);
+  CHECK(lumps.length > 0, `the blast threw multi-voxel fragments (${lumps.length})`);
+  CHECK(lumps.every(d => d.q && d.w), 'each fragment carries an orientation and a spin');
+  CHECK(lumps.some(d => Math.hypot(d.w[0], d.w[1], d.w[2]) > 0.5),
+        'and the spins are not all zero');
+
+  const before = lumps.map(d => d.q.slice());
+  for (let i = 0; i < 12; i++) ph.step(1 / 120);
+  const turned = lumps.filter((d, i) =>
+    Math.abs(d.q[0] - before[i][0]) + Math.abs(d.q[1] - before[i][1]) +
+    Math.abs(d.q[2] - before[i][2]) > 1e-4).length;
+  CHECK(turned > lumps.length * 0.5, `most fragments actually rotate (${turned}/${lumps.length})`);
+  CHECK(lumps.every(d => Math.abs(Math.hypot(d.q[0], d.q[1], d.q[2], d.q[3]) - 1) < 1e-6),
+        'orientations stay unit quaternions');
+
+  // Single voxels are cubes; spinning them costs work and changes nothing on screen.
+  CHECK(ph.debris.parts.filter(d => d.cells.length === 1).every(d => d.q === null),
+        'single-voxel chips carry no orientation at all');
+
+  for (let i = 0; i < 60 * 8; i++) ph.step(1 / 60);
+  CHECK(ph.debris.weldedCount > 0, `fragments welded after tumbling (${ph.debris.weldedCount})`);
+}
+
+// ---- the landing snap keeps the fragment's shape, in its new orientation
+//
+// The grid cannot store a bar lying at 37 degrees, so the tumble is rounded to the
+// nearest of the 24 axis-aligned orientations. What must survive that is the shape: the
+// same number of cells, and the bar pointing whichever way it had turned to — snapping to
+// identity instead would make a fragment that landed across the road jump to lie along it.
+{
+  const w = new VoxelWorld(32, 32, 32);
+  const p = new Palette();
+  const rock = p.add(70, 70, 70, MAT.UNBREAKABLE);
+  const brick = p.add(150, 82, 62, MAT.BRICK);
+  for (let z = 0; z < 32; z++) for (let x = 0; x < 32; x++) w.setRaw(x, 0, z, rock);
+  w.rebuildMips();
+
+  const d = new DebrisSystem(w, p, { seed: 1 });
+  // a 3x1x1 bar lying along x
+  d.spawnChunk(16 * VOXEL, 1 * VOXEL, 16 * VOXEL, 0, 0, 0,
+    [[0, 0, 0, brick], [1, 0, 0, brick], [2, 0, 0, brick]]);
+  const part = d.parts[0];
+  CHECK(part.cells.every(c => c[1] === 0 && c[2] === 0), 'the bar starts along x');
+
+  // a quarter turn about y: sin(45)=cos(45) for a 90 degree rotation quaternion
+  const s = Math.SQRT1_2;
+  part.q = [0, s, 0, s];
+  const before = w.countSolid();
+  const box = d.weldParticle(part);
+  CHECK(box !== null && w.countSolid() - before === 3,
+        `all three cells welded (${w.countSolid() - before})`);
+  CHECK(box.z1 - box.z0 === 2 && box.x1 === box.x0,
+        `and the bar now lies along z (x span ${box.x1 - box.x0}, z span ${box.z1 - box.z0})`);
+}
+
 // ---- determinism: same seed, same rubble
 {
   const settle = (seed) => {

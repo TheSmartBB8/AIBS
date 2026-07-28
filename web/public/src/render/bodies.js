@@ -136,13 +136,18 @@ export class BodyRenderer {
       const s = new THREE.Vector3(1, 1, 1);
       const p = new THREE.Vector3();
       const palArr = this._debrisPal.array;
+      const off = new THREE.Vector3();
       for (let i = 0; i < debris.parts.length && n < MAX_DEBRIS; i++) {
         const d = debris.parts[i];
         if (!d.alive) continue;
         const cells = d.cells;
+        // A tumbling fragment rotates about its own centre, which is where its cells are
+        // already based, so the cell offset is all that has to be rotated.
+        if (d.q) q.set(d.q[0], d.q[1], d.q[2], d.q[3]); else q.set(0, 0, 0, 1);
         for (let k = 0; k < cells.length && n < MAX_DEBRIS; k++) {
           const c = cells[k];
-          p.set(d.x + c[0] * VOXEL, d.y + c[1] * VOXEL, d.z + c[2] * VOXEL);
+          off.set(c[0] * VOXEL, c[1] * VOXEL, c[2] * VOXEL).applyQuaternion(q);
+          p.set(d.x + off.x, d.y + off.y, d.z + off.z);
           m.compose(p, q, s);
           this.debrisMesh.setMatrixAt(n, m);
           palArr[n] = c[3] || d.pal;

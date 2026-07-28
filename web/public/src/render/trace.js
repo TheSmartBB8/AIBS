@@ -43,6 +43,7 @@ uniform float uAoRange;      // voxels
 uniform float uAoStrength;
 uniform float uBakedAoMix;
 uniform float uBounce;
+uniform float uBounceSun;
 uniform float uSpecRange;    // voxels
 uniform float uEmissivePower;
 uniform float uFogDensity;
@@ -161,8 +162,16 @@ void main() {
       f = f * f * (3.0 - 2.0 * f);
       amb += skyRadiance(D) * f;
       if (uBounce > 0.0) {
+        // What the blocker bounces back. Using sky alone made every bounce cold and weak:
+        // in a real street the shaded side is lit mostly by *sunlight* coming off the
+        // sunlit facade opposite, which is why shaded walls read warm rather than blue.
+        // Weighted by how sun-facing the blocker is, with no shadow ray of its own —
+        // uBounceSun is the discount for not knowing whether it is really in sun.
         vec4 hc = palColor(h.pal);
-        amb += srgbToLinear(hc.rgb) * skyRadiance(vec3(0.0, 1.0, 0.0)) * uBounce * (1.0 - f * 0.5);
+        float sunFacing = max(dot(h.n, S), 0.0);
+        vec3 incident = skyRadiance(vec3(0.0, 1.0, 0.0))
+                      + uSunColor * uSunPower * sunFacing * uBounceSun;
+        amb += srgbToLinear(hc.rgb) * incident * uBounce * (1.0 - f * 0.5);
       }
     }
   }

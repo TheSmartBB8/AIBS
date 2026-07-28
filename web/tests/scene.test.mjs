@@ -163,7 +163,7 @@ const level = buildLevel(world, palette);
     'uSunDir', 'uSunColor', 'uSunAngle', 'uSunSoftness', 'uSunPower',
     'uSkyZenith', 'uSkyHorizon', 'uSkyGround', 'uSkyIntensity', 'uSunTint',
     'uAoRange', 'uAoStrength', 'uBakedAoMix', 'uBounce', 'uSpecRange', 'uEmissivePower',
-    'uFogDensity', 'uFogHeight',
+    'uFogDensity', 'uFogHeight', 'uBounceSun',
     'uHorizonY', 'uGroundNear', 'uGroundFar', 'uHillColor', 'uHillHeight', 'uEnvFog',
   ]);
   const orphan = declared.filter(d => !known.has(d));

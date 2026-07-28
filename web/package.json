@@ -9,6 +9,7 @@
     "serve": "http-server public -p 8899 --silent",
     "test": "node tests/all.mjs",
     "shot": "node tools/shot.mjs",
+    "rmse": "node tools/rmse.mjs",
     "pack": "node tools/pack.mjs",
     "verify:pack": "node tools/verify_pack.mjs"
   },

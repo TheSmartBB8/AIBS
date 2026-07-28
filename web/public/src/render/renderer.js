@@ -798,10 +798,18 @@ export class VoxelRenderer {
   _denoisePasses(samples, p) {
     if (samples <= 0 || p.denoise <= 0) return 0;
     const max = p.denoisePasses;
-    // Boundaries measured, not guessed: RMSE against a 512-sample reference improves by
-    // 35% at 4 samples, 26% at 8 and 14% at 16, but three passes at 32 came out neutral
-    // (+0.5%) while a single pass at 64 still gained 15%. So the wide kernels stop paying
-    // for themselves between 16 and 32, and one pass keeps helping well past that.
+    // Boundaries measured, not guessed — tools/rmse.mjs, against a 512-sample reference.
+    //
+    // Three passes at 32 samples came out neutral (+0.5%) while a single pass at 64 still
+    // gained 15%, so the wide kernels stop paying for themselves somewhere between 16 and
+    // 32. Moving that boundary from 48 to 32 was then confirmed rather than assumed: the
+    // same view at 32 samples went from +0.5% to -23.7%.
+    //
+    // Measured on two deliberately opposite lighting regimes, because one view cannot
+    // justify a global change. Sunlit street: -35/-26/-14/-24/-15% at 4/8/16/32/64.
+    // Dim interior: -61/-52/-43/-37/-25%. The interior gains roughly twice as much, which
+    // is the argument for variance-guidance over a sample-count ramp — no single schedule
+    // serves both, and the per-pixel variance sorts it out without being told.
     if (samples < 4) return max;
     if (samples < 16) return Math.max(1, max - 1);
     if (samples < 32) return Math.max(1, max - 2);

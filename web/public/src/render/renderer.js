@@ -91,10 +91,22 @@ export const DEFAULTS = {
                           // which is the bounce that lights the shaded side of the road.
   aoStrength: 1.0,
   bakedAoMix: 0.45,
-  bounce: 1.30,           // albedo-tinted sky bounce. Interiors were collapsing to pure
-                          // black: indoors every AO ray hits, so ambient went to zero and
-                          // nothing but this term lights a room through its openings.
-                          // It is also the only thing lighting the shaded side of a street.
+  bounce: 1.30,           // Gain on the indirect term. Above 1 because that term is an
+                          // *ambient estimate*, not a traced bounce — secondaryShade hands
+                          // back an analytic sky term for the blocker, so the multiplier is
+                          // standing in for transport that is never walked, rather than
+                          // claiming a surface returns more light than it receives.
+                          //
+                          // Both alternatives were measured and both were worse. Raising it
+                          // does very little: 1.30 -> 3.00 is 2.3x the gain for +17% mean
+                          // luma in the interior (28.3 -> 33.2) and frees 2.5% of crushed
+                          // pixels (53.5% -> 51.0%), because a multiplier cannot add light
+                          // no path delivered. And an actual second bounce, which should
+                          // have been the principled fix, came out *darker* — 25.0 luma,
+                          // 56.1% crushed — for roughly double the trace cost, because the
+                          // interior's windows are small enough that almost no second-bounce
+                          // ray escapes through one. Lighting a room through openings that
+                          // size needs portal sampling, not more bounces.
   specRange: 300,
   emissivePower: 1.0,
   lightScale: 0.22,

@@ -70,10 +70,20 @@ vec3 rayFromUv(vec2 uv) {
 // Cheap stand-in for the radiance leaving a surface we hit with a secondary ray:
 // sky ambient over the hemisphere plus its own emission. Used inside reflections so a
 // blocked reflection darkens toward the real colour of the blocker instead of to black.
-vec3 secondaryShade(vec3 p, vec3 n, float pal, bool doSun) {
+// skyScale exists because this function serves two callers with different needs, and the
+// single value it used to hardcode was chosen for only one of them.
+//
+// The 0.55 was tuned as a stand-in for reflections, where the job is "don't go black" and
+// being dim is harmless. As the indirect bounce it is a 45% cut to the only thing lighting
+// an interior: indoors every bounce ray hits a wall that is not sun-facing, so the
+// (correct) shadow test contributes nothing and this ambient term is all that is left.
+// The first render after switching the bounce over showed exactly that — a room lit to
+// near-black with an oversaturated red ceiling, because the little light remaining was
+// arriving almost entirely as brick-coloured bounce.
+vec3 secondaryShade(vec3 p, vec3 n, float pal, bool doSun, float skyScale) {
   vec4 pc = palColor(pal);
   vec3 alb = srgbToLinear(pc.rgb);
-  vec3 amb = skyRadiance(normalize(n + vec3(0.0, 0.55, 0.0))) * 0.55;
+  vec3 amb = skyRadiance(normalize(n + vec3(0.0, 0.55, 0.0))) * skyScale;
   vec3 c = alb * amb;
   if (doSun) {
     vec3 S = sunDirTo();
@@ -212,7 +222,7 @@ void main() {
         // bleeding — a red wall throwing red onto the pavement beside it, and nothing
         // where the wall is shaded.
         vec3 hp = ro + D * h.t;
-        amb += secondaryShade(hp, h.n, h.pal, true) * uBounce * (1.0 - f * 0.5);
+        amb += secondaryShade(hp, h.n, h.pal, true, 1.0) * uBounce * (1.0 - f * 0.5);
       }
     }
   }
@@ -245,7 +255,7 @@ void main() {
           Li = envAmbient(P, R);
         } else {
           vec3 hp = ro + R * rh.t;
-          Li = secondaryShade(hp, rh.n, rh.pal, rough < 0.45);
+          Li = secondaryShade(hp, rh.n, rh.pal, rough < 0.45, 0.55);
         }
         spec = Li * w;
       }

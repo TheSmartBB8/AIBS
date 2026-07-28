@@ -223,20 +223,28 @@ void main() {
   // needs protecting. Weighting the moments by the same normal and position terms the main
   // loop uses confines the estimate to one surface, which is what it was always meant to
   // measure.
-  // Runs in every pass at one sample, and that is not the waste it looks like.
+  // First pass only (uM2), and at one sample only. Measured, because reasoning got this
+  // backwards — see below.
   //
-  // I nearly restricted it to the first pass to save 200 texture reads, on the reasoning
-  // that later passes read the real variance pass one wrote. They do not. At N=1 the
-  // accumulator stores m2 = max(..., luma(mean)^2) where mean *is* the single sample, so
-  // c.a - l*l is identically zero and varAt returns zero for every tap. Pass one therefore
-  // writes accV = sum(0 * w^2) = 0, and passes two through five read a zero variance, get
-  // sigmaL ~ 1e-4, and filter nothing whatsoever.
+  //     1 sample, floor in every pass:  -14.2%
+  //     1 sample, floor in pass 1 only: -39.0%
   //
-  // So this is not 250 taps buying a 1.6 point improvement. It is 250 taps buying the
-  // difference between five filtering passes and one, on the frame a moving camera
-  // produces every time.
+  // Five times cheaper and nearly three times better. The mechanism is that the alpha this
+  // shader writes carries the *temporal* variance, and at N=1 that is identically zero:
+  // the accumulator stores m2 = max(..., luma(mean)^2) where mean is the single sample, so
+  // c.a - l*l cancels exactly. Pass one therefore hands pass two a zero variance.
+  //
+  // I read that far and concluded passes two through five would filter nothing, so the
+  // floor had to run in all of them. Wrong: without the guard each pass recomputes the
+  // spatial floor from the already-filtered image, finds it still large — filtering
+  // removes noise but leaves the scene structure the estimate is really measuring — and
+  // keeps filtering at step 2, 4, 8, 16. That is a very wide kernel applied four more
+  // times to an image that was already clean enough, and it is over-blur, not cleanup.
+  //
+  // One aggressive pass on the raw frame beats five compounding ones. It also closes most
+  // of the gap to the 2-sample result (-43.6%), which is the anomaly that started this.
   float floorV = 0.0;
-  if (uSamples < 2.0) {
+  if (uSamples < 2.0 && uM2 > 0.5) {
     float m1 = 0.0, m2 = 0.0, mw = 0.0;
     for (int y = -2; y <= 2; y++)
       for (int x = -2; x <= 2; x++) {

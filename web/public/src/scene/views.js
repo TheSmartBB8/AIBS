@@ -30,6 +30,14 @@ export const VIEWS = {
   approach: { pos: [2.2,  2.9,  4.4], look: [13.0, 4.0, 13.0], fov: 72 },
   // Back down the lane toward the warehouse. Pulled in from x 21.5: the box van parks
   // across the full width of the road from there.
+  //
+  // The dark horizontal band across the lower middle of this shot is the pickup, not an
+  // artifact. Checked, because it does not look like an object: it survives sunElevation
+  // 23 -> 55, fogDensity 0 and bounce 0 completely unchanged, which rules out shadow, fog
+  // and indirect light. Casting the view's own rays lands on METAL(92,112,78) at 3.0-5.5 m,
+  // which is the pickup's paint. The sun is at azimuth 275, so from a camera looking toward
+  // -x we see its shadowed flank at close range — a dark olive panel with nothing on it.
+  // Legitimate, if unflattering.
   corner:   { pos: [18.5, 2.9,  3.0], look: [11.0, 4.2, 12.5], fov: 66 },
   wide:     { pos: [1.6,  7.0,  1.0], look: [14.0, 2.6, 13.5], fov: 62 },
   // `tight` marks a view that is *meant* to be in close quarters, so the frame-openness

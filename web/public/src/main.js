@@ -148,6 +148,7 @@ function step(dt) {
   }
 }
 
+let looping = true;
 function loop() {
   const now = performance.now();
   const dt = Math.min(0.05, (now - last) / 1000);
@@ -155,7 +156,7 @@ function loop() {
   step(dt);
   renderer.render();
   frames++;
-  requestAnimationFrame(loop);
+  if (looping) requestAnimationFrame(loop);
 }
 loop();
 
@@ -184,6 +185,25 @@ window.__app = {
   setCamera(pos, look, fov) { freeCam = true; applyView({ pos, look, fov }); return true; },
   setSize(w, h) { renderer.setSize(w, h); return true; },
   renderFrames(n = 1) { for (let i = 0; i < n; i++) renderer.render(); return true; },
+
+  /**
+   * Make the world hold still, for reproducible headless shots.
+   *
+   * Stops the rAF loop and pins the clock the sky reads. Both matter, and neither was
+   * obvious: with the loop running, physics kept advancing and extra frames kept
+   * accumulating in between the harness's own calls, and because the renderer re-reads the
+   * wall clock on every accumulation reset, each shot got a different set of clouds. Two
+   * runs of the same fixed view were therefore never quite the same picture — which
+   * quietly undermines the entire point of having fixed views, and swamped a
+   * before/after measurement of the denoiser in drift that had nothing to do with it.
+   *
+   * After freezing, advance the world deliberately with simulate() and renderFrames().
+   */
+  freeze(time = 12.0) {
+    looping = false;
+    renderer.freezeTime(time);
+    return true;
+  },
 
   /** Fire a tool at a world point — used by the harness to stage destruction for shots. */
   fireAt(toolId, from, at, holdFrames = 1) {

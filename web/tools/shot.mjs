@@ -28,25 +28,40 @@ const stats = await page.evaluate(() => window.__app.stats());
 console.log('stats:', JSON.stringify(stats));
 
 // The renderer resolves its 1-sample-per-pixel raytracing temporally, so a shot is only
-// worth judging once the history has accumulated. Render in batches (rather than one huge
-// synchronous call) so a slow software frame can't trip the page's watchdog, and stop
-// early once the sample count stops climbing.
+// worth judging once the history has accumulated.
+//
+// Settle the world before accumulating anything. The parked cars drop onto their
+// suspension over the first ~0.5 s of simulation, and while any body is moving the
+// renderer deliberately holds its history at motionSamples instead of averaging. The
+// old loop went straight to accumulating, saw motion on the very first batch, and took
+// the shot at 6 samples — every review screenshot up to now was judged at a fraction of
+// the sample count it reported wanting, which made the renderer look far noisier than it
+// is. Settling first costs a second and removes the failure entirely.
+// Stop the world before touching anything: the rAF loop would otherwise keep simulating
+// and accumulating between our calls, and the sky's clock would advance, so two runs of
+// the same fixed view would not be the same picture. Fixed views only mean something if
+// they are reproducible.
+await page.evaluate(() => window.__app.freeze());
+await page.evaluate(() => window.__app.simulate(2.5));
+
 const TARGET = parseInt(process.env.SAMPLES || '96', 10);
 for (const v of views) {
   await page.evaluate((name) => window.__app.setView(name), v);
   let last = -1, stalled = 0;
-  for (let i = 0; i < 200; i++) {
+  for (let i = 0; i < 400; i++) {
     await page.evaluate(() => window.__app.renderFrames(4));
     const st = await page.evaluate(() => {
       const R = window.__app.renderer;
       return { s: R?.samples ?? 0, motion: !!R?.inMotion, hold: R?.params?.motionSamples ?? 6 };
     });
     if (st.s >= TARGET) break;
-    // While debris or smoke is live the renderer holds its history instead of averaging,
-    // so the sample count plateaus by design and waiting for TARGET never returns.
-    if (st.motion && st.s >= st.hold) break;
-    if (st.s === last && ++stalled > 3) break;   // accumulation isn't advancing; don't spin
-    if (st.s !== last) stalled = 0;
+    // If something really is animating (a staged demolition, live smoke) the history is
+    // held by design and TARGET is unreachable — but only give up once that has been true
+    // for several batches running, so a brief twitch doesn't cost the whole shot.
+    if (st.motion && st.s >= st.hold && ++stalled > 8) break;
+    // Accumulation genuinely not advancing.
+    if (st.s === last && ++stalled > 8) break;
+    if (st.s !== last && !st.motion) stalled = 0;
     last = st.s;
   }
   const s = await page.evaluate(() => window.__app.renderer?.samples ?? 0);

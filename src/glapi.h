@@ -70,6 +70,7 @@ typedef void GLvoid;
 #define GL_R8 0x8229
 #define GL_RGBA8 0x8058
 #define GL_RGBA16F 0x881A
+#define GL_RGBA32F 0x8814
 #define GL_DEPTH_COMPONENT 0x1902
 #define GL_DEPTH_COMPONENT24 0x81A6
 #define GL_UNPACK_ALIGNMENT 0x0CF5

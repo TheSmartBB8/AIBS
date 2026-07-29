@@ -207,6 +207,19 @@ float hash13(vec3 p) {
     p *= 17.0;
     return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
 }
+
+// Sample seed. Every ray direction in this renderer is chosen from a hash of the world
+// position, which fixes the dither pattern in space: it is bit-identical in every frame.
+// That is what a still image wants and it is a dead end for anything temporal — averaging
+// frames of the same pattern returns the pattern, so the AO can never be better than its
+// two-to-four samples and the grain is permanent.
+//
+// uSampleSeed is the frame index while accumulating and a constant otherwise. Offsetting
+// the hash input by it makes each frame an independent estimate at identical ray cost.
+uniform float uSampleSeed;
+vec3 seedAt(vec3 worldPos, float salt) {
+    return worldPos * (11.0 + salt * 4.0) + salt * 91.7 + uSampleSeed * 57.31;
+}
 )";
 
 // ---------------------------------------------------------------- chunk shaders
@@ -388,7 +401,7 @@ void main() {
         float accum = 0.0;
         for (int k = 0; k < 4; k++) {
             if (k >= n) break;
-            vec3 jp = vWorld * (11.0 + float(k) * 4.0) + float(k) * 91.7;
+            vec3 jp = seedAt(vWorld, float(k));
             float u1 = hash13(jp);
             float u2 = hash13(jp + 3.3);
             float rr = sqrt(u1);
@@ -420,7 +433,7 @@ void main() {
         float r = uLightPosR[i].w;
         float dCenter = length(lightCenter - vWorld);
         if (dCenter < r) {
-            vec3 jp = vWorld * 17.3 + float(i) * 51.1;
+            vec3 jp = seedAt(vWorld, 17.3 + float(i) * 3.1);
             vec3 jitter = (vec3(hash13(jp), hash13(jp + 5.5), hash13(jp + 11.1)) - 0.5) * (r * 0.12);
             vec3 Lp = (lightCenter + jitter) - vWorld;
             float d = length(Lp);
@@ -447,7 +460,7 @@ void main() {
     if (uShadowQuality > 0 && vRefl > 0.05) {
         vec3 V = normalize(uCamPos - vWorld);
         vec3 R = reflect(-V, N);
-        vec3 jp2 = vWorld * 71.0 + 3.1;
+        vec3 jp2 = seedAt(vWorld, 71.0);
         vec3 jitter2 = vec3(hash13(jp2), hash13(jp2 + 6.2), hash13(jp2 + 12.4)) * 2.0 - 1.0;
         vec3 Rj = normalize(R + jitter2 * roughness * 0.6);
         if (dot(Rj, N) < 0.0) Rj = reflect(Rj, N);
@@ -645,6 +658,30 @@ void main() {
     FragColor = vec4(c, 1.0);
 }
 )";
+// Running mean of the scene buffer.
+//
+// uBlend is 1/(n+1), so this is a plain unweighted average of every frame since the last
+// reset rather than an exponential fade. An exponential blend never actually converges — it
+// keeps a permanent share of the newest, noisiest sample — and the whole point here is to
+// reach a clean image and stay there while the player stands still.
+static const char* FS_ACCUM = R"(#version 330 core
+in vec2 vUV;
+out vec4 FragColor;
+uniform sampler2D uCur;
+uniform sampler2D uHist;
+uniform float uBlend;
+void main() {
+    vec3 c = texture(uCur, vUV).rgb;
+    // A single NaN would poison the history for the rest of the session, since every later
+    // frame averages against it.
+    if (!(c.r == c.r)) c = vec3(0.0);
+    c = clamp(c, vec3(0.0), vec3(4096.0));
+    vec3 h = texture(uHist, vUV).rgb;
+    if (!(h.r == h.r)) h = c;
+    FragColor = vec4(mix(h, c, uBlend), 1.0);
+}
+)";
+
 static const char* FS_COMPOSITE = R"(#version 330 core
 in vec2 vUV;
 out vec4 FragColor;
@@ -726,6 +763,8 @@ struct RenderSettings {
     float bloom = 0.55f;
     bool vsync = true;
     float renderScale = 1.25f; // internal supersampling factor (1.0/1.25/1.5/2.0)
+    bool accumulate = true;    // converge the ray noise while the camera holds still
+    int maxAccum = 256;        // stop averaging past this; the mean is its own answer
 };
 
 struct Renderer {
@@ -733,6 +772,7 @@ struct Renderer {
     int renderW = 1280, renderH = 720;   // internal supersampled scene resolution
     GLuint progChunk = 0, progSky = 0, progWater = 0, progPart = 0, progModel = 0;
     GLuint progBright = 0, progBlur = 0, progComposite = 0, progUI = 0;
+    GLuint progAccum = 0;
     // fullscreen quad
     GLuint fsVAO = 0, fsVBO = 0;
     // water quad
@@ -760,6 +800,40 @@ struct Renderer {
     vec3 camPos, camFwd, camRight, camUp;
     mat4 viewProj;
 
+    // ---------------------------------------------------------------- temporal accumulation
+    //
+    // The AO and reflection rays pick their directions from hash13(vWorld) — a hash of the
+    // *world position*. That makes the dither pattern fixed in space: it is identical in
+    // every frame, so averaging frames together gains exactly nothing and a temporal filter
+    // has nothing to work with. Two to four samples per pixel is all the image ever gets,
+    // and the shortfall shows up as the permanent stippled grain across every shaded face.
+    //
+    // Mixing a frame counter into the hash makes each frame an independent estimate, which
+    // is what lets a running mean converge. Same total ray cost per frame; the difference is
+    // whether the samples are the same four every time or four new ones.
+    //
+    // Two float buffers, ping-ponged, because the running mean has to be read and written in
+    // the same pass. Float rather than half: the blend weight is 1/(n+1), and by a couple of
+    // hundred samples half-float cannot represent the increment any more, so the image would
+    // quietly stop converging rather than fail.
+    GLuint accumFBO[2] = {0, 0}, accumTex[2] = {0, 0};
+    int accumIdx = 0;
+    int accumSamples = 0;
+    unsigned frameIndex = 0;
+    // What the accumulator was looking at last frame. Any change means the history describes
+    // a different picture and has to be thrown away.
+    vec3 lastCamPos = vec3(1e9f, 1e9f, 1e9f);
+    vec3 lastCamFwd = vec3(0, 0, 0);
+    unsigned lastWorldRev = ~0u;
+
+    /** Halton, for the sub-pixel jitter that turns accumulation into antialiasing too. */
+    static float halton(int i, int b) {
+        float f = 1, r = 0;
+        while (i > 0) { f /= b; r += f * (i % b); i /= b; }
+        return r;
+    }
+    void resetAccumulation() { accumSamples = 0; }
+
     bool init(int w, int h) {
         width = w; height = h;
         if (!glapi_load()) return false;
@@ -771,6 +845,7 @@ struct Renderer {
         progBright = linkProgram(VS_FULLSCREEN, FS_BRIGHT, "bright");
         progBlur = linkProgram(VS_FULLSCREEN, FS_BLUR, "blur");
         progComposite = linkProgram(VS_FULLSCREEN, FS_COMPOSITE, "composite");
+        progAccum = linkProgram(VS_FULLSCREEN, FS_ACCUM, "accum");
         progUI = linkProgram(VS_UI, FS_UI, "ui");
 
         // fullscreen triangle-pair
@@ -905,6 +980,14 @@ struct Renderer {
         glBindFramebuffer(GL_FRAMEBUFFER, sceneFBO);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, sceneColor, 0);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, sceneDepth, 0);
+        for (int i = 0; i < 2; i++) {
+            if (accumFBO[i]) { glDeleteFramebuffers(1, &accumFBO[i]); accumFBO[i] = 0; }
+            makeTex2D(accumTex[i], renderW, renderH, GL_RGBA32F, GL_RGBA, GL_FLOAT);
+            glGenFramebuffers(1, &accumFBO[i]);
+            glBindFramebuffer(GL_FRAMEBUFFER, accumFBO[i]);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, accumTex[i], 0);
+        }
+        resetAccumulation();
         bloomW = renderW / 2; bloomH = renderH / 2;
         if (bloomW < 1) bloomW = 1;
         if (bloomH < 1) bloomH = 1;
@@ -1084,11 +1167,35 @@ struct Renderer {
         camUp = vcross(camRight, camFwd);
         float aspect = (float)width / (float)height;
         mat4 proj = mat4_perspective(settings.fov * 3.14159265f / 180.f, aspect, 0.08f, 900.f);
+
+        // Any camera movement invalidates the history: the accumulator holds a mean of what
+        // was in front of each pixel, and moving puts something else there. Compared with a
+        // tolerance rather than exactly, because a stationary player still produces tiny
+        // float drift in the view matrix and an exact test would reset every single frame.
+        vec3 dp = camPos - lastCamPos, df = camFwd - lastCamFwd;
+        if (vdot(dp, dp) > 1e-8f || vdot(df, df) > 1e-10f) resetAccumulation();
+        lastCamPos = camPos;
+        lastCamFwd = camFwd;
+
+        // Sub-pixel jitter, applied only while accumulating. The same averaging that
+        // resolves the ray noise also resolves geometry edges, so antialiasing comes free
+        // with convergence rather than needing a separate pass.
+        if (settings.accumulate) {
+            float jx = (halton(accumSamples + 1, 2) - 0.5f) * 2.0f / (float)renderW;
+            float jy = (halton(accumSamples + 1, 3) - 0.5f) * 2.0f / (float)renderH;
+            proj.m[8] += jx;
+            proj.m[9] += jy;
+        }
         mat4 view = mat4_lookat(camPos, camPos + camFwd, vec3(0, 1, 0));
         viewProj = proj * view;
     }
 
     void setSceneUniforms(GLuint prog, const MapInfo& mi) {
+        // Constant when not accumulating, so the fixed-dither look is preserved exactly for
+        // anyone who turns convergence off — otherwise the grain would crawl every frame,
+        // which is worse than grain that sits still.
+        glUniform1f(glGetUniformLocation(prog, "uSampleSeed"),
+                    settings.accumulate ? (float)(accumSamples % 4096) : 0.0f);
         glUniformMatrix4fv(glGetUniformLocation(prog, "uViewProj"), 1, GL_FALSE, viewProj.m);
         glUniform3f(glGetUniformLocation(prog, "uCamPos"), camPos.x, camPos.y, camPos.z);
         glUniform3f(glGetUniformLocation(prog, "uSunDir"), mi.sunDir.x, mi.sunDir.y, mi.sunDir.z);
@@ -1261,12 +1368,41 @@ struct Renderer {
     // ---------------- post processing to backbuffer
     void endScene() {
         glDisable(GL_DEPTH_TEST);
+        glBindVertexArray(fsVAO);
+
+        // ---- temporal accumulation
+        //
+        // Everything downstream reads `lit` rather than sceneColor directly, so with
+        // accumulation off this is exactly the old pipeline and the bloom chain cannot tell
+        // the difference.
+        GLuint lit = sceneColor;
+        if (settings.accumulate && accumSamples < settings.maxAccum) {
+            int dst = 1 - accumIdx;
+            glBindFramebuffer(GL_FRAMEBUFFER, accumFBO[dst]);
+            glViewport(0, 0, renderW, renderH);
+            glUseProgram(progAccum);
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, sceneColor);
+            glUniform1i(glGetUniformLocation(progAccum, "uCur"), 0);
+            glActiveTexture(GL_TEXTURE0 + 1);
+            glBindTexture(GL_TEXTURE_2D, accumTex[accumIdx]);
+            glUniform1i(glGetUniformLocation(progAccum, "uHist"), 1);
+            // First frame after a reset takes the sample whole; there is no history to mix.
+            glUniform1f(glGetUniformLocation(progAccum, "uBlend"),
+                        accumSamples == 0 ? 1.0f : 1.0f / (float)(accumSamples + 1));
+            glDrawArrays(GL_TRIANGLES, 0, 6);
+            glActiveTexture(GL_TEXTURE0);
+            accumIdx = dst;
+            accumSamples++;
+        }
+        if (settings.accumulate && accumSamples > 0) lit = accumTex[accumIdx];
+
         // bright pass -> bloom[0]
         glBindFramebuffer(GL_FRAMEBUFFER, bloomFBO[0]);
         glViewport(0, 0, bloomW, bloomH);
         glUseProgram(progBright);
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, sceneColor);
+        glBindTexture(GL_TEXTURE_2D, lit);
         glUniform1i(glGetUniformLocation(progBright, "uTex"), 0);
         glBindVertexArray(fsVAO);
         glDrawArrays(GL_TRIANGLES, 0, 6);
@@ -1288,7 +1424,7 @@ struct Renderer {
         glViewport(0, 0, width, height);
         glUseProgram(progComposite);
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, sceneColor);
+        glBindTexture(GL_TEXTURE_2D, lit);
         glUniform1i(glGetUniformLocation(progComposite, "uScene"), 0);
         glActiveTexture(GL_TEXTURE0 + 1);
         glBindTexture(GL_TEXTURE_2D, bloomTex[0]);

@@ -982,7 +982,7 @@ static int selftestMain() {
 // meant to be compared has to be reproducible first.
 static int renderMain(int argc, char** argv) {
     int W = 960, H = 540, frames = 90, map = 0;
-    bool menu = false;
+    bool menu = false, noaccum = false;
     const char* out = "shots/native.ppm";
     for (int i = 2; i < argc; i++) {
         if (!std::strcmp(argv[i], "-w") && i + 1 < argc) W = std::atoi(argv[++i]);
@@ -991,10 +991,12 @@ static int renderMain(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "-o") && i + 1 < argc) out = argv[++i];
         else if (!std::strcmp(argv[i], "-m") && i + 1 < argc) map = std::atoi(argv[++i]);
         else if (!std::strcmp(argv[i], "--menu")) menu = true;
+        else if (!std::strcmp(argv[i], "--noaccum")) noaccum = true;
     }
     Platform plat;
     if (!plat.init("VoxWreck (headless)", W, H)) return 1;
     Game game;
+    game.ren.settings.accumulate = !noaccum;
     if (!game.ren.init(plat.st.width, plat.st.height)) {
         std::fprintf(stderr, "renderer init failed\n");
         return 1;
@@ -1005,10 +1007,17 @@ static int renderMain(int argc, char** argv) {
     // depend on the menu layout — a screenshot tool that breaks when a button moves is worse
     // than no screenshot tool.
     if (!menu) game.startSingleplayer(map);
-    for (int i = 0; i < frames; i++) {
-        game.update(1.0f / 60.0f);
-        game.renderFrame();
-    }
+    // Settle the world, then hold it still.
+    //
+    // The accumulation frames run at dt = 0 so that nothing in the simulation moves while
+    // the renderer converges. Without this the harness cannot measure convergence at all:
+    // the marina's water is animated, so consecutive frames differ because the waves moved
+    // as much as because the estimate improved, and a run comparing sample counts is really
+    // comparing two different pictures. Settling first still lets debris come to rest and
+    // gives time-based effects a sensible starting state.
+    const int settle = frames < 30 ? frames : 30;
+    for (int i = 0; i < settle; i++) { game.update(1.0f / 60.0f); game.renderFrame(); }
+    for (int i = settle; i < frames; i++) { game.update(0.0f); game.renderFrame(); }
     if (!plat.writePPM(out)) { std::fprintf(stderr, "could not write %s\n", out); return 1; }
     std::printf("wrote %s (%dx%d, %d frames)\n", out, W, H, frames);
     game.shutdown();

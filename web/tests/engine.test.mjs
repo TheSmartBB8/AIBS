@@ -171,6 +171,35 @@ const FWD = [1, 0, 0];
         `a blast lights what it hits before demolishing it (${e.fire.totalIgnitions} ignitions)`);
 }
 
+// ---- a fire keeps throwing flame for as long as it burns, not only when it catches.
+//
+// FireSim allocates emitFlame/emitSmoke/emitEmber accumulators and its own comment names
+// Engine._emitFromFires as their owner, but that method had never been written — nothing
+// read them. The only path from fire to particles was onIgnite, one puff per voxel at the
+// instant it lit. A hundred voxels burning for five seconds gave a hundred particles at
+// t = 0 and silence after, so a blazing fence rendered as an ordinary fence.
+{
+  const { w, p } = scene();
+  const e = new Engine(w, p);
+  e.tools.ctx.igniteAt(20.5 * VOXEL, 1.0, 1.0, 0.4, 2);
+  const lit = e.fire.count;
+  CHECK(lit > 0, `voxels are burning to emit from (${lit})`);
+
+  // Let the ignition puffs die off — fire particles live 0.28-0.62 s — then measure what
+  // the still-burning voxels are producing on their own.
+  for (let i = 0; i < 60; i++) e.update(1 / 60, { eye: EYE, dir: FWD });
+  const settled = e.particles.aliveCount;
+  const before = e.particles.stats().spawned;
+  for (let i = 0; i < 30; i++) e.update(1 / 60, { eye: EYE, dir: FWD });
+  const spawned = e.particles.stats().spawned - before;
+
+  CHECK(e.fire.count > 0, 'the voxels are still alight a second in');
+  CHECK(spawned > lit, `a burning voxel keeps emitting (${spawned} particles in half a second)`);
+  // Against `lit`, not zero: one puff per voxel at ignition is exactly the broken
+  // behaviour, so the standing population has to beat the number of voxels that caught.
+  CHECK(settled > lit, `and the flame is continuously present, not a single puff (${settled} alive vs ${lit} lit)`);
+}
+
 // ---- every tool in the roster can be selected and fired without throwing
 {
   const failures = [];

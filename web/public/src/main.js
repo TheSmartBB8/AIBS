@@ -91,6 +91,23 @@ function applyView(v) {
 }
 applyView(VIEWS.street);
 
+/**
+ * Push everything the simulation owns but the voxel grid does not — transient lights,
+ * rigid bodies and debris, particles — into the renderer.
+ *
+ * Factored out of step() because the headless harness needs it too, and did not have it.
+ * freeze() stops the rAF loop, which was the *only* caller of setParticles/setBodies, so
+ * every frozen capture rendered the static world alone: no smoke, no flame, no loose
+ * debris, however much of it the simulation was carrying. Screenshots taken to judge fire
+ * could not have shown fire even had everything else been right, and two separate blast
+ * captures came back byte-identical while the particle count went from 235 to 1315.
+ */
+function syncRender() {
+  renderer.setLights?.(engine.lights);
+  renderer.setBodies?.(engine.physics.bodies, engine.physics.debris, engine.physics.vehicles);
+  renderer.setParticles?.(engine.particles.buildInstances());
+}
+
 function step(dt) {
   if (pointerLocked) {
     if (engine.driving) {
@@ -116,9 +133,7 @@ function step(dt) {
   if (world.chunkDirty.some !== undefined) { /* typed array: checked via updateMeshes below */ }
   const rebuilt = renderer.updateMeshes(6);
   if (rebuilt > 0) renderer.resetAccumulation?.();
-  renderer.setLights?.(engine.lights);
-  renderer.setBodies?.(engine.physics.bodies, engine.physics.debris, engine.physics.vehicles);
-  renderer.setParticles?.(engine.particles.buildInstances());
+  syncRender();
   if (!freeCam) {
     if (engine.driving) {
       // Chase camera, behind and above the car, looking at it. Placed from the chassis'
@@ -216,6 +231,7 @@ window.__app = {
       engine.update(1 / 60, { eye: from, dir: d });
     }
     engine.triggerUp(from, d);
+    syncRender();
     return true;
   },
   /** Advance the simulation without rendering — lets debris settle before a shot. */
@@ -223,6 +239,7 @@ window.__app = {
     const n = Math.round(seconds / dt);
     for (let i = 0; i < n; i++) engine.update(dt, { eye: aimEye(), dir: aimDir() });
     renderer.updateMeshes(0);
+    syncRender();
     renderer.resetAccumulation?.();
     return true;
   },

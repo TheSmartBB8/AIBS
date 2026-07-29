@@ -14,8 +14,19 @@ import { PhysicsWorld, vehicleFromVoxels, liftVoxels, markRegionDirty } from '..
 import { ToolSystem } from '../tools/index.js';
 import { TOOL, TOOL_ORDER } from '../tools/registry.js';
 import { ParticleSystem } from '../fx/particles.js';
-import { FireSim } from '../fx/fire.js';
+import { FireSim, FIRE_MATERIALS } from '../fx/fire.js';
 import { VOXEL } from '../voxel/world.js';
+
+// Particles emitted per burning voxel per second, at full intensity. A burning plank is
+// mostly flame with smoke lifting off it and the occasional ember; embers are rare per
+// voxel but live for seconds, so a wall of fire still throws a steady drift of them.
+const FLAME_RATE = 9.0;
+const SMOKE_RATE = 2.4;      // further scaled by the material's smoke multiplier
+const EMBER_RATE = 0.7;
+// The pool is 8192 and destruction alone can fill a good part of it. Past this many live
+// particles fire stops emitting rather than starving debris and dust of slots — a fire
+// that has already drawn 2600 puffs does not read any hotter for a few hundred more.
+const FIRE_PARTICLE_BUDGET = 2600;
 
 export class Engine {
   constructor(world, palette, opts = {}) {
@@ -223,12 +234,49 @@ export class Engine {
   triggerDown(eye, dir) { return this.tools.triggerDown(eye, dir); }
   triggerUp(eye, dir) { return this.tools.triggerUp?.(eye, dir); }
 
+  /**
+   * Turn burning voxels into flame, smoke and embers, every frame.
+   *
+   * FireSim carries emitFlame/emitSmoke/emitEmber accumulators and its comment names this
+   * method as their owner — but the method had never been written, so nothing read them.
+   * The only fire-to-particle path was onIgnite, which fires once per voxel at the instant
+   * it catches. A hundred voxels burning for five seconds produced a hundred puffs at t=0
+   * and then nothing at all, which is why a blazing fence rendered as an ordinary one.
+   *
+   * The accumulators are seeded with a random fraction at ignition, so fires that caught in
+   * the same step do not then emit in lockstep and pulse as one.
+   */
+  _emitFromFires(dt) {
+    const f = this.fire;
+    if (f.count === 0) return;
+    if (this.particles.aliveCount >= FIRE_PARTICLE_BUDGET) return;
+    const P = this.particles;
+    for (let i = 0; i < f.count; i++) {
+      const inten = f.intensity[i];
+      if (inten <= 0.01) continue;
+      const b = FIRE_MATERIALS[this.palette.mat[f.pal[i]]];
+      const x = (f.fx[i] + 0.5) * VOXEL, y = (f.fy[i] + 0.5) * VOXEL, z = (f.fz[i] + 0.5) * VOXEL;
+
+      f.emitFlame[i] += FLAME_RATE * inten * dt;
+      while (f.emitFlame[i] >= 1) { f.emitFlame[i] -= 1; P.fireEmit([x, y, z], inten); }
+
+      // Smoke lifts from the top of the voxel, not its middle, or it reads as fog around
+      // the plank rather than a column coming off it.
+      f.emitSmoke[i] += SMOKE_RATE * (b ? b.smoke : 1) * inten * dt;
+      while (f.emitSmoke[i] >= 1) { f.emitSmoke[i] -= 1; P.smokePlume([x, y + VOXEL, z], 0.45 + inten * 0.5); }
+
+      f.emitEmber[i] += EMBER_RATE * inten * dt;
+      while (f.emitEmber[i] >= 1) { f.emitEmber[i] -= 1; P.emberEmit([x, y, z], 0.6 + inten * 0.6); }
+    }
+  }
+
   update(dt, aim) {
     this.time += dt;
     if (aim) this.tools.setAim?.(aim.eye, aim.dir);
     this.tools.update(dt, aim?.eye, aim?.dir);
     this.physics.step(dt);
     this.fire.update(dt);
+    this._emitFromFires(dt);
     this.particles.update(dt);
     for (let i = this.lights.length - 1; i >= 0; i--) {
       const L = this.lights[i];

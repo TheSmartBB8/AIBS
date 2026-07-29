@@ -1039,7 +1039,7 @@ static int topdownMain(int argc, char** argv) {
 static int renderMain(int argc, char** argv) {
     int W = 960, H = 540, frames = 90, map = 0;
     bool menu = false, noaccum = false, nodenoise = false;
-    int maxacc = -1; float phil = -1.f;
+    int maxacc = -1; float phil = -1.f; int tool = -1;
     bool boom = false, nospin = false; float boomDist = 6.f, boomRadius = 3.2f; int boomRun = 12;
     // Free camera, for reviewing a map rather than whatever the spawn happens to face.
     bool freecam = false; float cx = 0, cy = 0, cz = 0, cyaw = 0, cpitch = 0;
@@ -1055,6 +1055,7 @@ static int renderMain(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--nodenoise")) nodenoise = true;
         else if (!std::strcmp(argv[i], "--samples") && i + 1 < argc) maxacc = std::atoi(argv[++i]);
         else if (!std::strcmp(argv[i], "--phil") && i + 1 < argc) phil = (float)std::atof(argv[++i]);
+        else if (!std::strcmp(argv[i], "--tool") && i + 1 < argc) tool = std::atoi(argv[++i]);
         else if (!std::strcmp(argv[i], "--boom")) boom = true;
         else if (!std::strcmp(argv[i], "--nospin")) nospin = true;
         else if (!std::strcmp(argv[i], "--cam") && i + 5 < argc) {
@@ -1083,6 +1084,7 @@ static int renderMain(int argc, char** argv) {
     // depend on the menu layout — a screenshot tool that breaks when a button moves is worse
     // than no screenshot tool.
     if (!menu) game.startSingleplayer(map);
+    if (tool >= 0 && tool < TOOL_COUNT) game.weapons.current = (Tool)tool;
     // Settle the world, then hold it still.
     //
     // The accumulation frames run at dt = 0 so that nothing in the simulation moves while

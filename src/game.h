@@ -831,36 +831,105 @@ struct Game {
 
         float rec = weapons.recoilAnim;
         switch (weapons.current) {
+            // The tools are built out of many small boxes rather than two or three large
+            // ones. A sledgehammer that is a stick with a brick on the end does not read as
+            // a sledgehammer — what identifies a tool at a glance is its distinctive
+            // details: the taper of a hammer head, the gauge of a gas hose, the horn on an
+            // extinguisher. At this size a box is a couple of centimetres, so the parts that
+            // matter are affordable.
             case TOOL_SLEDGE: {
                 float ang = -weapons.swingAnim * 1.5f;
-                ren.modelBox(vec3(0, -0.02f, 0.05f), vec3(0.025f, 0.22f, 0.025f), 120, 84, 52);
-                vec3 headC(0, -0.02f - 0.24f * cosf(ang * 0.4f), 0.05f + 0.24f * sinf(ang * 0.4f));
-                ren.modelBox(headC, vec3(0.09f, 0.045f, 0.045f), 90, 92, 96);
+                // hickory shaft, oval in section, thickening toward the head
+                ren.modelBox(vec3(0, -0.10f, 0.02f), vec3(0.019f, 0.16f, 0.014f), 146, 106, 62);
+                ren.modelBox(vec3(0, 0.05f, 0.04f), vec3(0.022f, 0.06f, 0.017f), 152, 112, 68);
+                // rubber grip wrap with a binding at each end
+                ren.modelBox(vec3(0, -0.19f, 0.01f), vec3(0.023f, 0.07f, 0.019f), 38, 36, 38);
+                ren.modelBox(vec3(0, -0.12f, 0.01f), vec3(0.024f, 0.008f, 0.020f), 22, 20, 22);
+                ren.modelBox(vec3(0, -0.26f, 0.01f), vec3(0.024f, 0.008f, 0.020f), 22, 20, 22);
+                vec3 hc(0, 0.09f - 0.02f * cosf(ang * 0.4f), 0.06f + 0.24f * sinf(ang * 0.4f));
+                // double-faced steel head: a heavy centre, a chamfered striking face at each
+                // end, and the steel ferrule where the shaft passes through
+                ren.modelBox(hc, vec3(0.036f, 0.036f, 0.040f), 104, 106, 112);
+                ren.modelBox(hc + vec3(0.058f, 0, 0), vec3(0.024f, 0.030f, 0.034f), 122, 124, 130);
+                ren.modelBox(hc + vec3(-0.058f, 0, 0), vec3(0.024f, 0.030f, 0.034f), 122, 124, 130);
+                ren.modelBox(hc + vec3(0.084f, 0, 0), vec3(0.006f, 0.026f, 0.030f), 158, 160, 166);
+                ren.modelBox(hc + vec3(-0.084f, 0, 0), vec3(0.006f, 0.026f, 0.030f), 158, 160, 166);
+                ren.modelBox(hc + vec3(0, -0.036f, 0), vec3(0.028f, 0.010f, 0.024f), 78, 80, 86);
                 break;
             }
-            case TOOL_SPRAYCAN:
-                ren.modelBox(vec3(0, -0.02f, -0.02f), vec3(0.035f, 0.09f, 0.035f), 40, 40, 44);
-                ren.modelBox(vec3(0, 0.07f, -0.02f), vec3(0.038f, 0.015f, 0.038f),
-                             (uint8_t)(weapons.sprayR * 255), (uint8_t)(weapons.sprayG * 255), (uint8_t)(weapons.sprayB * 255));
+            case TOOL_SPRAYCAN: {
+                uint8_t sr = (uint8_t)(weapons.sprayR * 255), sg = (uint8_t)(weapons.sprayG * 255), sb = (uint8_t)(weapons.sprayB * 255);
+                // body, with the colour band a real can carries so you can see the charged hue
+                ren.modelBox(vec3(0, -0.04f, -0.02f), vec3(0.033f, 0.075f, 0.033f), 214, 214, 218);
+                ren.modelBox(vec3(0, -0.04f, -0.02f), vec3(0.034f, 0.022f, 0.034f), sr, sg, sb);
+                // rolled rim top and bottom
+                ren.modelBox(vec3(0, 0.036f, -0.02f), vec3(0.035f, 0.006f, 0.035f), 168, 168, 172);
+                ren.modelBox(vec3(0, -0.116f, -0.02f), vec3(0.035f, 0.006f, 0.035f), 168, 168, 172);
+                // shoulder, valve stem and the pressed plastic actuator
+                ren.modelBox(vec3(0, 0.050f, -0.02f), vec3(0.024f, 0.010f, 0.024f), 196, 196, 200);
+                ren.modelBox(vec3(0, 0.064f, -0.02f), vec3(0.020f, 0.008f, 0.020f), 44, 44, 48);
+                ren.modelBox(vec3(0, 0.074f, -0.024f), vec3(0.017f, 0.006f, 0.014f), 60, 60, 64);
+                ren.modelBox(vec3(0, 0.074f, -0.040f), vec3(0.005f, 0.004f, 0.006f), 30, 30, 32);
                 break;
+            }
             case TOOL_EXTINGUISHER:
-                ren.modelBox(vec3(0, -0.03f, -0.02f), vec3(0.045f, 0.13f, 0.045f), 190, 40, 30);
-                ren.modelBox(vec3(0.02f, 0.03f, -0.15f), vec3(0.012f, 0.012f, 0.08f), 40, 40, 44);
+                // cylinder with a domed base, a black neck, the squeeze handle, the gauge,
+                // and the flared horn that is the thing everyone recognises
+                ren.modelBox(vec3(0, -0.05f, -0.02f), vec3(0.044f, 0.105f, 0.044f), 186, 38, 30);
+                ren.modelBox(vec3(0, -0.158f, -0.02f), vec3(0.038f, 0.012f, 0.038f), 150, 28, 22);
+                ren.modelBox(vec3(0, 0.058f, -0.02f), vec3(0.030f, 0.008f, 0.030f), 196, 48, 36);
+                ren.modelBox(vec3(0, -0.05f, -0.063f), vec3(0.030f, 0.045f, 0.003f), 226, 226, 220);  // label
+                ren.modelBox(vec3(0, 0.074f, -0.02f), vec3(0.020f, 0.014f, 0.020f), 44, 44, 46);      // neck
+                ren.modelBox(vec3(0, 0.098f, -0.008f), vec3(0.026f, 0.008f, 0.030f), 34, 34, 36);     // lever
+                ren.modelBox(vec3(0, 0.086f, 0.020f), vec3(0.018f, 0.014f, 0.006f), 34, 34, 36);      // trigger
+                ren.modelBox(vec3(0.026f, 0.092f, -0.02f), vec3(0.010f, 0.010f, 0.010f), 220, 220, 210); // gauge
+                // hose sweeping forward into the horn
+                ren.modelBox(vec3(0.008f, 0.060f, -0.06f), vec3(0.007f, 0.007f, 0.045f), 26, 26, 28);
+                ren.modelBox(vec3(0.008f, 0.030f, -0.108f), vec3(0.007f, 0.030f, 0.007f), 26, 26, 28);
+                ren.modelBox(vec3(0.008f, -0.005f, -0.120f), vec3(0.016f, 0.016f, 0.020f), 30, 30, 32);
+                ren.modelBox(vec3(0.008f, -0.005f, -0.146f), vec3(0.028f, 0.028f, 0.010f), 24, 24, 26);
                 break;
             case TOOL_LEAFBLOWER:
                 ren.modelBox(vec3(0, -0.02f, -0.05f), vec3(0.05f, 0.05f, 0.22f), 220, 160, 40);
                 ren.modelBox(vec3(0, -0.09f, 0.05f), vec3(0.02f, 0.06f, 0.03f), 40, 40, 44);
                 break;
-            case TOOL_BLOWTORCH:
-                ren.modelBox(vec3(0, -0.02f, 0.02f), vec3(0.03f, 0.03f, 0.16f), 60, 120, 150);
-                ren.modelBox(vec3(0, -0.06f, -0.10f), vec3(0.035f, 0.08f, 0.05f), 200, 200, 60);
-                ren.modelBox(vec3(0, -0.01f, 0.16f), vec3(0.012f, 0.012f, 0.05f), 90, 92, 96);
+            case TOOL_BLOWTORCH: {
+                // A torch is a bottle, a regulator and a hose going to a handle — the hose is
+                // most of what identifies it, and it was missing entirely.
+                ren.modelBox(vec3(-0.055f, -0.07f, 0.06f), vec3(0.030f, 0.075f, 0.030f), 196, 168, 40);  // gas bottle
+                ren.modelBox(vec3(-0.055f, -0.152f, 0.06f), vec3(0.026f, 0.010f, 0.026f), 160, 136, 30);
+                ren.modelBox(vec3(-0.055f, 0.012f, 0.06f), vec3(0.014f, 0.012f, 0.014f), 52, 52, 56);    // valve
+                ren.modelBox(vec3(-0.055f, 0.032f, 0.06f), vec3(0.020f, 0.010f, 0.020f), 150, 150, 156); // regulator
+                // hose, sagging from the regulator across to the handle
+                ren.modelBox(vec3(-0.040f, 0.030f, 0.030f), vec3(0.006f, 0.006f, 0.028f), 34, 34, 36);
+                ren.modelBox(vec3(-0.026f, 0.014f, 0.008f), vec3(0.006f, 0.020f, 0.006f), 34, 34, 36);
+                ren.modelBox(vec3(-0.012f, -0.004f, 0.006f), vec3(0.014f, 0.006f, 0.006f), 34, 34, 36);
+                // handle, trigger, mixing tube and tip
+                ren.modelBox(vec3(0.010f, -0.030f, 0.020f), vec3(0.016f, 0.034f, 0.018f), 44, 46, 50);
+                ren.modelBox(vec3(0.010f, -0.006f, -0.004f), vec3(0.012f, 0.010f, 0.010f), 176, 60, 40);
+                ren.modelBox(vec3(0.010f, 0.004f, -0.060f), vec3(0.013f, 0.013f, 0.062f), 150, 152, 158);
+                ren.modelBox(vec3(0.010f, 0.004f, -0.130f), vec3(0.009f, 0.009f, 0.014f), 108, 110, 116);
+                ren.modelBox(vec3(0.010f, 0.004f, -0.146f), vec3(0.006f, 0.006f, 0.006f), 190, 192, 198);
                 break;
-            case TOOL_SHOTGUN:
-                ren.modelBox(vec3(0, -0.01f, -0.05f - rec * 0.05f), vec3(0.03f, 0.03f, 0.28f), 60, 46, 34);
-                ren.modelBox(vec3(0, -0.05f, 0.05f - rec * 0.05f), vec3(0.02f, 0.05f, 0.10f), 30, 30, 32);
-                ren.modelBox(vec3(0, 0.0f, -0.30f - rec * 0.05f), vec3(0.022f, 0.022f, 0.10f), 40, 40, 44);
+            }
+            case TOOL_SHOTGUN: {
+                float rz = -rec * 0.05f;
+                // barrel over magazine tube, walnut furniture, pump forend, receiver, bead
+                ren.modelBox(vec3(0, 0.008f, -0.14f + rz), vec3(0.016f, 0.016f, 0.24f), 46, 46, 50);   // barrel
+                ren.modelBox(vec3(0, -0.020f, -0.14f + rz), vec3(0.012f, 0.012f, 0.20f), 42, 42, 46);  // mag tube
+                ren.modelBox(vec3(0, -0.006f, -0.02f + rz), vec3(0.022f, 0.028f, 0.075f), 54, 54, 58); // receiver
+                ren.modelBox(vec3(0, -0.006f, 0.040f + rz), vec3(0.020f, 0.024f, 0.020f), 40, 40, 44); // ejection side
+                ren.modelBox(vec3(0, -0.020f, -0.140f + rz), vec3(0.024f, 0.021f, 0.055f), 96, 66, 40); // forend
+                for (int i = 0; i < 4; i++)                                                             // grooves
+                    ren.modelBox(vec3(0, -0.040f, -0.176f + i * 0.024f + rz), vec3(0.025f, 0.004f, 0.006f), 70, 48, 30);
+                ren.modelBox(vec3(0, -0.030f, 0.090f + rz), vec3(0.018f, 0.030f, 0.055f), 92, 62, 38);  // wrist
+                ren.modelBox(vec3(0, -0.052f, 0.145f + rz), vec3(0.020f, 0.038f, 0.030f), 88, 58, 36);  // butt
+                ren.modelBox(vec3(0, -0.086f, 0.150f + rz), vec3(0.020f, 0.008f, 0.028f), 32, 30, 30);  // recoil pad
+                ren.modelBox(vec3(0, -0.036f, 0.030f + rz), vec3(0.013f, 0.012f, 0.020f), 36, 36, 38);  // trigger guard
+                ren.modelBox(vec3(0, -0.034f, 0.028f + rz), vec3(0.005f, 0.010f, 0.005f), 150, 150, 155);
+                ren.modelBox(vec3(0, 0.026f, -0.372f + rz), vec3(0.004f, 0.005f, 0.005f), 210, 210, 200); // bead sight
                 break;
+            }
             case TOOL_GUN:
                 ren.modelBox(vec3(0, -0.01f, -0.03f - rec * 0.03f), vec3(0.025f, 0.03f, 0.14f), 50, 52, 58);
                 ren.modelBox(vec3(0, -0.07f, 0.02f - rec * 0.03f), vec3(0.02f, 0.05f, 0.05f), 40, 32, 28);
@@ -900,11 +969,25 @@ struct Game {
                 ren.modelBox(vec3(0, -0.09f, 0.05f), vec3(0.02f, 0.05f, 0.04f), 40, 40, 44);
                 break;
             case TOOL_ROCKET:
-            default:
-                ren.modelBox(vec3(0, -0.01f, -0.05f - rec * 0.08f), vec3(0.06f, 0.06f, 0.34f), 60, 66, 58);
-                ren.modelBox(vec3(0, -0.08f, 0.02f - rec * 0.08f), vec3(0.025f, 0.06f, 0.10f), 30, 30, 32);
-                ren.modelBox(vec3(0, 0.02f, -0.36f - rec * 0.08f), vec3(0.08f, 0.08f, 0.03f), 200, 60, 40);
+            default: {
+                float rz = -rec * 0.08f;
+                // launch tube with a flared muzzle and a rear blast cone, plus the optic,
+                // pistol grip, shoulder rest and heat shield a launcher actually carries
+                ren.modelBox(vec3(0, 0.0f, -0.06f + rz), vec3(0.042f, 0.042f, 0.30f), 74, 80, 66);
+                ren.modelBox(vec3(0, 0.0f, -0.372f + rz), vec3(0.050f, 0.050f, 0.020f), 62, 68, 56);  // muzzle ring
+                ren.modelBox(vec3(0, 0.0f, 0.262f + rz), vec3(0.052f, 0.052f, 0.026f), 58, 62, 52);   // blast cone
+                ren.modelBox(vec3(0, 0.050f, -0.010f + rz), vec3(0.030f, 0.010f, 0.090f), 56, 60, 50); // heat shield
+                ren.modelBox(vec3(0.030f, 0.048f, 0.030f + rz), vec3(0.014f, 0.016f, 0.034f), 40, 42, 38); // optic body
+                ren.modelBox(vec3(0.030f, 0.048f, -0.006f + rz), vec3(0.011f, 0.011f, 0.004f), 90, 130, 150); // lens
+                ren.modelBox(vec3(0, -0.060f, 0.050f + rz), vec3(0.018f, 0.032f, 0.020f), 36, 36, 40); // grip
+                ren.modelBox(vec3(0, -0.030f, 0.024f + rz), vec3(0.012f, 0.012f, 0.020f), 34, 34, 38); // trigger guard
+                ren.modelBox(vec3(0, -0.048f, -0.130f + rz), vec3(0.016f, 0.026f, 0.018f), 36, 36, 40); // fore grip
+                ren.modelBox(vec3(0, -0.052f, 0.150f + rz), vec3(0.022f, 0.012f, 0.040f), 44, 44, 46); // shoulder rest
+                // warhead sitting in the mouth of the tube
+                ren.modelBox(vec3(0, 0.0f, -0.400f + rz), vec3(0.026f, 0.026f, 0.026f), 176, 58, 42);
+                ren.modelBox(vec3(0, 0.0f, -0.428f + rz), vec3(0.016f, 0.016f, 0.014f), 150, 46, 34);
                 break;
+            }
         }
         ren.modelDraw(model, mapInfo, 1.0f);
 

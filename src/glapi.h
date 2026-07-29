@@ -87,6 +87,7 @@ typedef void GLvoid;
 #define GL_TEXTURE0 0x84C0
 #define GL_FRAMEBUFFER 0x8D40
 #define GL_COLOR_ATTACHMENT0 0x8CE0
+#define GL_COLOR_ATTACHMENT1 0x8CE1
 #define GL_DEPTH_ATTACHMENT 0x8D00
 #define GL_FRAMEBUFFER_COMPLETE 0x8CD5
 #define GL_MULTISAMPLE 0x809D
@@ -168,6 +169,7 @@ typedef void GLvoid;
        they belong in the shared loader rather than being resolved separately: a screenshot
        has to come through the same entry points the frame was drawn with. */ \
     X(void, glReadBuffer, (GLenum)) \
+    X(void, glDrawBuffers, (GLsizei, const GLenum*)) \
     X(void, glReadPixels, (GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, void*))
 
 #define DECLARE_GL(ret, name, args) typedef ret (GLAPIENTRY *PFN_##name) args; extern PFN_##name name;

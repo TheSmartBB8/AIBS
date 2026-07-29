@@ -982,7 +982,8 @@ static int selftestMain() {
 // meant to be compared has to be reproducible first.
 static int renderMain(int argc, char** argv) {
     int W = 960, H = 540, frames = 90, map = 0;
-    bool menu = false, noaccum = false;
+    bool menu = false, noaccum = false, nodenoise = false;
+    int maxacc = -1; float phil = -1.f;
     const char* out = "shots/native.ppm";
     for (int i = 2; i < argc; i++) {
         if (!std::strcmp(argv[i], "-w") && i + 1 < argc) W = std::atoi(argv[++i]);
@@ -992,11 +993,17 @@ static int renderMain(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "-m") && i + 1 < argc) map = std::atoi(argv[++i]);
         else if (!std::strcmp(argv[i], "--menu")) menu = true;
         else if (!std::strcmp(argv[i], "--noaccum")) noaccum = true;
+        else if (!std::strcmp(argv[i], "--nodenoise")) nodenoise = true;
+        else if (!std::strcmp(argv[i], "--samples") && i + 1 < argc) maxacc = std::atoi(argv[++i]);
+        else if (!std::strcmp(argv[i], "--phil") && i + 1 < argc) phil = (float)std::atof(argv[++i]);
     }
     Platform plat;
     if (!plat.init("VoxWreck (headless)", W, H)) return 1;
     Game game;
     game.ren.settings.accumulate = !noaccum;
+    if (nodenoise) game.ren.settings.denoisePasses = 0;
+    if (maxacc > 0) game.ren.settings.maxAccum = maxacc;
+    if (phil > 0) game.ren.settings.denoisePhiL = phil;
     if (!game.ren.init(plat.st.width, plat.st.height)) {
         std::fprintf(stderr, "renderer init failed\n");
         return 1;
@@ -1019,7 +1026,8 @@ static int renderMain(int argc, char** argv) {
     for (int i = 0; i < settle; i++) { game.update(1.0f / 60.0f); game.renderFrame(); }
     for (int i = settle; i < frames; i++) { game.update(0.0f); game.renderFrame(); }
     if (!plat.writePPM(out)) { std::fprintf(stderr, "could not write %s\n", out); return 1; }
-    std::printf("wrote %s (%dx%d, %d frames)\n", out, W, H, frames);
+    std::printf("wrote %s (%dx%d, %d frames, %d accumulated samples)\n",
+                out, W, H, frames, game.ren.accumSamples);
     game.shutdown();
     return 0;
 }

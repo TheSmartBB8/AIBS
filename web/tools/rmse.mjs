@@ -77,13 +77,21 @@ await page.evaluate(() => {
   };
 });
 
+// Arbitrary renderer params, as JSON, applied to every shot in the run:
+//   PARAMS='{"denoisePhiL":8,"denoisePhiLSpec":0.6}' node tools/rmse.mjs street
+// Sweeping a tuning constant used to mean editing the default and re-running, which is slow
+// and leaves the edit lying around to be committed by accident.
+const PARAMS = JSON.parse(process.env.PARAMS || '{}');
+if (Object.keys(PARAMS).length) console.log('params', JSON.stringify(PARAMS));
+
 async function shoot(key, n, passes) {
-  await page.evaluate((p) => {
+  await page.evaluate(([p, extra]) => {
     const R = window.__app.renderer;
     R.params.denoise = p > 0 ? 1 : 0;
     R.params.denoisePasses = Math.max(p, 1);
+    Object.assign(R.params, extra);
     R.resetAccumulation();
-  }, passes);
+  }, [passes, PARAMS]);
   for (let guard = 0; guard < 500; guard++) {
     const s = await page.evaluate(() => window.__app.renderer.samples);
     if (s >= n) break;

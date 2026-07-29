@@ -54,15 +54,16 @@ export function makeQuad() {
  * writes increments of 1/N, and by N≈200 a half-float simply cannot represent them any
  * more, so the image would silently stop converging.
  */
-export function hdrTarget(w, h, float = false) {
+export function hdrTarget(w, h, float = false, count = 1) {
   const filter = float ? THREE.NearestFilter : THREE.LinearFilter;
   const rt = new THREE.WebGLRenderTarget(w, h, {
+    count,
     type: float ? THREE.FloatType : THREE.HalfFloatType,
     format: THREE.RGBAFormat,
     minFilter: filter, magFilter: filter,
     depthBuffer: false, stencilBuffer: false, generateMipmaps: false,
   });
-  rt.texture.wrapS = rt.texture.wrapT = THREE.ClampToEdgeWrapping;
+  for (const t of rt.textures) t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
   return rt;
 }
 
@@ -70,9 +71,18 @@ export function hdrTarget(w, h, float = false) {
 export const ACCUM_FRAG = /* glsl */`
 precision highp float;
 varying vec2 vUv;
-layout(location = 0) out vec4 oColor;
+// Both halves of the split accumulate in one pass. They share every scalar — the blend
+// weight, the clamp decision, the neighbourhood offsets — so running two passes would pay
+// for the same bookkeeping twice.
+layout(location = 0) out vec4 oDiffuse;
+layout(location = 1) out vec4 oSpecular;
+layout(location = 2) out vec4 oAlbedo;
 uniform sampler2D tCur;
 uniform sampler2D tHist;
+uniform sampler2D tCurSpec;
+uniform sampler2D tHistSpec;
+uniform sampler2D tCurAlbedo;
+uniform sampler2D tHistAlbedo;
 uniform vec2 uTexel;
 uniform float uBlend;
 uniform float uClamp;   // 0 = pure average (still frame), 1 = clamp history (motion)
@@ -87,15 +97,22 @@ uniform float uClamp;   // 0 = pure average (still frame), 1 = clamp history (mo
 // first moment needs no separate channel — variance is just alpha - luma(rgb)^2.
 float lumaOf(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
 
-void main() {
-  vec4 cs = texture(tCur, vUv);
-  vec4 hs = texture(tHist, vUv);
-  vec3 c = cs.rgb, h = hs.rgb;
+// One channel's running mean plus second moment of luma.
+//
+// cur/hist are this frame's sample and the history; curTex is the texture cur came from,
+// needed for the neighbourhood clamp, which has to be gathered from the same channel it is
+// clamping — clamping specular against a diffuse neighbourhood would reject exactly the
+// highlights it is meant to preserve.
+//
+// (No backticks anywhere in this file's GLSL comments. They close the template literal, and
+// that has now broken the build four separate times.)
+vec4 accumChannel(vec4 cur, vec4 hist, sampler2D curTex, vec2 uv, vec2 texel, float blend, float doClamp) {
+  vec3 c = cur.rgb, h = hist.rgb;
   // guard against NaN/Inf leaking into the history and poisoning it forever
   c = clamp(c, vec3(0.0), vec3(2048.0));
   if (!(c.r == c.r)) c = vec3(0.0);
   float m2c = lumaOf(c) * lumaOf(c);
-  float m2h = hs.a;
+  float m2h = hist.a;
   if (!(m2h == m2h)) m2h = m2c;
 
   // Neighbourhood clamping. While debris is tumbling and smoke is drifting the history
@@ -104,23 +121,34 @@ void main() {
   // exactly the samples that disagree with what is there now, which is what lets the
   // accumulator keep running through motion instead of having to be thrown away.
   // Disabled on a still frame (uClamp = 0), where an honest mean is strictly better.
-  if (uClamp > 0.0) {
+  if (doClamp > 0.0) {
     vec3 lo = c, hi = c;
     for (int y = -1; y <= 1; y++)
       for (int x = -1; x <= 1; x++) {
-        vec3 s = texture(tCur, vUv + vec2(float(x), float(y)) * uTexel).rgb;
+        vec3 s = texture(curTex, uv + vec2(float(x), float(y)) * texel).rgb;
         lo = min(lo, s); hi = max(hi, s);
       }
     // widen slightly: a hard box on a 1-spp frame is so noisy it rejects good history
     vec3 pad = (hi - lo) * 0.5 + vec3(0.02);
-    h = mix(h, clamp(h, lo - pad, hi + pad), uClamp);
+    h = mix(h, clamp(h, lo - pad, hi + pad), doClamp);
   }
-  vec3 mean = mix(h, c, uBlend);
+  vec3 mean = mix(h, c, blend);
   // Keep the second moment consistent with the mean it is paired with. Clamping rgb above
   // can leave a stale m2 that sits below luma^2, which would make the variance negative
   // and read as "perfectly converged" on exactly the pixels that just changed.
-  float m2 = max(mix(m2h, m2c, uBlend), lumaOf(mean) * lumaOf(mean));
-  oColor = vec4(mean, m2);
+  float m2 = max(mix(m2h, m2c, blend), lumaOf(mean) * lumaOf(mean));
+  return vec4(mean, m2);
+}
+
+void main() {
+  oDiffuse  = accumChannel(texture(tCur, vUv), texture(tHist, vUv), tCur, vUv, uTexel, uBlend, uClamp);
+  oSpecular = accumChannel(texture(tCurSpec, vUv), texture(tHistSpec, vUv), tCurSpec, vUv, uTexel, uBlend, uClamp);
+  // Albedo just averages. It carries no variance — it is not a Monte-Carlo estimate, it is
+  // the surface — and it must not be neighbourhood-clamped either: the clamp exists to
+  // reject history that disagrees with the current frame, and at a jittered geometry edge
+  // disagreeing is precisely what the two surfaces are supposed to do. Rejecting it there
+  // would pin the albedo to the latest sample and undo the whole point of averaging it.
+  oAlbedo = vec4(mix(texture(tHistAlbedo, vUv).rgb, texture(tCurAlbedo, vUv).rgb, uBlend), 1.0);
 }`;
 
 // ---------------------------------------------------------------- edge-aware cleanup
@@ -147,8 +175,10 @@ void main() {
 export const DENOISE_FRAG = /* glsl */`
 precision highp float;
 varying vec2 vUv;
-layout(location = 0) out vec4 oColor;
+layout(location = 0) out vec4 oDiffuse;
+layout(location = 1) out vec4 oSpecular;
 uniform sampler2D tColor;
+uniform sampler2D tSpec;
 uniform sampler2D tNormal;
 uniform sampler2D tPosition;
 uniform vec2 uTexel;
@@ -156,7 +186,8 @@ uniform float uStep;      // à-trous dilation in pixels
 uniform float uStrength;  // 0 = passthrough
 uniform float uM2;        // 1 = alpha is a second moment, 0 = alpha is variance
 uniform float uSamples;   // accumulated samples behind the mean in tColor
-uniform float uPhiL;      // luminance tolerance, in standard deviations
+uniform float uPhiL;      // diffuse luminance tolerance, in standard deviations
+uniform float uPhiLSpec;  // specular luminance tolerance, in standard deviations
 uniform float uPhiN;      // normal tolerance (exponent)
 uniform float uPhiP;      // world-position falloff, 1/metres
 
@@ -175,10 +206,12 @@ float varAt(vec4 c) {
 
 void main() {
   vec4 c0 = texture(tColor, vUv);
-  if (uStrength <= 0.001) { oColor = c0; return; }
+  vec4 s0 = texture(tSpec, vUv);
+  if (uStrength <= 0.001) { oDiffuse = c0; oSpecular = s0; return; }
   vec4 n0 = texture(tNormal, vUv);
   vec3 p0 = texture(tPosition, vUv).xyz;
   float l0 = lumaOf(c0.rgb);
+  float ls0 = lumaOf(s0.rgb);
 
   // Spatial fallback for a thin history.
   //
@@ -243,9 +276,9 @@ void main() {
   //
   // One aggressive pass on the raw frame beats five compounding ones. It also closes most
   // of the gap to the 2-sample result (-43.6%), which is the anomaly that started this.
-  float floorV = 0.0;
+  float floorV = 0.0, floorVs = 0.0;
   if (uSamples < 2.0 && uM2 > 0.5) {
-    float m1 = 0.0, m2 = 0.0, mw = 0.0;
+    float m1 = 0.0, m2 = 0.0, s1 = 0.0, s2 = 0.0, mw = 0.0;
     for (int y = -2; y <= 2; y++)
       for (int x = -2; x <= 2; x++) {
         vec2 uv = vUv + vec2(float(x), float(y)) * uTexel;
@@ -253,46 +286,66 @@ void main() {
         vec3 p = texture(tPosition, uv).xyz;
         float w = pow(max(dot(n.xyz, n0.xyz), 0.0), uPhiN) * exp(-length(p - p0) * uPhiP);
         float l = lumaOf(texture(tColor, uv).rgb);
-        m1 += l * w; m2 += l * l * w; mw += w;
+        float ls = lumaOf(texture(tSpec, uv).rgb);
+        m1 += l * w; m2 += l * l * w;
+        s1 += ls * w; s2 += ls * ls * w;
+        mw += w;
       }
     if (mw > 1e-4) {
-      m1 /= mw; m2 /= mw;
+      m1 /= mw; m2 /= mw; s1 /= mw; s2 /= mw;
       floorV = max(m2 - m1 * m1, 0.0);
+      floorVs = max(s2 - s1 * s1, 0.0);
     }
   }
 
   // The variance estimate is itself built from noisy data. Prefilter it 3x3 (gaussian)
   // before using it as a tolerance, or a single firefly declares its own neighbourhood an
   // edge, refuses to be filtered, and survives every pass as a permanent bright speck.
-  float vs = 0.0, vw = 0.0;
+  float vs = 0.0, vss = 0.0, vw = 0.0;
   for (int y = -1; y <= 1; y++)
     for (int x = -1; x <= 1; x++) {
       float k = (x == 0 && y == 0) ? 4.0 : ((x == 0 || y == 0) ? 2.0 : 1.0);
-      vs += varAt(texture(tColor, vUv + vec2(float(x), float(y)) * uTexel)) * k;
+      vec2 uv = vUv + vec2(float(x), float(y)) * uTexel;
+      vs += varAt(texture(tColor, uv)) * k;
+      vss += varAt(texture(tSpec, uv)) * k;
       vw += k;
     }
   float sigmaL = uPhiL * sqrt(max(vs / vw, floorV)) + 1e-4;
+  float sigmaLs = uPhiLSpec * sqrt(max(vss / vw, floorVs)) + 1e-4;
 
+  // The geometric weights — normal and world position — describe the *surface*, not what is
+  // lit on it, so they are identical for both halves and are computed once. That is why one
+  // tap loop serves two outputs at well under twice the cost of two loops.
+  //
+  // Only the luminance term differs, and it differs less than expected: see the note on
+  // denoisePhiLSpec. The split earns its keep through demodulation, not through this.
   const float k[3] = float[3](1.0, 0.66, 0.24);
-  vec3 acc = c0.rgb;
-  float accV = varAt(c0);
-  float sum = 1.0;
+  vec3 acc = c0.rgb, accS = s0.rgb;
+  float accV = varAt(c0), accVs = varAt(s0);
+  float sum = 1.0, sumS = 1.0;
   for (int y = -2; y <= 2; y++) {
     for (int x = -2; x <= 2; x++) {
       if (x == 0 && y == 0) continue;
       vec2 uv = vUv + vec2(float(x), float(y)) * uTexel * uStep;
       vec4 c = texture(tColor, uv);
+      vec4 s = texture(tSpec, uv);
       vec4 n = texture(tNormal, uv);
       vec3 p = texture(tPosition, uv).xyz;
       float wn = pow(max(dot(n.xyz, n0.xyz), 0.0), uPhiN);
       float wp = exp(-length(p - p0) * uPhiP);
-      float wl = exp(-abs(lumaOf(c.rgb) - l0) / sigmaL);
-      float w = k[abs(x)] * k[abs(y)] * wn * wp * wl;
+      float wg = k[abs(x)] * k[abs(y)] * wn * wp;
+
+      float w = wg * exp(-abs(lumaOf(c.rgb) - l0) / sigmaL);
       acc += c.rgb * w;
       sum += w;
       // Variance of a weighted mean carries the *square* of each weight, so the estimate
       // shrinks as the filter gathers — which is what lets the next pass filter less.
       accV += varAt(c) * w * w;
+
+      float ws = wg * exp(-abs(lumaOf(s.rgb) - ls0) / sigmaLs);
+      accS += s.rgb * ws;
+      sumS += ws;
+      accVs += varAt(s) * ws * ws;
     }
   }
   // Var(sum(w*x)/sum(w)) = sum(w^2 * Var(x)) / sum(w)^2. Dividing by sum(w^2) instead —
@@ -302,18 +355,28 @@ void main() {
   // full strength. Measured against a 512-sample reference that made the 32-sample frame
   // 36% *worse* than no filtering, while looking cleaner to the eye — the exact failure
   // an RMSE check exists to catch.
-  oColor = vec4(mix(c0.rgb, acc / sum, uStrength), accV / max(sum * sum, 1e-6));
+  oDiffuse  = vec4(mix(c0.rgb, acc / sum, uStrength), accV / max(sum * sum, 1e-6));
+  oSpecular = vec4(mix(s0.rgb, accS / sumS, uStrength), accVs / max(sumS * sumS, 1e-6));
 }`;
 
-// Straight passthrough. Needed because emissive particles have to be drawn *into* the HDR
-// colour before the bloom chain reads it, and the buffer holding that colour is one we are
-// sampling — so it gets copied somewhere writable first.
-export const COPY_FRAG = /* glsl */`
+// Put the two filtered halves back together, and hand the albedo back to the diffuse one.
+//
+// This also serves the job the old straight-copy blit did: emissive particles have to be
+// drawn *into* the HDR colour before the bloom chain reads it, and the buffers holding that
+// colour are ones we are sampling, so the result has to land somewhere writable anyway.
+export const RECOMBINE_FRAG = /* glsl */`
 precision highp float;
 varying vec2 vUv;
 layout(location = 0) out vec4 oColor;
-uniform sampler2D tColor;
-void main() { oColor = texture(tColor, vUv); }`;
+uniform sampler2D tColor;      // filtered diffuse irradiance (albedo demodulated out)
+uniform sampler2D tSpec;       // filtered specular + emissive + fog inscatter
+uniform sampler2D tAlbedo;     // *accumulated* diffuse albedo, not the G-buffer's
+void main() {
+  // Mean times mean. Both factors are averages over the same jittered samples, so an edge
+  // pixel gets the blend of two surfaces in each — which is what makes the product
+  // anti-aliased rather than merely noisy. The trace pass already folded (1 - metal) in.
+  oColor = vec4(texture(tAlbedo, vUv).rgb * texture(tColor, vUv).rgb + texture(tSpec, vUv).rgb, 1.0);
+}`;
 
 // ---------------------------------------------------------------- bloom
 export const BLOOM_PREFILTER_FRAG = /* glsl */`

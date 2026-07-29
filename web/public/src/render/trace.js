@@ -24,7 +24,38 @@ precision highp int;
 precision highp sampler3D;
 
 varying vec2 vUv;
-layout(location = 0) out vec4 oColor;
+// Three outputs: diffuse irradiance, specular radiance, and the albedo that modulates the
+// first of them.
+//
+// The split was undertaken on the theory that one luminance tolerance cannot serve both
+// lobes — that a filter loose enough for smooth indirect diffuse must wipe the sheen off
+// car paint. Measured, that theory is wrong. Sweeping the specular tolerance across
+// 0.5/1.2/3/6/12 against a 384-sample reference puts its optimum at 3-6, right next to the
+// diffuse optimum of 4, and running both lobes at a single shared 4.0 scores within half a
+// percent of the tuned pair. The old combined value was very nearly correct for both.
+//
+// What the split is actually worth is the line below.
+//
+// oDiffuse carries irradiance *demodulated by albedo* — the light arriving, not the light
+// leaving. Filtering then happens in a space with no surface texture in it, so however hard
+// the kernel works it can never blur one material's colour into its neighbour's, and the
+// detail comes back at full resolution when the albedo is multiplied in afterwards. Against
+// the combined buffer this is worth roughly a doubling of the filter's benefit at the
+// sample counts a settled frame reaches: -18.5% -> -37.5% at 8 samples, -13.6% -> -30.2%
+// at 32. It is only possible once the two lobes are separated, because specular must not be
+// divided by a diffuse albedo — that is the reason for the split.
+//
+// oAlbedo is the third output and is not optional. The projection is jittered sub-pixel
+// every sample, so at a geometry edge the accumulated irradiance is an average over both
+// surfaces while the G-buffer albedo is whichever one the *latest* jitter happened to hit.
+// Multiplying one by the other re-introduces the aliasing the jitter exists to remove, and
+// it does not converge: measured against a 384-sample reference, the unfiltered 32-sample
+// error went from 3.12 to 8.31 — worse than three times the noise, from a change that was
+// supposed to be free. So the albedo is averaged alongside the light it modulates, and the
+// recombine multiplies mean by mean.
+layout(location = 0) out vec4 oDiffuse;
+layout(location = 1) out vec4 oSpecular;
+layout(location = 2) out vec4 oAlbedo;
 
 uniform sampler2D tAlbedo;
 uniform sampler2D tNormal;
@@ -107,7 +138,10 @@ void main() {
   vec3 rayDir = rayFromUv(vUv);
 
   if (dot(nrm.xyz, nrm.xyz) < 0.25) {          // missed the volume entirely
-    oColor = vec4(envRadiance(uCamPos, rayDir), 1.0);
+    // Sky goes in the additive half. There is no surface, so no albedo to demodulate by.
+    oDiffuse = vec4(0.0, 0.0, 0.0, 1.0);
+    oSpecular = vec4(envRadiance(uCamPos, rayDir), 1.0);
+    oAlbedo = vec4(0.0, 0.0, 0.0, 1.0);
     return;
   }
 
@@ -265,18 +299,22 @@ void main() {
     }
   }
 
-  vec3 color = diffAlb * (direct + amb) + spec + sunSpec + albedo * emissive * uEmissivePower;
-
   // ---------------------------------------------------------------- aerial perspective
   float dist = length(P - uCamPos);
   float hf = exp(-max(P.y - uFogHeight, 0.0) * 0.10);
-  float fog = 1.0 - exp(-dist * uFogDensity * hf);
+  float fog = clamp(1.0 - exp(-dist * uFogDensity * hf), 0.0, 1.0);
   // Fade toward what is actually *behind* this surface, not toward the sky. Geometry
   // below the horizon used to haze out to a pale sky colour, which lit up the base of
   // every distant building as if it were floating.
-  color = mix(color, envAmbient(uCamPos, rayDir), clamp(fog, 0.0, 1.0));
+  vec3 fogColor = envAmbient(uCamPos, rayDir);
 
-  oColor = vec4(color, 1.0);
+  // Fog distributes exactly across the split. mix(a*D + S, F, f) is
+  // a*((1-f)*D) + ((1-f)*S + f*F), so attenuate both halves and put the inscatter in the
+  // additive one, which is the half that is not multiplied by albedo on the way back.
+  float tr = 1.0 - fog;
+  oDiffuse = vec4((direct + amb) * tr, 1.0);
+  oSpecular = vec4((spec + sunSpec + albedo * emissive * uEmissivePower) * tr + fogColor * fog, 1.0);
+  oAlbedo = vec4(diffAlb, 1.0);
 }`;
 
 export function createTraceMaterial(uniforms, aoRays) {

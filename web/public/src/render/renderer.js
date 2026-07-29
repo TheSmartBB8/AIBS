@@ -29,7 +29,7 @@ import { ParticleRenderer } from './particles.js';
 import {
   makeQuad, hdrTarget, fsMaterial,
   ACCUM_FRAG, DENOISE_FRAG, BLOOM_PREFILTER_FRAG, BLOOM_DOWN_FRAG, BLOOM_UP_FRAG, COMPOSITE_FRAG,
-  COPY_FRAG,
+  RECOMBINE_FRAG,
 } from './post.js';
 
 // How metallic each material behaves. Painted sheet metal is not a mirror, so METAL sits
@@ -162,6 +162,24 @@ export const DEFAULTS = {
                           // surface". Below ~2 the filter refuses to cross its own noise
                           // and grain survives every pass; above ~8 it starts eating
                           // contact shadows under the parked cars.
+                          //
+                          // Governs diffuse irradiance only, now the lobes are separate.
+                          // I expected demodulating the albedo out to license a much looser
+                          // tolerance — no surface texture left to protect. It does not:
+                          // 4/8/14 measured -34.5%/-24.1%/-11.0% at 8 samples and
+                          // -27.7%/-14.4%/+7.9% at 32, so 14 is worse than not filtering at
+                          // all. Sigma is already phiL * sqrt(measured variance), so the
+                          // multiplier is not a noise scale, and raising it just blurs
+                          // shadow edges and AO gradients, which are signal.
+  denoisePhiLSpec: 3.0,   // and this governs specular. Kept separate, but honestly: it
+                          // barely matters. Swept 0.5/1.2/3/6/12, the optimum sits at 3-6,
+                          // and a single shared 4.0 for both lobes scores within half a
+                          // percent of the tuned pair. The premise this split was undertaken
+                          // on — that one tolerance cannot serve both — is simply not true
+                          // here. All the benefit came from the demodulation the split made
+                          // possible. Left in place because it costs one uniform and one
+                          // exp() per tap, and a genuinely mirror-like material would want
+                          // it; recorded so nobody re-runs this experiment hoping for more.
   denoiseUntil: 256,      // past this the mean is its own answer and the filter is a
                           // no-op that still costs a full-screen pass.
 
@@ -341,16 +359,23 @@ export class VoxelRenderer {
     this.traceMaterial = createTraceMaterial(this.shared, this.params.aoRays);
 
     this.accumMaterial = fsMaterial(ACCUM_FRAG, {
-      tCur: { value: null }, tHist: { value: null }, uBlend: { value: 1 },
+      tCur: { value: null }, tHist: { value: null },
+      tCurSpec: { value: null }, tHistSpec: { value: null },
+      tCurAlbedo: { value: null }, tHistAlbedo: { value: null }, uBlend: { value: 1 },
       uTexel: { value: new THREE.Vector2() }, uClamp: { value: 0 },
     });
     this.denoiseMaterial = fsMaterial(DENOISE_FRAG, {
-      tColor: { value: null }, tNormal: { value: null }, tPosition: { value: null },
+      tColor: { value: null }, tSpec: { value: null },
+      tNormal: { value: null }, tPosition: { value: null },
       uTexel: { value: new THREE.Vector2() }, uStep: { value: 1 }, uStrength: { value: 0 },
       uM2: { value: 1 }, uSamples: { value: 1 },
-      uPhiL: { value: 4.0 }, uPhiN: { value: 24.0 }, uPhiP: { value: 14.0 },
+      uPhiL: { value: 4.0 }, uPhiLSpec: { value: 1.2 },
+      uPhiN: { value: 24.0 }, uPhiP: { value: 14.0 },
     });
-    this.copyMaterial = fsMaterial(COPY_FRAG, { tColor: { value: null } });
+    this.recombineMaterial = fsMaterial(RECOMBINE_FRAG, {
+      tColor: { value: null }, tSpec: { value: null },
+      tAlbedo: { value: null },
+    });
     this.bloomPreMaterial = fsMaterial(BLOOM_PREFILTER_FRAG, {
       tColor: { value: null }, uTexel: { value: new THREE.Vector2() },
       uThreshold: { value: 1 }, uKnee: { value: 0.6 },
@@ -373,13 +398,15 @@ export class VoxelRenderer {
   _allocTargets(w, h) {
     this._disposeTargets();
     this.gbuf = createGBufferTarget(w, h);
-    this.traceRT = hdrTarget(w, h);
-    this.accumRT = [hdrTarget(w, h, true), hdrTarget(w, h, true)];
+    // Two attachments throughout: diffuse irradiance and specular radiance travel the whole
+    // trace -> accumulate -> denoise chain separately, and only meet again at the recombine.
+    this.traceRT = hdrTarget(w, h, false, 3);
+    this.accumRT = [hdrTarget(w, h, true, 3), hdrTarget(w, h, true, 3)];
     // Two, to ping-pong the à-trous passes. Float rather than half: alpha carries variance
     // of the mean, which at 100+ samples is a very small number multiplied by w*w again
     // every pass, and half-float flushes it to zero — at which point the filter reads
     // "converged" everywhere and stops, silently, exactly where it should be gentlest.
-    this.denoiseRT = [hdrTarget(w, h, true), hdrTarget(w, h, true)];
+    this.denoiseRT = [hdrTarget(w, h, true, 2), hdrTarget(w, h, true, 2)];
     // Holds the HDR colour with emissive particles drawn into it, so bloom sees the fire.
     this.fxRT = hdrTarget(w, h);
     this.bloomRT = [];
@@ -733,8 +760,12 @@ export class VoxelRenderer {
     const src = this.accumRT[this.accumIdx];
     const dst = this.accumRT[1 - this.accumIdx];
     const au = this.accumMaterial.uniforms;
-    au.tCur.value = this.traceRT.texture;
-    au.tHist.value = src.texture;
+    au.tCur.value = this.traceRT.textures[0];
+    au.tHist.value = src.textures[0];
+    au.tCurSpec.value = this.traceRT.textures[1];
+    au.tHistSpec.value = src.textures[1];
+    au.tCurAlbedo.value = this.traceRT.textures[2];
+    au.tHistAlbedo.value = src.textures[2];
     au.uBlend.value = n === 0 ? 1.0 : 1.0 / (n + 1);
     au.uTexel.value.set(1 / w, 1 / h);
     // Clamp only while something is animating. On a still frame the running mean is the
@@ -747,7 +778,8 @@ export class VoxelRenderer {
   _composite() {
     const w = this.width, h = this.height;
     const p = this.params;
-    let color = this.accumRT[this.accumIdx].texture;
+    let diffuse = this.accumRT[this.accumIdx].textures[0];
+    let specular = this.accumRT[this.accumIdx].textures[1];
 
     // Upload once, up front. The emissive half is drawn before bloom and the absorptive
     // half after the composite, so the instance data has to be in place before either.
@@ -768,33 +800,48 @@ export class VoxelRenderer {
       du.uTexel.value.set(1 / w, 1 / h);
       du.uStrength.value = 1.0;
       du.uPhiL.value = p.denoisePhiL;
+      du.uPhiLSpec.value = p.denoisePhiLSpec;
       du.uSamples.value = this.samples;
       for (let i = 0; i < passes; i++) {
-        du.tColor.value = color;
+        du.tColor.value = diffuse;
+        du.tSpec.value = specular;
         // Only the first pass reads the accumulator, whose alpha is a second moment;
         // after that alpha is variance and must not be squared out again.
         du.uM2.value = i === 0 ? 1 : 0;
         du.uStep.value = 1 << i;
         const dst = this.denoiseRT[i & 1];
         this._blit(this.denoiseMaterial, dst);
-        color = dst.texture;
+        diffuse = dst.textures[0];
+        specular = dst.textures[1];
       }
     }
+
+    // ---- recombine: hand the albedo back and add the specular half
+    //
+    // Everything above this line ran on light rather than on colour. The diffuse buffer
+    // holds irradiance with the surface albedo divided out, so no width of filter could
+    // smear one material into the one beside it; multiplying it back here restores full
+    // texture detail at native resolution regardless of how hard the filter worked.
+    const ru = this.recombineMaterial.uniforms;
+    ru.tColor.value = diffuse;
+    ru.tSpec.value = specular;
+    ru.tAlbedo.value = this.accumRT[this.accumIdx].textures[2];
+    this._blit(this.recombineMaterial, this.fxRT);
+    let color = this.fxRT.texture;
 
     // ---- emissive particles, into the HDR colour so the bloom chain can see them
     //
     // Fire and sparks are additive because they *emit*. They used to be composited with
     // the smoke, after the tonemap and after bloom, which meant a flame contributed
     // nothing to the glow — the one thing that most makes fire read as fire. Drawing them
-    // here costs a copy (the colour buffer is one we are sampling, so it cannot also be
-    // the render target) and puts them in front of the bloom threshold like any other
-    // bright surface.
+    // here puts them in front of the bloom threshold like any other bright surface.
+    //
+    // No copy needed any more: the recombine above already wrote into fxRT, which is a
+    // target we are not sampling, so the particles can be drawn straight on top of it.
     //
     // Smoke and dust stay where they were, over the finished image: they absorb rather
     // than emit, and blooming them would just fog the picture.
     if (this._particleInst && this.stats.particles > 0) {
-      this.copyMaterial.uniforms.tColor.value = color;
-      this._blit(this.copyMaterial, this.fxRT);
       const prevAuto = this.renderer.autoClear;
       this.renderer.autoClear = false;
       this.renderer.setRenderTarget(this.fxRT);

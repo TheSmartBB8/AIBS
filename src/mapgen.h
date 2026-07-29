@@ -267,6 +267,111 @@ static void placeContainer(MapBuilder& B, const Pals& P, int x, int y, int z, in
     else        { for (int i = 2; i < L; i += 4) B.fill(x, y, z + i, x + lx - 1, y + H - 1, z + i, rib); }
 }
 
+// ---------------------------------------------------------------- industrial process plant
+//
+// The parts of a working harbour that make it read as industrial rather than as a car park
+// with sheds on it: pipe runs at head height, valve wheels, a conveyor, a chute, and a
+// gantry that rides on rails. All of it is climbable and all of it is destructible, which is
+// the point — a pipe rack is only interesting if you can cut the legs out from under it.
+
+/**
+ * A run of pipes carried on trestle legs, with a catwalk alongside and red valve wheels.
+ *
+ * Runs along +z from (x, z0) to (x, z1). The catwalk sits at pipe height on the +x side so
+ * you can walk the length of it and reach every valve, which is what makes the assembly a
+ * place rather than an obstacle.
+ */
+static void placePipeRack(MapBuilder& B, const Pals& P, uint8_t pipePal, uint8_t valvePal,
+                          int x, int y, int z0, int z1, int deckY) {
+    // Legs are single-voxel and widely spaced. The first version used 2-voxel legs every 14,
+    // which at 0.2 m per voxel is a 0.4 m column every 2.8 m — masonry proportions, and it
+    // read as a colonnade. A pipe trestle is spindly; the pipes are the mass, not the frame.
+    const int legEvery = 26;
+    for (int z = z0; z <= z1; z += legEvery) {
+        B.fill(x, y, z, x, deckY - 1, z, P.steel);                  // trestle leg
+        B.fill(x + 8, y, z, x + 8, deckY - 1, z, P.steel);          // catwalk leg
+        B.fill(x, deckY, z, x + 8, deckY, z, P.steel);              // cross brace
+        // diagonal bracing, which is most of what says "steel frame" at a glance
+        for (int s = 0; s < deckY - y; s += 2)
+            B.fill(x + (s * 8) / std::max(1, deckY - y), y + s, z, x + (s * 8) / std::max(1, deckY - y), y + s, z, P.steel);
+    }
+    // Three fat pipes side by side rather than stacked: a pipe rack is a horizontal bundle,
+    // and stacking them put the top one above the handrail where it read as a roof beam.
+    for (int i = 0; i < 3; i++) {
+        int px = x + i * 3;
+        B.fill(px, deckY + 1, z0, px + 2, deckY + 3, z1, pipePal);
+    }
+    // catwalk deck alongside the pipes, with a handrail on the outer edge only — the inner
+    // edge has to stay open or you cannot reach the valves you climbed up for
+    B.fill(x + 9, deckY + 1, z0, x + 12, deckY + 1, z1, P.metal);
+    for (int z = z0; z <= z1; z += 6) B.fill(x + 12, deckY + 2, z, x + 12, deckY + 5, z, P.metalDark);
+    B.fill(x + 12, deckY + 5, z0, x + 12, deckY + 5, z1, P.metalDark);
+    // valve wheels standing proud of the pipe bundle, at deck height
+    for (int z = z0 + 12; z < z1 - 6; z += 26) {
+        B.fill(x + 6, deckY + 4, z, x + 8, deckY + 4, z + 4, valvePal);   // wheel rim
+        B.fill(x + 7, deckY + 4, z + 2, x + 7, deckY + 6, z + 2, valvePal);
+        B.fill(x + 3, deckY + 4, z + 2, x + 6, deckY + 4, z + 2, valvePal); // stem into the pipe
+    }
+    // stair up to the deck at the near end
+    for (int s = 0; s < deckY + 1 - y; s++)
+        B.fill(x + 13 + s, y, z0, x + 13 + s, y + s, z0 + 5, P.metalDark);
+}
+
+/** A hopper-fed conveyor running along +z, ending in a chute tower. */
+static void placeConveyor(MapBuilder& B, const Pals& P, int x, int y, int z0, int z1, int riseY) {
+    // drive housing at the low end
+    B.fill(x - 3, y, z0 - 6, x + 6, y + 9, z0 - 1, P.metalDark);
+    // belt on a rising truss
+    int span = z1 - z0;
+    for (int z = z0; z <= z1; z++) {
+        int by = y + 3 + (riseY * (z - z0)) / (span > 0 ? span : 1);
+        B.fill(x, by, z, x + 3, by + 1, z, P.black);          // belt
+        B.fill(x - 1, by - 1, z, x - 1, by + 2, z, P.steel);  // side rails
+        B.fill(x + 4, by - 1, z, x + 4, by + 2, z, P.steel);
+        if (((z - z0) % 12) == 0 && by - 4 > y)
+            B.fill(x, y, z, x + 3, by - 2, z, P.steel);       // support post
+    }
+    // chute tower at the high end
+    int ty = y + 3 + riseY;
+    B.fill(x - 5, y, z1 + 1, x + 8, ty + 12, z1 + 12, P.metal);
+    B.clear(x - 4, y + 1, z1 + 2, x + 7, ty + 11, z1 + 11);
+    B.fill(x - 2, ty + 12, z1 + 3, x + 5, ty + 18, z1 + 10, P.metalDark);   // hopper
+}
+
+/**
+ * A rail-mounted gantry crane: two A-frame legs on rails, a boom cantilevered out over the
+ * water, and a cockpit under it. Faces the dock, as the real one does.
+ */
+static void placeRailCrane(MapBuilder& B, const Pals& P, uint8_t bodyPal,
+                           int x0, int y, int z, int reach, int height) {
+    // rails it rides on, running along z so the machine reads as able to travel
+    for (int zz = z - 40; zz <= z + 40; zz++) {
+        B.fill(x0, y, zz, x0 + 1, y, zz, P.steel);
+        B.fill(x0 + 22, y, zz, x0 + 23, y, zz, P.steel);
+    }
+    int top = y + height;
+    // splayed A-frame legs, narrowing toward the top
+    for (int s = 0; s < height; s++) {
+        int inset = (s * 5) / height;
+        B.fill(x0 + inset, y + s, z, x0 + inset + 2, y + s, z + 5, bodyPal);
+        B.fill(x0 + 22 - inset - 2, y + s, z, x0 + 22 - inset, y + s, z + 5, bodyPal);
+    }
+    B.fill(x0 + 4, top, z, x0 + 20, top + 3, z + 5, bodyPal);            // head beam
+    // boom, cantilevered toward the water (+x) with a tie-back the other way
+    B.fill(x0 + 18, top + 1, z + 1, x0 + 18 + reach, top + 2, z + 4, bodyPal);
+    B.fill(x0 + 2 - 10, top + 1, z + 1, x0 + 6, top + 2, z + 4, bodyPal);
+    for (int i = 6; i < reach; i += 8)
+        B.fill(x0 + 18 + i, top + 3, z + 2, x0 + 18 + i, top + 6, z + 3, P.steel);
+    B.fill(x0 + 18, top + 6, z + 2, x0 + 18 + reach - 4, top + 6, z + 3, P.steel);  // tie
+    // hoist cable and hook, hanging off the boom
+    B.fill(x0 + 18 + reach - 10, top - 14, z + 2, x0 + 18 + reach - 10, top + 1, z + 2, P.black);
+    B.fill(x0 + 17 + reach - 10, top - 17, z + 1, x0 + 19 + reach - 10, top - 14, z + 3, P.metalDark);
+    // cockpit, slung under the head beam and glazed toward the dock
+    B.fill(x0 + 8, top - 9, z + 5, x0 + 15, top - 1, z + 11, bodyPal);
+    B.clear(x0 + 9, top - 8, z + 6, x0 + 14, top - 2, z + 10);
+    B.fill(x0 + 9, top - 8, z + 11, x0 + 14, top - 3, z + 11, P.glassBlue);
+}
+
 // A blocky residential highrise used as background scenery around a mall map — gives the
 // lot the "surrounded by the city" backdrop a real mall parking lot sits in, without being
 // walkable/enterable content of its own.
@@ -758,6 +863,51 @@ static MapInfo genMarina(World& w, uint32_t seed = 4242) {
         placeContainer(B, P, 91, Q + 13, 182, 1, 1);       // hanging container
     }
 
+    // ---- industrial process plant, west strip x=8..58
+    //
+    // The harbour had storage and boats but nothing that processed anything, so it read as a
+    // car park with sheds on it. This is the run of plant that makes it industrial: tanks
+    // feeding a pipe rack, the rack carrying a catwalk you can walk the length of, a conveyor
+    // taking material up into a chute tower, and a gantry on rails cantilevered over the
+    // dock. Laid out as one line along the yard's west edge so the whole thing is legible
+    // from the road, and so the road plus the container yard form the backwards L the real
+    // West Point industrial area is shaped like.
+    {
+        uint8_t pipeGrey  = w.addPal(150, 152, 148, M_MED);
+        uint8_t valveRed  = w.addPal(186, 54, 42, M_MED);
+        uint8_t craneOchre = w.addPal(196, 146, 44, M_HEAVY);
+
+        B.fill(8, Q - 1, 60, 58, Q - 1, 250, P.concreteDark);
+
+        // Pipe rack runs north out of the fuel depot, so the pipes visibly come *from* the
+        // tanks rather than starting nowhere.
+        placePipeRack(B, P, pipeGrey, valveRed, 20, Q, 56, 168, Q + 16);
+        // and the far end feeds a pair of receiving tanks
+        for (int t = 0; t < 2; t++) {
+            int cx = 30, cz = 186 + t * 30;
+            B.cylY(cx, cz, Q, Q + 22, 10.f, tankWhite);
+            B.ringY(cx, cz, Q + 10, Q + 12, 10.4f, 9.6f, tankRed);
+            B.sphere(cx, Q + 22, cz, 10.f, tankWhite);
+            B.fill(21, Q + 18, cz - 1, 30, Q + 20, cz + 1, pipeGrey);   // feed from the rack
+        }
+
+        // Conveyor from a hopper up into the chute tower.
+        placeConveyor(B, P, 46, Q, 96, 150, 22);
+
+        // Gantry on rails, out at the quay edge, boom reaching over the water.
+        placeRailCrane(B, P, craneOchre, 156, Q, 96, 40, 46);
+
+        // Loose industrial clutter along the run: pallets, barrels, crates.
+        for (int i = 0; i < 22; i++) {
+            int px = B.rng.ri(34, 56), pz = B.rng.ri(64, 246);
+            if (B.rng.uf() < 0.45f) placeBarrel(B, P, px, Q, pz);
+            else {
+                int s = B.rng.ri(3, 7);
+                B.fill(px, Q, pz, px + s, Q + s, pz + s, B.rng.uf() < 0.5f ? P.wood : P.woodDark);
+            }
+        }
+    }
+
     // ---- fuel depot (explosive!)
     {
         B.fill(14, Q - 1, 14, 56, Q - 1, 48, P.concreteDark);
@@ -864,8 +1014,12 @@ static MapInfo genMarina(World& w, uint32_t seed = 4242) {
         B.fill(x, Q, z, x + 5, Q + 1, z + 5, P.wood);
         if (B.rng.uf() < 0.5f) B.fill(x + 1, Q + 2, z + 1, x + 4, Q + 4, z + 4, P.woodLight);
     }
+    // Trees, kept clear of the process plant. This pass runs after the plant is built and
+    // used to stamp straight through it, so the first render of the pipe rack had trees
+    // growing up between the trestles and the whole assembly read as a pergola rather than
+    // as industrial plant. Greenery belongs south of the yard, not inside it.
     for (int i = 0; i < 14; i++) {
-        int x = B.rng.ri(8, 40), z = B.rng.ri(60, 300);
+        int x = B.rng.ri(8, 40), z = B.rng.ri(258, 300);
         placeTree(B, P, x, Q, z);
     }
     placeTree(B, P, 20, Q, 290);

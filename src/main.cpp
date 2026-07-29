@@ -971,6 +971,62 @@ static int selftestMain() {
 }
 
 #ifndef _WIN32
+// Top-down plan of a map, straight off the voxel grid. No GL involved, so this works on the
+// plain selftest build too.
+//
+// Placing a review camera by guessing world coordinates wasted several slow renders in a
+// row, each one pointed at the wrong building. A plan view answers "what is actually at x,z
+// and how tall is it" in one cheap pass, which is the question that was really being asked.
+// Colour is the topmost solid voxel's own palette colour shaded by height, with a hard edge
+// where the height steps, so walls and tank tops separate from the ground they stand on.
+static int topdownMain(int argc, char** argv) {
+    int map = 0;
+    const char* out = "shots/plan.ppm";
+    for (int i = 2; i < argc; i++) {
+        if (!std::strcmp(argv[i], "-m") && i + 1 < argc) map = std::atoi(argv[++i]);
+        else if (!std::strcmp(argv[i], "-o") && i + 1 < argc) out = argv[++i];
+    }
+    static World w;
+    generateMap(w, map);
+
+    std::vector<int> tops((size_t)WX * WZ, -1);
+    int maxTop = 1;
+    for (int z = 0; z < WZ; z++)
+        for (int x = 0; x < WX; x++)
+            for (int y = WY - 1; y >= 0; y--) {
+                if (w.vox[w.vidx(x, y, z)] == 0) continue;
+                tops[(size_t)z * WX + x] = y;
+                if (y > maxTop) maxTop = y;
+                break;
+            }
+
+    std::vector<unsigned char> px((size_t)WX * WZ * 3, 0);
+    for (int z = 0; z < WZ; z++)
+        for (int x = 0; x < WX; x++) {
+            size_t i = (size_t)z * WX + x;
+            int y = tops[i];
+            unsigned char* o = &px[i * 3];
+            if (y < 0) { o[0] = o[1] = o[2] = 12; continue; }
+            const PalEntry& pe = w.palette[w.vox[w.vidx(x, y, z)]];
+            float t = 0.45f + 0.55f * (float)y / (float)maxTop;
+            int wn = (x > 0 ? tops[i - 1] : y), sn = (z > 0 ? tops[i - WX] : y);
+            if (y > wn + 2 || y > sn + 2) t *= 1.35f;
+            else if (y < wn - 2 || y < sn - 2) t *= 0.6f;
+            o[0] = (unsigned char)std::min(255.f, pe.r * t);
+            o[1] = (unsigned char)std::min(255.f, pe.g * t);
+            o[2] = (unsigned char)std::min(255.f, pe.b * t);
+        }
+
+    FILE* f = std::fopen(out, "wb");
+    if (!f) { std::fprintf(stderr, "cannot write %s\n", out); return 1; }
+    std::fprintf(f, "P6\n%d %d\n255\n", WX, WZ);
+    for (int z = 0; z < WZ; z++) std::fwrite(&px[(size_t)z * WX * 3], 1, (size_t)WX * 3, f);
+    std::fclose(f);
+    std::printf("wrote %s (%dx%d voxels, tallest y=%d, %.2f m per voxel)\n",
+                out, WX, WZ, maxTop, VOXEL_SIZE);
+    return 0;
+}
+
 #ifdef VOXWRECK_EGL
 // Headless render: build the world, run the game loop for a fixed number of frames with a
 // fixed timestep, and write the last frame out.
@@ -985,6 +1041,8 @@ static int renderMain(int argc, char** argv) {
     bool menu = false, noaccum = false, nodenoise = false;
     int maxacc = -1; float phil = -1.f;
     bool boom = false, nospin = false; float boomDist = 6.f, boomRadius = 3.2f; int boomRun = 12;
+    // Free camera, for reviewing a map rather than whatever the spawn happens to face.
+    bool freecam = false; float cx = 0, cy = 0, cz = 0, cyaw = 0, cpitch = 0;
     const char* out = "shots/native.ppm";
     for (int i = 2; i < argc; i++) {
         if (!std::strcmp(argv[i], "-w") && i + 1 < argc) W = std::atoi(argv[++i]);
@@ -999,6 +1057,11 @@ static int renderMain(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--phil") && i + 1 < argc) phil = (float)std::atof(argv[++i]);
         else if (!std::strcmp(argv[i], "--boom")) boom = true;
         else if (!std::strcmp(argv[i], "--nospin")) nospin = true;
+        else if (!std::strcmp(argv[i], "--cam") && i + 5 < argc) {
+            freecam = true;
+            cx = (float)std::atof(argv[++i]); cy = (float)std::atof(argv[++i]); cz = (float)std::atof(argv[++i]);
+            cyaw = (float)std::atof(argv[++i]); cpitch = (float)std::atof(argv[++i]);
+        }
         else if (!std::strcmp(argv[i], "--boom-dist") && i + 1 < argc) boomDist = (float)std::atof(argv[++i]);
         else if (!std::strcmp(argv[i], "--boom-radius") && i + 1 < argc) boomRadius = (float)std::atof(argv[++i]);
         else if (!std::strcmp(argv[i], "--boom-run") && i + 1 < argc) boomRun = std::atoi(argv[++i]);
@@ -1028,8 +1091,22 @@ static int renderMain(int argc, char** argv) {
     // as much as because the estimate improved, and a run comparing sample counts is really
     // comparing two different pictures. Settling first still lets debris come to rest and
     // gives time-based effects a sensible starting state.
+    // Park the player where the camera should be. The renderer takes its view from the
+    // player, so moving the player is the whole mechanism — and it means the review camera
+    // sees exactly what a player standing there would see, rather than a separate path that
+    // could drift away from the real one.
+    auto placeCam = [&]() {
+        if (!freecam) return;
+        game.player.pos = vec3(cx, cy, cz);
+        game.player.vel = vec3(0, 0, 0);
+        game.player.yaw = cyaw * 3.14159265f / 180.f;
+        game.player.pitch = cpitch * 3.14159265f / 180.f;
+        game.player.flying = true;   // no gravity while reviewing a map from the air
+    };
+    placeCam();
+
     const int settle = frames < 30 ? frames : 30;
-    for (int i = 0; i < settle; i++) { game.update(1.0f / 60.0f); game.renderFrame(); }
+    for (int i = 0; i < settle; i++) { game.update(1.0f / 60.0f); placeCam(); game.renderFrame(); }
 
     // Optional blast, for photographing destruction. Placed relative to the spawn so it does
     // not need to know anything about a particular map's layout.
@@ -1073,6 +1150,7 @@ int main(int argc, char** argv) {
 #ifdef VOXWRECK_EGL
     if (argc > 1 && !std::strcmp(argv[1], "--render")) return renderMain(argc, argv);
 #endif
+    if (argc > 1 && !std::strcmp(argv[1], "--topdown")) return topdownMain(argc, argv);
     (void)argc; (void)argv;
     return selftestMain();
 }

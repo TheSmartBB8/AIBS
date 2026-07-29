@@ -28,6 +28,42 @@ static inline vec3 vcross(const vec3& a, const vec3& b) {
 static inline float vlen(const vec3& a) { return sqrtf(vdot(a, a)); }
 static inline vec3 vnorm(const vec3& a) { float l = vlen(a); return l > 1e-8f ? a * (1.f/l) : vec3(0,0,0); }
 static inline vec3 vlerp(const vec3& a, const vec3& b, float t) { return a + (b-a)*t; }
+
+// ---------------------------------------------------------------- orientation
+//
+// A quaternion, for tumbling debris. Stored rather than a matrix because integrating an
+// angular velocity into a matrix drifts out of orthonormality within a few seconds of
+// substeps at 120 Hz, and a sheared piece of rubble is a very obvious artifact; a quaternion
+// only needs a normalise.
+struct quat {
+    float x = 0, y = 0, z = 0, w = 1;
+};
+
+/** Integrate an angular velocity (radians/sec, world axes) over dt. */
+static inline quat quat_integrate(const quat& q, const vec3& w, float dt) {
+    // dq/dt = 0.5 * omega * q, with omega the pure quaternion (w, 0).
+    quat d;
+    d.x = 0.5f * ( w.x * q.w + w.y * q.z - w.z * q.y);
+    d.y = 0.5f * (-w.x * q.z + w.y * q.w + w.z * q.x);
+    d.z = 0.5f * ( w.x * q.y - w.y * q.x + w.z * q.w);
+    d.w = 0.5f * (-w.x * q.x - w.y * q.y - w.z * q.z);
+    quat r{ q.x + d.x * dt, q.y + d.y * dt, q.z + d.z * dt, q.w + d.w * dt };
+    float l = sqrtf(r.x*r.x + r.y*r.y + r.z*r.z + r.w*r.w);
+    if (l < 1e-8f) return quat{};
+    float inv = 1.f / l;
+    r.x *= inv; r.y *= inv; r.z *= inv; r.w *= inv;
+    return r;
+}
+
+/** Column-major 3x3, laid out for glUniformMatrix3fv. */
+static inline void quat_to_mat3(const quat& q, float* m) {
+    float xx = q.x*q.x, yy = q.y*q.y, zz = q.z*q.z;
+    float xy = q.x*q.y, xz = q.x*q.z, yz = q.y*q.z;
+    float wx = q.w*q.x, wy = q.w*q.y, wz = q.w*q.z;
+    m[0] = 1 - 2*(yy + zz); m[1] = 2*(xy + wz);     m[2] = 2*(xz - wy);
+    m[3] = 2*(xy - wz);     m[4] = 1 - 2*(xx + zz); m[5] = 2*(yz + wx);
+    m[6] = 2*(xz + wy);     m[7] = 2*(yz - wx);     m[8] = 1 - 2*(xx + yy);
+}
 static inline float clampf(float v, float a, float b) { return v < a ? a : (v > b ? b : v); }
 static inline float lerpf(float a, float b, float t) { return a + (b-a)*t; }
 

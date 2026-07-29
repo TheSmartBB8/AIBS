@@ -984,6 +984,7 @@ static int renderMain(int argc, char** argv) {
     int W = 960, H = 540, frames = 90, map = 0;
     bool menu = false, noaccum = false, nodenoise = false;
     int maxacc = -1; float phil = -1.f;
+    bool boom = false, nospin = false; float boomDist = 6.f, boomRadius = 3.2f; int boomRun = 12;
     const char* out = "shots/native.ppm";
     for (int i = 2; i < argc; i++) {
         if (!std::strcmp(argv[i], "-w") && i + 1 < argc) W = std::atoi(argv[++i]);
@@ -996,6 +997,11 @@ static int renderMain(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--nodenoise")) nodenoise = true;
         else if (!std::strcmp(argv[i], "--samples") && i + 1 < argc) maxacc = std::atoi(argv[++i]);
         else if (!std::strcmp(argv[i], "--phil") && i + 1 < argc) phil = (float)std::atof(argv[++i]);
+        else if (!std::strcmp(argv[i], "--boom")) boom = true;
+        else if (!std::strcmp(argv[i], "--nospin")) nospin = true;
+        else if (!std::strcmp(argv[i], "--boom-dist") && i + 1 < argc) boomDist = (float)std::atof(argv[++i]);
+        else if (!std::strcmp(argv[i], "--boom-radius") && i + 1 < argc) boomRadius = (float)std::atof(argv[++i]);
+        else if (!std::strcmp(argv[i], "--boom-run") && i + 1 < argc) boomRun = std::atoi(argv[++i]);
     }
     Platform plat;
     if (!plat.init("VoxWreck (headless)", W, H)) return 1;
@@ -1024,6 +1030,36 @@ static int renderMain(int argc, char** argv) {
     // gives time-based effects a sensible starting state.
     const int settle = frames < 30 ? frames : 30;
     for (int i = 0; i < settle; i++) { game.update(1.0f / 60.0f); game.renderFrame(); }
+
+    // Optional blast, for photographing destruction. Placed relative to the spawn so it does
+    // not need to know anything about a particular map's layout.
+    if (boom) {
+        vec3 at = game.player.pos + game.player.forwardFlat() * boomDist + vec3(0, 1.2f, 0);
+        DestructionOp op{};
+        op.x = at.x; op.y = at.y; op.z = at.z;
+        op.radius = boomRadius;
+        op.matMask = 0xFFFFFFFFu;
+        op.px = 0; op.py = 1; op.pz = 0;
+        op.big = 1;
+        applyDestructionOp(game.wctx, op, true);
+        // A/B for the tumble: pin every cluster back to its authored orientation, which is
+        // exactly what the renderer did before clusters had any orientation at all.
+        if (nospin)
+            for (auto& fc : game.world.clusters) { fc.spinning = false; fc.angVel = vec3(0,0,0); fc.rot = quat(); }
+        // Debris has to be in flight to be worth a photograph, so run real time after the
+        // blast rather than freezing immediately.
+        for (int i = 0; i < boomRun; i++) { game.update(1.0f / 60.0f); game.renderFrame(); }
+        int spin = 0;
+        float maxW = 0;
+        for (auto& fc : game.world.clusters) {
+            if (fc.spinning) spin++;
+            float w = vlen(fc.angVel);
+            if (w > maxW) maxW = w;
+        }
+        std::printf("blast: %d clusters, %d spinning, peak spin %.2f rad/s\n",
+                    (int)game.world.clusters.size(), spin, maxW);
+    }
+
     for (int i = settle; i < frames; i++) { game.update(0.0f); game.renderFrame(); }
     if (!plat.writePPM(out)) { std::fprintf(stderr, "could not write %s\n", out); return 1; }
     std::printf("wrote %s (%dx%d, %d frames, %d accumulated samples)\n",

@@ -70,6 +70,26 @@ struct FallingCluster {
     float age = 0;              // total sim time, forces settling eventually
     float impactSpeed = 0;      // biggest collision speed this step (game layer reads for fx)
     bool landed = false;
+
+    // ---- tumbling, while airborne only
+    //
+    // Debris that slides through the air without rotating is one of the most obviously
+    // un-Teardown things this renderer did, and it was a deliberate simplification: the
+    // collision, crushing, shattering and welding below all index the grid as `v.x + ox`,
+    // which is only meaningful while the piece stays axis-aligned.
+    //
+    // So the piece spins freely in flight and stops spinning the instant it touches
+    // anything, reverting to its authored orientation. That keeps every line of the landing
+    // solver working on axis-aligned data exactly as before — including the weld back into
+    // the grid, which has no meaning at an arbitrary angle — while the part the eye actually
+    // reads, a chunk of masonry tumbling through the air, is real.
+    //
+    // The approximation is that collision while spinning uses the un-rotated footprint. That
+    // is harmless: a spinning cluster is by definition one that has not hit anything yet, and
+    // the footprint only decides *when* first contact happens, to within half a voxel.
+    quat rot;                   // orientation about the cluster centre
+    vec3 angVel;                // radians/sec, world axes
+    bool spinning = false;      // cleared on first contact, never set again
     bool facesDirty = true;     // face lists need (re)building (after detach or shatter)
     std::vector<int> faceCells[6];   // indices into voxels: exposed cells per axis dir
                                      // order: +x,-x,+y,-y,+z,-z
@@ -394,6 +414,29 @@ struct World {
             vec3 radial = vnorm(fc.center - impulse.center);
             vec3 dir = vnorm(radial + impulse.pushDir * 0.6f);
             fc.vel = dir * impulse.strength + vec3(0, impulse.strength * 0.35f, 0);
+
+            // Spin, from the blast acting off-centre.
+            //
+            // Torque is r x F about the cluster's own centre, with r the offset from the
+            // blast to that centre — so a piece blown squarely from below barely rotates
+            // while one clipped at its edge cartwheels, which is what makes a collapse read
+            // as physical rather than as an expanding pile.
+            //
+            // Divided by an inertia proxy that grows with the piece's extent, because a long
+            // wall section must not spin like a brick. Purely a scale: the real tensor would
+            // need the collision solver to understand orientation, which is exactly the
+            // rewrite this design avoids.
+            vec3 r = fc.center - impulse.center;
+            vec3 torque = vcross(r, dir * impulse.strength);
+            float extent = std::max(std::max(maxx - minx, maxy - miny), maxz - minz) + 1;
+            float inertiaProxy = 1.f + extent * extent * 0.04f;
+            fc.angVel = torque * (1.6f / inertiaProxy);
+            // Cap it: a huge impulse close to the centre can produce an r x F that spins the
+            // piece into a blur, which reads as a glitch rather than as force.
+            const float MAXW = 7.f;
+            float w = vlen(fc.angVel);
+            if (w > MAXW) fc.angVel = fc.angVel * (MAXW / w);
+            fc.spinning = vdot(fc.angVel, fc.angVel) > 0.04f;
         }
         clusters.push_back(std::move(fc));
     }
@@ -467,6 +510,7 @@ struct World {
                 // fc.impactSpeed accumulates the max collision speed; the game layer
                 // reads it for impact fx and clears it once consumed
                 fc.vel.y -= 22.f * H;
+                if (fc.spinning) fc.rot = quat_integrate(fc.rot, fc.angVel, H);
                 // clamp: keeps single-substep movement below one voxel per axis
                 fc.vel.x = clampf(fc.vel.x, -20.f, 20.f);
                 fc.vel.y = clampf(fc.vel.y, -23.f, 20.f);
@@ -515,6 +559,13 @@ struct World {
                         if (blocked) {
                             float speed2 = fabsf(*vv);
                             fc.impactSpeed = std::max(fc.impactSpeed, speed2);
+                            // First contact ends the tumble for good. Everything below this
+                            // point — crushing, shattering, settling, welding back into the
+                            // grid — reads the voxel list as axis-aligned, so the piece
+                            // returns to its authored orientation the moment it lands.
+                            fc.spinning = false;
+                            fc.angVel = vec3(0, 0, 0);
+                            fc.rot = quat();
                             // hard impact: the cluster's own leading face shatters (except
                             // heavy material), like debris chipping apart when it slams down
                             if (speed2 > 6.f && !shattered) {

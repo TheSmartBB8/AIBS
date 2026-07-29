@@ -232,6 +232,10 @@ layout(location=4) in float aRefl;      // 0..1 specular reflectivity
 layout(location=5) in float aSmooth;    // 0..1 smoothness (1-roughness)
 uniform mat4 uViewProj;
 uniform vec3 uOffset;                   // falling cluster offset (meters)
+// Tumble, for detached debris in flight. Identity for the static world and for anything
+// that has already landed, so the ordinary chunk path pays a single mat3 multiply.
+uniform mat3 uSpin;
+uniform vec3 uSpinCenter;
 out vec3 vWorld;
 out vec4 vColor;
 out vec3 vNormal;
@@ -240,10 +244,12 @@ out float vRefl;
 out float vSmooth;
 const vec3 NRM[6] = vec3[6](vec3(1,0,0), vec3(-1,0,0), vec3(0,1,0), vec3(0,-1,0), vec3(0,0,1), vec3(0,0,-1));
 void main() {
-    vec3 wp = aPos + uOffset;
+    vec3 wp = uSpin * (aPos - uSpinCenter) + uSpinCenter + uOffset;
     vWorld = wp;
     vColor = aColor;
-    vNormal = NRM[int(aNormal + 0.5)];
+    // The normal must ride the rotation too, or a tumbling piece keeps lighting
+    // itself as though its faces still pointed the way they were authored.
+    vNormal = uSpin * NRM[int(aNormal + 0.5)];
     vAO = aAO;
     vRefl = aRefl;
     vSmooth = aSmooth;
@@ -1376,9 +1382,17 @@ struct Renderer {
         glEnable(GL_CULL_FACE);
     }
 
+    /** Identity spin — the static world, and anything that has already landed. */
+    void clearSpin(GLuint prog) {
+        static const float I3[9] = {1,0,0, 0,1,0, 0,0,1};
+        glUniformMatrix3fv(glGetUniformLocation(prog, "uSpin"), 1, GL_FALSE, I3);
+        glUniform3f(glGetUniformLocation(prog, "uSpinCenter"), 0, 0, 0);
+    }
+
     void beginChunks(const MapInfo& mi, float ambient) {
         drawTo(true);
         glUseProgram(progChunk);
+        clearSpin(progChunk);
         setSceneUniforms(progChunk, mi);
         glUniform1f(glGetUniformLocation(progChunk, "uVoxelSize"), VOXEL_SIZE);
         glUniform1f(glGetUniformLocation(progChunk, "uAmbient"), ambient);
@@ -1425,9 +1439,18 @@ struct Renderer {
             if (!fc.gpuReady) uploadClusterMesh(fc);
             if (fc.indexCount == 0) continue;
             glUniform3f(glGetUniformLocation(progChunk, "uOffset"), fc.offset.x, fc.offset.y, fc.offset.z);
+            if (fc.spinning) {
+                float m[9];
+                quat_to_mat3(fc.rot, m);
+                glUniformMatrix3fv(glGetUniformLocation(progChunk, "uSpin"), 1, GL_FALSE, m);
+                glUniform3f(glGetUniformLocation(progChunk, "uSpinCenter"), fc.center.x, fc.center.y, fc.center.z);
+            } else {
+                clearSpin(progChunk);
+            }
             glBindVertexArray(fc.vao);
             glDrawElements(GL_TRIANGLES, (GLsizei)fc.indexCount, GL_UNSIGNED_INT, nullptr);
         }
+        clearSpin(progChunk);
         glUniform3f(glGetUniformLocation(progChunk, "uOffset"), 0, 0, 0);
         glBindVertexArray(0);
     }

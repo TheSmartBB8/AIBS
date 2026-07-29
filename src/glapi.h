@@ -146,6 +146,7 @@ typedef void GLvoid;
     X(void, glUniform3fv, (GLint, GLsizei, const GLfloat*)) \
     X(void, glUniform4fv, (GLint, GLsizei, const GLfloat*)) \
     X(void, glUniform1fv, (GLint, GLsizei, const GLfloat*)) \
+    X(void, glUniformMatrix3fv, (GLint, GLsizei, GLboolean, const GLfloat*)) \
     X(void, glUniformMatrix4fv, (GLint, GLsizei, GLboolean, const GLfloat*)) \
     X(void, glGenBuffers, (GLsizei, GLuint*)) \
     X(void, glDeleteBuffers, (GLsizei, const GLuint*)) \

@@ -528,15 +528,37 @@ static const char* VS_WATER = R"(#version 330 core
 layout(location=0) in vec2 aPos;      // xz in meters
 uniform mat4 uViewProj;
 uniform float uWaterLevel;
+// Simulation field: r = surface displacement, gb = surface gradient, a = still-water depth.
+uniform sampler2D uWater;
+uniform vec2 uWaterOrigin;            // world metres of the field's (0,0) corner
+uniform vec2 uWaterSize;              // world metres the field spans
 out vec3 vWorld;
+out vec3 vFieldN;                     // surface normal from the simulated gradient
+out float vDepth;                     // still-water depth under this point
+out float vDisp;
 void main() {
-    vWorld = vec3(aPos.x, uWaterLevel, aPos.y);
+    vec2 uv = (aPos - uWaterOrigin) / uWaterSize;
+    vec4 f = texture(uWater, uv);
+    // Real displacement, not just a perturbed normal. The surface used to be a flat quad
+    // with the waves painted on as a normal, which holds up until anything crosses the
+    // waterline: a hull sat in a mirror-flat plane while its reflection rippled.
+    vWorld = vec3(aPos.x, uWaterLevel + f.r, aPos.y);
+    vDisp = f.r;
+    vDepth = f.a;
+    // Gradients are per-cell differences, so scale by cell size to get a true slope.
+    vFieldN = normalize(vec3(-f.g * 12.0, 1.0, -f.b * 12.0));
     gl_Position = uViewProj * vec4(vWorld, 1.0);
 }
 )";
+// Single-layer water, in the sense Unreal uses the term: one surface that carries its own
+// depth-dependent absorption, a Fresnel-weighted reflection, and foam — rather than a flat
+// tinted plane with waves drawn on it.
 static std::string fsWater() {
     std::string s = R"(#version 330 core
 in vec3 vWorld;
+in vec3 vFieldN;
+in float vDepth;
+in float vDisp;
 out vec4 FragColor;
 uniform vec3 uCamPos;
 uniform vec3 uWaterColor;
@@ -545,27 +567,75 @@ uniform float uFogDensity;
 )";
     s += GLSL_SKY_COMMON;
     s += R"(
+// Beer-Lambert extinction, per channel, in inverse metres. Red is absorbed within a metre or
+// so and blue takes many, which is the entire reason water is blue and why a shallow patch
+// over sand is not. A single scalar tint cannot express it: the old shader used one colour
+// everywhere, so the harbour was the same slab of teal from the shoreline to the deep, and
+// no amount of wave detail fixes that because the cue is chromatic, not geometric.
+const vec3 EXTINCT = vec3(0.46, 0.16, 0.09);
+
 void main() {
     vec2 p = vWorld.xz;
     float t = uTime;
-    // sum-of-sines normal perturbation
-    float h1 = sin(p.x * 1.1 + t * 1.3) * 0.5 + sin(p.x * 0.4 - p.y * 0.7 + t * 0.9) * 0.7;
-    float h2 = sin(p.y * 1.3 + t * 1.1) * 0.5 + sin(p.x * 0.8 + p.y * 0.5 - t * 1.4) * 0.6;
-    float e = 0.15;
-    vec3 N = normalize(vec3(-(h1) * e, 1.0, -(h2) * e));
+
+    // The simulated surface carries the large waves. Fine ripples stay procedural: the grid
+    // is half-metre and cannot represent them, and they are the one part of a water surface
+    // where a sum of sines is honestly the right model.
+    float r1 = sin(p.x * 5.3 + t * 2.1) * 0.5 + sin(p.x * 2.7 - p.y * 3.1 + t * 1.7) * 0.5;
+    float r2 = sin(p.y * 4.9 + t * 1.9) * 0.5 + sin(p.x * 3.3 + p.y * 2.3 - t * 2.3) * 0.5;
+    vec3 N = normalize(vFieldN + vec3(-r1 * 0.06, 0.0, -r2 * 0.06));
+
     vec3 V = normalize(uCamPos - vWorld);
+    float NoV = max(dot(N, V), 0.0);
+
+    // Reflection. Grazing rays see sky, steep ones see into the water.
     vec3 R = reflect(-V, N);
     R.y = abs(R.y) + 0.02;
     vec3 refl = skyColor(normalize(R));
-    float fres = pow(1.0 - max(dot(N, V), 0.0), 5.0) * 0.9 + 0.08;
-    vec3 col = mix(uWaterColor, refl, fres);
-    // sun glint
+
+    // Schlick against water's real index of refraction: F0 = ((1-1.33)/(1+1.33))^2 = 0.02.
+    // The old shader used a 0.9 scale with a 0.08 floor, which is far too reflective looking
+    // straight down — the harbour behaved like a sheet of chrome from directly above.
+    float fres = 0.02 + 0.98 * pow(1.0 - NoV, 5.0);
+
+    // How far a viewing ray travels through the water before it hits the bed. At a grazing
+    // angle that is much further than the depth, which is why a lake goes opaque toward the
+    // horizon and clear at your feet.
+    float pathLen = vDepth / max(NoV, 0.12);
+    vec3 trans = exp(-EXTINCT * pathLen);
+    // Bed colour, dimmed by what the water has already absorbed above it. No refraction
+    // sample here — the scene colour is not available at this point in the frame — so this
+    // stands in for the bed with the sand tone the maps use, tinted by depth.
+    vec3 bed = vec3(0.62, 0.56, 0.42) * mix(0.35, 1.0, exp(-pathLen * 0.35));
+    vec3 body = mix(uWaterColor, bed, trans);
+
+    vec3 col = mix(body, refl, fres);
+
+    // Sun glint, sharpened by how much of the sun disc the slope can catch.
     vec3 toSun = -uSunDir;
     col += uSunColor * pow(max(dot(R, toSun), 0.0), 240.0) * 2.0;
+
+    // Foam, from two causes, as in the references: a band where the water shoals against the
+    // land, and streaks on the steep faces of waves. Both keyed off quantities the
+    // simulation already produces, so foam appears where a blast ring passes rather than
+    // being scattered around by a noise function.
+    float shore = 1.0 - smoothstep(0.0, 1.1, vDepth);
+    float steep = smoothstep(0.16, 0.55, 1.0 - N.y);
+    float crest = smoothstep(0.02, 0.14, vDisp);
+    float foam = clamp(shore * 0.85 + steep * 0.9 + crest * 0.5, 0.0, 1.0);
+    // Break the shoreline band up, or it reads as a painted stripe following the coast.
+    foam *= 0.65 + 0.35 * sin(p.x * 7.0 + p.y * 5.0 + t * 1.3);
+    col = mix(col, vec3(0.92, 0.95, 0.97), clamp(foam, 0.0, 1.0) * 0.85);
+
     float dist = length(vWorld - uCamPos);
     float f = 1.0 - exp(-pow(dist * uFogDensity, 1.5));
     col = mix(col, uFogColor, clamp(f, 0.0, 1.0));
-    FragColor = vec4(col, 0.93);
+
+    // Shallow water is see-through and deep water is not, so opacity follows the same path
+    // length the colour does. A constant 0.93 made a puddle as opaque as the open sea.
+    float alpha = mix(0.55, 0.97, 1.0 - exp(-pathLen * 0.8));
+    alpha = max(alpha, foam * 0.9);
+    FragColor = vec4(col, alpha);
 }
 )";
     return s;
@@ -905,7 +975,8 @@ struct Renderer {
     // fullscreen quad
     GLuint fsVAO = 0, fsVBO = 0;
     // water quad
-    GLuint waterVAO = 0, waterVBO = 0;
+    GLuint waterVAO = 0, waterVBO = 0, waterTex = 0;
+    int waterVerts = 0, waterTexW = 0, waterTexH = 0;
     // particles
     GLuint partVAO = 0, partQuadVBO = 0, partInstVBO = 0;
     // UI
@@ -988,16 +1059,37 @@ struct Renderer {
         glEnableVertexAttribArray(0);
         glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 8, (void*)0);
 
-        // water quad (large, centered on map)
+        // Water surface: a tessellated grid, not two triangles.
+        //
+        // The surface is displaced per-vertex by the simulation now, so it needs vertices to
+        // displace. Over the map it is stepped at half the simulation cell so a wave is
+        // resolved rather than aliased; beyond the map edge it becomes a coarse skirt out to
+        // the horizon, since open sea only ever needs to be flat and blue.
         {
-            float cx = WX * VOXEL_SIZE * 0.5f, cz = WZ * VOXEL_SIZE * 0.5f, R = 1500.f;
-            float wq[] = {cx - R, cz - R, cx + R, cz - R, cx + R, cz + R,
-                          cx - R, cz - R, cx + R, cz + R, cx - R, cz + R};
+            const float mapX = WX * VOXEL_SIZE, mapZ = WZ * VOXEL_SIZE;
+            const float step = 0.12f;   // ~5x the simulation resolution; cost is not the constraint here
+            const int gx = (int)(mapX / step), gz = (int)(mapZ / step);
+            std::vector<float> wq;
+            wq.reserve((size_t)gx * gz * 12 + 64);
+            auto quad = [&](float x0, float z0, float x1, float z1) {
+                float v[12] = {x0, z0, x1, z0, x1, z1, x0, z0, x1, z1, x0, z1};
+                wq.insert(wq.end(), v, v + 12);
+            };
+            for (int z = 0; z < gz; z++)
+                for (int x = 0; x < gx; x++)
+                    quad(x * step, z * step, (x + 1) * step, (z + 1) * step);
+            // skirt: four big quads filling out to the horizon around the simulated patch
+            const float R = 1500.f;
+            quad(-R, -R, mapX + R, 0);
+            quad(-R, mapZ, mapX + R, mapZ + R);
+            quad(-R, 0, 0, mapZ);
+            quad(mapX, 0, mapX + R, mapZ);
+            waterVerts = (int)(wq.size() / 2);
             glGenVertexArrays(1, &waterVAO);
             glBindVertexArray(waterVAO);
             glGenBuffers(1, &waterVBO);
             glBindBuffer(GL_ARRAY_BUFFER, waterVBO);
-            glBufferData(GL_ARRAY_BUFFER, sizeof wq, wq, GL_STATIC_DRAW);
+            glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(wq.size() * sizeof(float)), wq.data(), GL_STATIC_DRAW);
             glEnableVertexAttribArray(0);
             glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 8, (void*)0);
         }
@@ -1455,6 +1547,26 @@ struct Renderer {
         glBindVertexArray(0);
     }
 
+    /** Hand the simulation's packed field to the GPU. Called once per frame while it runs. */
+    void uploadWaterField(const float* rgba, int w, int h) {
+        if (!waterTex) {
+            glGenTextures(1, &waterTex);
+            glBindTexture(GL_TEXTURE_2D, waterTex);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            waterTexW = 0;
+        }
+        glBindTexture(GL_TEXTURE_2D, waterTex);
+        if (w != waterTexW || h != waterTexH) {
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, w, h, 0, GL_RGBA, GL_FLOAT, rgba);
+            waterTexW = w; waterTexH = h;
+        } else {
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, w, h, 0, GL_RGBA, GL_FLOAT, rgba);
+        }
+    }
+
     void drawWater(const MapInfo& mi) {
         drawTo(false);
         if (!mi.hasWater) return;
@@ -1462,11 +1574,20 @@ struct Renderer {
         setSceneUniforms(progWater, mi);
         glUniform1f(glGetUniformLocation(progWater, "uWaterLevel"), mi.waterLevel);
         glUniform3f(glGetUniformLocation(progWater, "uWaterColor"), mi.waterColor.x, mi.waterColor.y, mi.waterColor.z);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, waterTex);
+        glUniform1i(glGetUniformLocation(progWater, "uWater"), 0);
+        glUniform2f(glGetUniformLocation(progWater, "uWaterOrigin"), 0.f, 0.f);
+        glUniform2f(glGetUniformLocation(progWater, "uWaterSize"), WX * VOXEL_SIZE, WZ * VOXEL_SIZE);
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         glDisable(GL_CULL_FACE);
+        // Depth-write off: the surface is transparent, and writing depth from it made the
+        // far half of the sea occlude the near half wherever a wave crossed in front.
+        glDepthMask(GL_FALSE);
         glBindVertexArray(waterVAO);
-        glDrawArrays(GL_TRIANGLES, 0, 6);
+        glDrawArrays(GL_TRIANGLES, 0, waterVerts);
+        glDepthMask(GL_TRUE);
         glEnable(GL_CULL_FACE);
         glDisable(GL_BLEND);
     }

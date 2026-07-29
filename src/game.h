@@ -8,6 +8,7 @@
 #include "weapons.h"
 #include "particles.h"
 #include "props.h"
+#include "water.h"
 #include "audio.h"
 #include "net.h"
 #include "render.h"
@@ -51,6 +52,8 @@ struct Game {
     int grabbedProp = -1;     // index into loose.props, or -1 if not carrying anything
     bool despawnLooseProps = true;
     bool wasInWater = false;  // edge-detects water entry/exit for splash fx
+    WaterSim water;
+    std::vector<float> waterPacked;
     Rng fxRng{20260722};      // cosmetic-only randomness (particles/loose spawns from cluster fx)
 
     GameState state = ST_MAIN_MENU;
@@ -98,6 +101,13 @@ struct Game {
         // explosions push things around: knock the player back and fling loose debris.
         // (detached clusters get their impulse inside the integrity pass itself.)
         wctx.addImpulse = [this](vec3 c, float radius, float strength) {
+            // A blast at or under the waterline throws a ring that runs out across the
+            // harbour and reflects off the quay. This is the payoff for simulating the
+            // surface rather than animating it: the wave is a consequence of the event, at
+            // the right place, travelling at a finite speed.
+            if (mapInfo.hasWater && water.ready && c.y < mapInfo.waterLevel + radius)
+                water.impulse(c.x, c.z, radius * 1.6f,
+                              std::min(0.09f, 0.010f * strength * (1.f + radius)));
             float pr = radius * 1.7f;
             vec3 dp = player.pos - c;
             float dd = vlen(dp);
@@ -130,6 +140,16 @@ struct Game {
         mapInfo = generateMap(world, id);
         wctx.hasWater = mapInfo.hasWater;
         wctx.waterLevel = mapInfo.waterLevel;
+        // Size the surface simulation to the map and read its boundaries and sea bed out of
+        // the voxel grid, so quay walls reflect waves and shallows shoal without this being
+        // told anything about the level's layout.
+        water.clear();
+        if (mapInfo.hasWater)
+            water.build(WX * VOXEL_SIZE, WZ * VOXEL_SIZE, mapInfo.waterLevel,
+                        [this](float x, float y, float z) {
+                            return world.solidClamped((int)(x / VOXEL_SIZE), (int)(y / VOXEL_SIZE),
+                                                      (int)(z / VOXEL_SIZE));
+                        });
         wasInWater = false;
         world.markAllDirty();
         // full remesh across all cores before first frame
@@ -500,6 +520,7 @@ struct Game {
         if (player.inWater != wasInWater) {
             float speed = vlen(player.vel);
             particles.splash(vec3(player.pos.x, mapInfo.waterLevel, player.pos.z), clampf(0.4f + speed * 0.12f, 0.4f, 1.6f));
+            if (water.ready) water.impulse(player.pos.x, player.pos.z, 1.0f, clampf(speed * 0.004f, 0.004f, 0.03f));
             audio.play(SND_SPLASH, 0.6f);
             wasInWater = player.inWater;
         }
@@ -612,6 +633,16 @@ struct Game {
         updateWinches(wctx, weapons, dt);
         particles.update(dt, world);
         fires.update(dt, wctx, mapInfo.waterLevel, mapInfo.hasWater);
+
+        // Surface simulation, then hand the field to the renderer. Stepped here rather than
+        // in the renderer because it is physics: buoyancy and splash fx read the same
+        // heights the surface is drawn at, and a simulation the renderer owned would drift
+        // from the one the game does.
+        if (mapInfo.hasWater && water.ready) {
+            water.update(dt);
+            water.pack(waterPacked);
+            ren.uploadWaterField(waterPacked.data(), water.nx, water.nz);
+        }
         // thrown props smash glass where they land (networked via the normal op path)
         loose.update(dt, world, [&](vec3 p, vec3 v) {
             DestructionOp op;
@@ -622,7 +653,12 @@ struct Game {
             op.px = vn.x; op.py = vn.y; op.pz = vn.z;
             op.big = 0;
             onLocalOp(op);
-        });
+        },
+        // Props ride the simulated surface, not a fixed sea level: a plank floating in the
+        // harbour lifts when a blast wave reaches it and settles again behind the crest.
+        mapInfo.hasWater && water.ready
+            ? std::function<float(float, float)>([this](float x, float z) { return water.heightAt(x, z); })
+            : std::function<float(float, float)>());
 
         // dynamic falling clusters: deterministic fixed-step physics (explosion-thrown debris
         // that tumbles out, crushes glass it lands on, shatters at its impact face, and
@@ -649,6 +685,14 @@ struct Game {
                 audio.playAt(SND_DEBRIS, at, std::min(1.4f, fc.impactSpeed * 0.12f));
                 for (int i = 0; i < 8; i++)
                     particles.dust(at, vec3(fxRng.sf(), 0.6f, fxRng.sf()) * 2.f, 0.9f, 1.4f, 0.5f, 0.48f, 0.44f);
+                // Debris hitting the harbour throws its own wave, sized by how hard it
+                // landed. A collapsing building dropping into the water should be felt at
+                // the far quay a second later, not just make a splash sprite.
+                if (mapInfo.hasWater && water.ready && at.y < mapInfo.waterLevel + 1.5f) {
+                    water.impulse(at.x, at.z, 1.6f, std::min(0.06f, fc.impactSpeed * 0.006f));
+                    particles.splash(vec3(at.x, mapInfo.waterLevel, at.z),
+                                     std::min(2.0f, 0.5f + fc.impactSpeed * 0.09f));
+                }
                 fc.impactSpeed = 0;
             }
             if (fc.landed) ren.destroyClusterMesh(fc);

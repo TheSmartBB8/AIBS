@@ -1133,8 +1133,14 @@ static int renderMain(int argc, char** argv) {
             float w = vlen(fc.angVel);
             if (w > maxW) maxW = w;
         }
-        std::printf("blast: %d clusters, %d spinning, peak spin %.2f rad/s\n",
-                    (int)game.world.clusters.size(), spin, maxW);
+        int afloat = 0, sunk = 0;
+        for (auto& lv : game.loose.props) {
+            if (lv.floating) afloat++;
+            else if (game.mapInfo.hasWater && lv.pos.y < game.mapInfo.waterLevel) sunk++;
+        }
+        std::printf("blast: %d clusters, %d spinning, peak spin %.2f rad/s | props %d, floating %d, sunk %d\n",
+                    (int)game.world.clusters.size(), spin, maxW,
+                    (int)game.loose.props.size(), afloat, sunk);
     }
 
     for (int i = settle; i < frames; i++) { game.update(0.0f); game.renderFrame(); }

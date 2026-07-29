@@ -118,7 +118,29 @@ struct LooseVoxel {
     bool held = false;
     bool alive = true;
     bool thrown = false;    // hurled by the player: fires the hard-impact hook on collision
+    bool floating = false;  // riding the surface rather than falling
+    float bobPhase = 0;     // so a raft of debris does not bob in unison
 };
+
+/**
+ * Relative density against water. Below 1 floats, above 1 sinks.
+ *
+ * These are roughly the real numbers, because the real numbers are already the interesting
+ * ones: pine is about 0.5 and rides high with half its bulk clear, most plastics sit a
+ * whisker under 1 and float almost awash, and everything structural is two to eight times
+ * water and goes straight down. Getting this from the material rather than picking which
+ * props bob means a blown-up boathouse scatters timber across the harbour while its fixings
+ * sink, without anything having been authored to do that.
+ */
+static inline float materialDensity(uint8_t mat) {
+    switch (mat) {
+        case M_LIGHT:  return 2.5f;    // glass
+        case M_MED:    return 0.55f;   // timber, crates, planking — floats high
+        case M_HEAVY:  return 2.4f;    // masonry, concrete
+        case M_BEDROCK:return 8.0f;
+        default:       return 1.6f;
+    }
+}
 
 struct LooseVoxelSystem {
     std::vector<LooseVoxel> props;
@@ -145,13 +167,62 @@ struct LooseVoxelSystem {
 
     // onHardImpact(pos, vel): a THROWN prop slammed into something at speed -- the game layer
     // uses it to break glass at the impact point (via the normal networked op path)
+    /**
+     * @param surfaceAt  height of the water surface at (x,z), or nullptr for a dry map. Taken
+     *                   as a callback so props ride the *simulated* surface — a plank sitting
+     *                   in the harbour lifts when a blast wave reaches it rather than resting
+     *                   at a fixed sea level.
+     */
     void update(float dt, const World& w,
-                const std::function<void(vec3, vec3)>& onHardImpact = nullptr) {
+                const std::function<void(vec3, vec3)>& onHardImpact = nullptr,
+                const std::function<float(float, float)>& surfaceAt = nullptr) {
         for (auto& lv : props) {
             if (!lv.alive || lv.held) continue;
+            bool submerged = false;
+
+            // ---- buoyancy
+            if (surfaceAt) {
+                float surf = surfaceAt(lv.pos.x, lv.pos.z);
+                float sub = surf - lv.pos.y;                 // how deep it is under the surface
+                if (sub > -0.05f) {
+                    float density = materialDensity(w.palette[lv.pal].mat);
+                    lv.bobPhase += dt * 1.7f;
+                    if (density < 1.0f) {
+                        // Archimedes, roughly: the displaced volume grows with submersion, so
+                        // the restoring force does too and the piece settles at the draught
+                        // its density implies rather than popping out of the water.
+                        float draught = 0.16f * density;      // waterline offset for this bulk
+                        float err = sub - draught;
+                        lv.vel.y += err * 34.f * dt;          // spring toward the waterline
+                        lv.vel.y *= powf(0.02f, dt);          // heavy vertical damping
+                        lv.vel.x *= powf(0.35f, dt);          // and drag sideways
+                        lv.vel.z *= powf(0.35f, dt);
+                        // Ride the surface, plus a little bob so a field of flotsam is alive.
+                        lv.pos.y += sinf(lv.bobPhase) * 0.012f;
+                        lv.pos = lv.pos + lv.vel * dt;
+                        lv.floating = true;
+                        lv.resting = false;
+                        lv.thrown = false;
+                        lv.sinceSettled += dt;
+                        if (despawnTime > 0.f && lv.sinceSettled > despawnTime * 2.f) lv.alive = false;
+                        continue;
+                    }
+                    // Denser than water: sinks, but slowly, and water kills its momentum.
+                    // Gravity is *not* applied here — the fall path below still runs and
+                    // would apply it a second time. Only the drag and terminal speed that
+                    // being submerged adds belong in this branch.
+                    lv.floating = false;
+                    lv.vel.x *= powf(0.06f, dt);
+                    lv.vel.z *= powf(0.06f, dt);
+                    submerged = true;
+                }
+            }
+
             if (!lv.resting) {
                 vec3 np = lv.pos + lv.vel * dt;
-                lv.vel.y -= 18.f * dt;
+                // Buoyancy cancels part of the weight, and water caps how fast it can sink.
+                lv.vel.y -= 18.f * dt * (submerged ? 0.35f : 1.f);
+                if (submerged) lv.vel.y = std::max(lv.vel.y, -2.2f);
                 int vx = (int)floorf(np.x / VOXEL_SIZE), vy = (int)floorf(np.y / VOXEL_SIZE), vz = (int)floorf(np.z / VOXEL_SIZE);
                 if (w.solidClamped(vx, vy, vz)) {
                     if (lv.thrown && vlen(lv.vel) > 7.f && onHardImpact) {

@@ -2,3 +2,4 @@
 *.obj
 *.exe.manifest
 /build/
+/shots/

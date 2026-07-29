@@ -52,6 +52,11 @@ typedef void GLvoid;
 #define GL_ZERO 0
 #define GL_FRONT 0x0404
 #define GL_BACK 0x0405
+// User clip plane 0, for the water reflection/refraction passes. The vertex shader writes
+// gl_ClipDistance[0] and the hardware discards anything with a negative distance, which is how
+// the reflection pass drops everything below the waterline and the refraction pass drops
+// everything above it. Core since GL 3.0.
+#define GL_CLIP_DISTANCE0 0x3000
 #define GL_TEXTURE_2D 0x0DE1
 #define GL_TEXTURE_3D 0x806F
 #define GL_TEXTURE_MIN_FILTER 0x2801

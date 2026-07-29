@@ -7,6 +7,7 @@
 #include "vmath.h"
 #include "world.h"
 #include "font.h"
+#include "watertex.h"
 #include <vector>
 #include <string>
 #include <cstdio>
@@ -236,6 +237,11 @@ uniform vec3 uOffset;                   // falling cluster offset (meters)
 // that has already landed, so the ordinary chunk path pays a single mat3 multiply.
 uniform mat3 uSpin;
 uniform vec3 uSpinCenter;
+// Half-space to keep, as a plane equation. The water reflection pass needs the world with
+// everything below the waterline removed (or a pier leg's underwater half shows up in the
+// reflection, hanging in the sky), and the refraction pass needs the mirror of that. Set to
+// (0,0,0,1) — distance 1 everywhere — for the ordinary unclipped pass.
+uniform vec4 uClipPlane;
 out vec3 vWorld;
 out vec4 vColor;
 out vec3 vNormal;
@@ -246,6 +252,7 @@ const vec3 NRM[6] = vec3[6](vec3(1,0,0), vec3(-1,0,0), vec3(0,1,0), vec3(0,-1,0)
 void main() {
     vec3 wp = uSpin * (aPos - uSpinCenter) + uSpinCenter + uOffset;
     vWorld = wp;
+    gl_ClipDistance[0] = dot(vec4(wp, 1.0), uClipPlane);
     vColor = aColor;
     // The normal must ride the rotation too, or a tumbling piece keeps lighting
     // itself as though its faces still pointed the way they were authored.
@@ -536,6 +543,7 @@ out vec3 vWorld;
 out vec3 vFieldN;                     // surface normal from the simulated gradient
 out float vDepth;                     // still-water depth under this point
 out float vDisp;
+out vec4 vClip;                       // clip-space position, for the screen-space lookup
 void main() {
     vec2 uv = (aPos - uWaterOrigin) / uWaterSize;
     vec4 f = texture(uWater, uv);
@@ -548,6 +556,11 @@ void main() {
     // Gradients are per-cell differences, so scale by cell size to get a true slope.
     vFieldN = normalize(vec3(-f.g * 12.0, 1.0, -f.b * 12.0));
     gl_Position = uViewProj * vec4(vWorld, 1.0);
+    // Handed to the fragment shader so it can find itself in the reflection and refraction
+    // textures. Those were rendered with this same projection, so a fragment's own clip
+    // position — divided through by w after interpolation, never before — is exactly the
+    // texel of the scene that the water at this point should be showing.
+    vClip = gl_Position;
 }
 )";
 // Single-layer water, in the sense Unreal uses the term: one surface that carries its own
@@ -559,11 +572,25 @@ in vec3 vWorld;
 in vec3 vFieldN;
 in float vDepth;
 in float vDisp;
+in vec4 vClip;
 out vec4 FragColor;
 uniform vec3 uCamPos;
 uniform vec3 uWaterColor;
 uniform vec3 uFogColor;
 uniform float uFogDensity;
+// The two extra views of the world, plus the refraction pass's depth buffer.
+uniform sampler2D uRefl;
+uniform sampler2D uRefr;
+uniform sampler2D uRefrDepth;
+// Procedural distortion and normal maps. dudv.rg is a signed 2D offset; normal.rgb decodes
+// to a y-up normal with rgb*2-1 (see watertex.h — deliberately not the blue-is-up
+// convention, so no axis swizzle has to hide in here).
+uniform sampler2D uDudv;
+uniform sampler2D uWaveNormal;
+uniform float uMoveFactor;      // scrolls the distortion, in texture repeats
+uniform float uTiling;          // texture repeats per metre
+uniform float uNear, uFar;      // must match the projection, to invert its depth
+uniform int uPlanar;            // 0 = no reflection/refraction targets available
 )";
     s += GLSL_SKY_COMMON;
     s += R"(
@@ -574,69 +601,150 @@ uniform float uFogDensity;
 // no amount of wave detail fixes that because the cue is chromatic, not geometric.
 const vec3 EXTINCT = vec3(0.46, 0.16, 0.09);
 
+// Turn a window-space depth sample back into a distance in metres. This is the exact inverse
+// of the perspective projection's depth mapping, which is why uNear/uFar have to be the same
+// values the projection was built with — guess them and everything derived from the water's
+// thickness is quietly wrong by a scale factor.
+float linearDepth(float d) {
+    return 2.0 * uNear * uFar / (uFar + uNear - (2.0 * d - 1.0) * (uFar - uNear));
+}
+
 void main() {
     vec2 p = vWorld.xz;
     float t = uTime;
 
-    // The simulated surface carries the large waves. Fine ripples stay procedural: the grid
-    // is half-metre and cannot represent them, and they are the one part of a water surface
-    // where a sum of sines is honestly the right model.
+    // How much of the tiled surface detail this pixel can actually resolve.
     //
-    // But a sine with a fixed spatial frequency is only honest up close. Cast across open
-    // water at a shallow angle and the same 5-cycles-per-metre pattern that looks like a
-    // ripple at your feet is fifty cycles inside one far-away pixel — undersampled well past
-    // Nyquist, with no mip chain to fall back on the way a texture would have. The renderer
-    // does resolve *geometric* edges by accumulating jittered frames, but a jitter of a
-    // fraction of a pixel cannot supersample content that is aliasing many times over per
-    // pixel to begin with, so what should read as shimmer instead collapses into a rigid
-    // grid — the "blocky" look. The fix is the same one texture minification uses: fade the
-    // detail out once the screen-space derivative shows it is going sub-pixel, so the ripple
-    // is present exactly where it is resolvable and gone exactly where it would alias,
-    // leaving the simulated field's own (already band-limited) normal to carry the far water.
+    // The simulated field carries waves at metre scale; the distortion and normal maps carry
+    // the chop below that, and they tile at a fixed spatial frequency. Cast across open water
+    // at a shallow angle, that fixed frequency goes sub-pixel: many repeats land inside one
+    // far-away pixel and the pattern stops being detail and becomes a moiré grid — the
+    // "blocky" look. Mipmaps help through the middle of that range but cannot save the tail,
+    // and the renderer's jittered accumulation cannot either, since a sub-pixel jitter does
+    // not supersample content aliasing many times over per pixel.
+    //
+    // So retire the detail on the same criterion texture minification uses, from the
+    // fragment's own screen-space derivative: present where it is resolvable, gone where it
+    // would alias, leaving the field's already band-limited normal to carry the far water.
     float texelWorld = max(length(vec2(dFdx(p.x), dFdy(p.x))), length(vec2(dFdx(p.y), dFdy(p.y))));
-    float cyclesPerPixel = 5.3 * texelWorld * 0.15915494;   // dominant ripple freq / 2*pi
-    float rippleFade = 1.0 - smoothstep(0.12, 0.35, cyclesPerPixel);
+    // Finest feature in the distortion/normal maps, in metres, at the tiling in use: a 256-px
+    // texture spanning 1/uTiling metres, whose sharpest detail is a handful of texels across.
+    float detailM = (1.0 / max(uTiling, 0.001)) * (5.0 / 256.0);
+    float detailFade = 1.0 - smoothstep(detailM * 0.5, detailM * 1.6, texelWorld);
 
-    float r1 = sin(p.x * 5.3 + t * 2.1) * 0.5 + sin(p.x * 2.7 - p.y * 3.1 + t * 1.7) * 0.5;
-    float r2 = sin(p.y * 4.9 + t * 1.9) * 0.5 + sin(p.x * 3.3 + p.y * 2.3 - t * 2.3) * 0.5;
-    vec3 N = normalize(vFieldN + vec3(-r1 * 0.06 * rippleFade, 0.0, -r2 * 0.06 * rippleFade));
+    // ---- screen-space lookup into the two extra views
+    //
+    // Perspective divide happens here, after interpolation, not in the vertex shader. Dividing
+    // early would interpolate x/w and y/w linearly across the triangle, which is exactly the
+    // affine texture-mapping error that made 1995 console floors swim.
+    vec2 ndc = (vClip.xy / vClip.w) * 0.5 + 0.5;
+
+    // How much water the view ray actually crosses, from the refraction pass's depth buffer.
+    // This replaces a still-water depth divided by the view angle, and the difference is not
+    // cosmetic: the old estimate knew about the sea bed and nothing else, so a hull or a pier
+    // leg sitting in the water had no effect on the colour around it. This measures the real
+    // distance to whatever the ray hits, so the water genuinely shallows out against a boat.
+    //
+    // Sampled at the undistorted coordinate deliberately. Offsetting the depth lookup by the
+    // same wobble as the colour would make the measured thickness wobble too, and thickness
+    // drives the distortion — a feedback loop whose visible form is a shimmering fringe along
+    // every shoreline.
+    float waterDepth;
+    if (uPlanar == 1) {
+        float sceneDist = linearDepth(texture(uRefrDepth, ndc).r);
+        float ownDist = linearDepth(gl_FragCoord.z);
+        waterDepth = max(sceneDist - ownDist, 0.0);
+    } else {
+        // With no refraction depth buffer to measure against, fall back to the still-water
+        // depth stretched by the view angle — what this shader used before the planar passes
+        // existed. It knows about the sea bed and nothing floating in it, but it keeps the
+        // depth grading honest when the feature is switched off.
+        float NoVflat = max(dot(vFieldN, normalize(uCamPos - vWorld)), 0.12);
+        waterDepth = vDepth / NoVflat;
+    }
+
+    // ---- distortion
+    //
+    // Two taps rather than one: the first sample's offset perturbs the coordinate used for the
+    // second. A single tap makes every fragment sample the map at a rigidly grid-aligned place
+    // and the distortion inherits the texture's own tiling; feeding the offset back in breaks
+    // that self-similarity, and the pattern stops looking like a texture sliding over a plane.
+    vec2 baseUV = p * uTiling;
+    vec2 d1 = texture(uDudv, vec2(baseUV.x + uMoveFactor, baseUV.y)).rg * 2.0 - 1.0;
+    vec2 warpUV = baseUV + vec2(d1.x, d1.y + uMoveFactor) * 0.08;
+    vec2 dTotal = (texture(uDudv, warpUV).rg * 2.0 - 1.0);
+
+    // Scale by both the depth and the distance fade. Depth, because near the shoreline the
+    // offset would otherwise reach past the water's own edge and smear dry land into the
+    // shallows — the one artifact that gives this whole technique away. Distance, because the
+    // maps tile at a fixed frequency and go sub-pixel toward the horizon exactly as the old
+    // procedural ripple did; letting them alias there would reintroduce the moiré grid this
+    // is meant to be free of, so the detail retires and leaves the smooth simulated normal.
+    float edge = clamp(waterDepth * 1.4, 0.0, 1.0);
+    dTotal *= 0.022 * edge * detailFade;
+
+    // One coordinate serves both lookups, and that is worth stating because the well-known
+    // version of this technique needs two. There, the reflection pass mirrors the eye position
+    // and negates the pitch while keeping +Y up, which yields a vertically inverted image that
+    // the shader has to undo — hence the `-ndc.y` (or `1.0 - ndc.y`) seen in every tutorial
+    // implementation. Building that pass as view * mirror instead produces the world genuinely
+    // mirrored through the plane as seen from the real camera, so a point's reflection already
+    // lands on the very pixel the water fragment occupies. Nothing to flip back.
+    vec2 sampleUV = clamp(ndc + dTotal, 0.002, 0.998);
+
+    // ---- surface normal
+    //
+    // The simulated field supplies the metre-scale waves; the normal map supplies the
+    // centimetre-scale chop the 0.25 m grid cannot represent. Sampled at the warped
+    // coordinate so the bumps travel with the distortion instead of sliding through it.
+    vec3 nm = texture(uWaveNormal, warpUV).rgb * 2.0 - 1.0;
+    vec3 N = normalize(vFieldN + vec3(nm.x, 0.0, nm.z) * 0.22 * detailFade);
 
     vec3 V = normalize(uCamPos - vWorld);
     float NoV = max(dot(N, V), 0.0);
 
-    // Reflection. Grazing rays see sky, steep ones see into the water.
+    vec3 reflected = uPlanar == 1 ? texture(uRefl, sampleUV).rgb : vec3(0.0);
+    // Off the edge of the mirrored view there is nothing rendered, and the sky is the honest
+    // answer for what a reflection ray would have found. Also the fallback when the planar
+    // targets are switched off entirely.
     vec3 R = reflect(-V, N);
     R.y = abs(R.y) + 0.02;
-    vec3 refl = skyColor(normalize(R));
+    vec3 skyRefl = skyColor(normalize(R));
+    if (uPlanar != 1) reflected = skyRefl;
 
     // Schlick against water's real index of refraction: F0 = ((1-1.33)/(1+1.33))^2 = 0.02.
-    // The old shader used a 0.9 scale with a 0.08 floor, which is far too reflective looking
-    // straight down — the harbour behaved like a sheet of chrome from directly above.
+    // A tutorial-style pow(dot(V,N), k) mix is easier to tune but gets the physics backwards
+    // at the horizon, where real water is a near-perfect mirror.
     float fres = 0.02 + 0.98 * pow(1.0 - NoV, 5.0);
 
-    // How far a viewing ray travels through the water before it hits the bed. At a grazing
-    // angle that is much further than the depth, which is why a lake goes opaque toward the
-    // horizon and clear at your feet.
-    float pathLen = vDepth / max(NoV, 0.12);
-    vec3 trans = exp(-EXTINCT * pathLen);
-    // Bed colour, dimmed by what the water has already absorbed above it. No refraction
-    // sample here — the scene colour is not available at this point in the frame — so this
-    // stands in for the bed with the sand tone the maps use, tinted by depth.
-    vec3 bed = vec3(0.62, 0.56, 0.42) * mix(0.35, 1.0, exp(-pathLen * 0.35));
-    vec3 body = mix(uWaterColor, bed, trans);
+    // ---- what the water does to what is behind it
+    //
+    // The refracted sample is the real scene below the surface, so absorption applies to a
+    // measured path length rather than a guess, and the bed no longer has to be approximated
+    // by a hardcoded sand tone.
+    vec3 refracted = uPlanar == 1 ? texture(uRefr, sampleUV).rgb : vec3(0.62, 0.56, 0.42) * 0.6;
+    vec3 trans = exp(-EXTINCT * waterDepth);
+    vec3 body = mix(uWaterColor, refracted, trans);
 
-    vec3 col = mix(body, refl, fres);
+    vec3 col = mix(body, reflected, fres);
 
-    // Sun glint, sharpened by how much of the sun disc the slope can catch.
+    // Sun glint. Narrow and bright, off the perturbed normal, so the highlight breaks up over
+    // the chop instead of sitting on the surface as one clean disc.
     vec3 toSun = -uSunDir;
-    col += uSunColor * pow(max(dot(R, toSun), 0.0), 240.0) * 2.0;
+    float spec = pow(max(dot(R, toSun), 0.0), 240.0);
+    col += uSunColor * spec * 2.0 * edge;
 
     // Foam, from two causes, as in the references: a band where the water shoals against the
     // land, and streaks on the steep faces of waves. Both keyed off quantities the
     // simulation already produces, so foam appears where a blast ring passes rather than
-    // being scattered around by a noise function.
-    float shore = 1.0 - smoothstep(0.0, 1.1, vDepth);
-    float steep = smoothstep(0.16, 0.55, 1.0 - N.y);
+    // being scattered around by a noise function. Shoaling now reads the measured thickness,
+    // which means foam also collects against a hull, not just against the shore.
+    // Steepness comes off the *simulated* normal, not the fully perturbed one. The normal map
+    // is sub-wave chop — centimetre ripples on the face of a wave — and a ripple that size does
+    // not break. Reading the perturbed normal here put foam on every square metre of the
+    // harbour, because the chop tilts the normal far more often than a wave front does.
+    float shore = 1.0 - smoothstep(0.0, 1.1, min(vDepth, waterDepth));
+    float steep = smoothstep(0.16, 0.55, 1.0 - vFieldN.y);
     float crest = smoothstep(0.02, 0.14, vDisp);
     float foam = clamp(shore * 0.85 + steep * 0.9 + crest * 0.5, 0.0, 1.0);
     // Break the shoreline band up, or it reads as a painted stripe following the coast.
@@ -647,10 +755,14 @@ void main() {
     float f = 1.0 - exp(-pow(dist * uFogDensity, 1.5));
     col = mix(col, uFogColor, clamp(f, 0.0, 1.0));
 
-    // Shallow water is see-through and deep water is not, so opacity follows the same path
-    // length the colour does. A constant 0.93 made a puddle as opaque as the open sea.
-    float alpha = mix(0.55, 0.97, 1.0 - exp(-pathLen * 0.8));
-    alpha = max(alpha, foam * 0.9);
+    // With the scene behind the water supplied by the refraction texture, the surface no
+    // longer needs to be blended to show what is under it — it already contains it. Alpha is
+    // left to do one job instead: feather the last centimetre where the surface meets
+    // geometry, so the waterline is a wet edge rather than the hard intersection line of two
+    // polygons. Anything thicker than a few centimetres is fully opaque.
+    float alpha = uPlanar == 1 ? clamp(waterDepth * 4.0, 0.0, 1.0)
+                               : mix(0.55, 0.97, 1.0 - exp(-waterDepth * 0.8));
+    alpha = max(alpha, foam * 0.9 * edge);
     FragColor = vec4(col, alpha);
 }
 )";
@@ -956,6 +1068,10 @@ struct DynLight { vec3 pos; float radius; vec3 color; };
 struct RenderSettings {
     int shadowQuality = 2;    // 0 low, 1 medium, 2 high
     int aoQuality = 2;
+    // Reflect and refract the real scene in the water instead of an analytic sky. Two extra
+    // passes over the world per frame, at quarter the pixels and reduced shading quality, and
+    // the surface falls back to the sky-only path cleanly when it is off.
+    bool planarWater = true;
     float fov = 75.f;
     float bloom = 0.55f;
     bool vsync = true;
@@ -1004,6 +1120,17 @@ struct Renderer {
     GLuint sceneFBO = 0, sceneColor = 0, sceneDepth = 0, sceneGeom = 0;
     GLuint bloomFBO[2] = {0, 0}, bloomTex[2] = {0, 0};
     int bloomW = 0, bloomH = 0;
+    // Planar reflection and refraction targets. Two extra views of the world, rendered every
+    // frame the water is visible: the scene above the waterline mirrored through it, and the
+    // scene below it. Both carry a depth texture — the refraction one because the water shader
+    // measures how much water a view ray passes through by comparing that depth against its
+    // own, and the reflection one only because the pass needs somewhere to depth-test against.
+    GLuint reflFBO = 0, reflColor = 0, reflDepth = 0;
+    GLuint refrFBO = 0, refrColor = 0, refrDepth = 0;
+    int planarW = 0, planarH = 0;
+    bool planarReady = false;      // were the two passes actually rendered this frame
+    // Procedural distortion and normal maps for the surface (see watertex.h).
+    GLuint dudvTex = 0, wnormTex = 0;
     // model mesh pool (viewmodel + players built per frame or cached)
     GLuint modelVAO = 0, modelVBO = 0;
     std::vector<ModelVert> modelVerts;
@@ -1012,9 +1139,13 @@ struct Renderer {
     std::vector<DynLight> lights;
     float time = 0;
 
-    // per-frame camera
+    // per-frame camera. view and proj are kept apart from their product because the reflection
+    // pass is built as proj * view * mirror, which needs the two factors separately.
     vec3 camPos, camFwd, camRight, camUp;
-    mat4 viewProj;
+    mat4 viewProj, viewMat, projMat;
+    // Shared by the projection and by the water shader's depth linearisation, which has to
+    // invert exactly this projection to turn a depth sample back into metres.
+    static constexpr float NEAR_Z = 0.08f, FAR_Z = 900.f;
 
     // ---------------------------------------------------------------- temporal accumulation
     //
@@ -1189,6 +1320,7 @@ struct Renderer {
         glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
 
         createTargets();
+        createWaterTextures();
         lastRenderScale = settings.renderScale;
         glEnable(GL_DEPTH_TEST);
         glDepthFunc(GL_LEQUAL);
@@ -1196,6 +1328,39 @@ struct Renderer {
         glCullFace(GL_BACK);
         glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
         return true;
+    }
+
+    /**
+     * Synthesise the surface distortion and normal maps.
+     *
+     * A project that shipped assets would load two PNGs here. This one has no asset files at
+     * all, so the pair is generated from a shared height field at startup — which also means
+     * they are guaranteed to describe the same surface, where two separately authored textures
+     * would put the highlight somewhere the distortion does not agree with.
+     *
+     * GL_REPEAT is the whole reason watertex.h goes to the trouble of tiling seamlessly, and
+     * mipmaps are generated because at a grazing angle across the harbour these are minified
+     * hard; the shader fades them out before they go fully sub-pixel, but between "detailed"
+     * and "faded" there is a band where a mip chain is what keeps them from sparkling.
+     */
+    void createWaterTextures() {
+        WaterTextures wt;
+        wt.generate();
+        struct { GLuint* tex; const std::vector<uint8_t>* data; } maps[2] = {
+            { &dudvTex, &wt.dudv }, { &wnormTex, &wt.normal },
+        };
+        for (auto& m : maps) {
+            if (*m.tex) glDeleteTextures(1, m.tex);
+            glGenTextures(1, m.tex);
+            glBindTexture(GL_TEXTURE_2D, *m.tex);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, WaterTextures::SIZE, WaterTextures::SIZE,
+                         0, GL_RGBA, GL_UNSIGNED_BYTE, m.data->data());
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glGenerateMipmap(GL_TEXTURE_2D);
+        }
     }
 
     void createTargets() {
@@ -1233,6 +1398,27 @@ struct Renderer {
             glGenFramebuffers(1, &denoiseFBO[i]);
             glBindFramebuffer(GL_FRAMEBUFFER, denoiseFBO[i]);
             glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, denoiseTex[i], 0);
+        }
+        // Reflection and refraction, at half the scene resolution in each axis.
+        //
+        // Half is not a compromise here so much as an acknowledgement: both textures are
+        // sampled through a distortion that moves the lookup by several pixels anyway, so
+        // detail finer than that is thrown away before it can be seen. Full resolution costs
+        // four times the fill for an image that arrives blurred either way.
+        planarW = std::max(8, renderW / 2);
+        planarH = std::max(8, renderH / 2);
+        struct { GLuint* fbo; GLuint* col; GLuint* dep; } planar[2] = {
+            { &reflFBO, &reflColor, &reflDepth },
+            { &refrFBO, &refrColor, &refrDepth },
+        };
+        for (auto& p : planar) {
+            if (*p.fbo) { glDeleteFramebuffers(1, p.fbo); *p.fbo = 0; }
+            makeTex2D(*p.col, planarW, planarH, GL_RGBA16F, GL_RGBA, GL_FLOAT);
+            makeTex2D(*p.dep, planarW, planarH, GL_DEPTH_COMPONENT24, GL_DEPTH_COMPONENT, GL_UNSIGNED_INT);
+            glGenFramebuffers(1, p.fbo);
+            glBindFramebuffer(GL_FRAMEBUFFER, *p.fbo);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, *p.col, 0);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, *p.dep, 0);
         }
         resetAccumulation();
         bloomW = renderW / 2; bloomH = renderH / 2;
@@ -1413,7 +1599,7 @@ struct Renderer {
         camRight = vnorm(vcross(camFwd, vec3(0, 1, 0)));
         camUp = vcross(camRight, camFwd);
         float aspect = (float)width / (float)height;
-        mat4 proj = mat4_perspective(settings.fov * 3.14159265f / 180.f, aspect, 0.08f, 900.f);
+        mat4 proj = mat4_perspective(settings.fov * 3.14159265f / 180.f, aspect, NEAR_Z, FAR_Z);
 
         // Any camera movement invalidates the history: the accumulator holds a mean of what
         // was in front of each pixel, and moving puts something else there. Compared with a
@@ -1434,7 +1620,29 @@ struct Renderer {
             proj.m[9] += jy;
         }
         mat4 view = mat4_lookat(camPos, camPos + camFwd, vec3(0, 1, 0));
+        viewMat = view;
+        projMat = proj;
         viewProj = proj * view;
+    }
+
+    /**
+     * View-projection for the planar reflection: the world mirrored through the water plane,
+     * seen from the real camera.
+     *
+     * The tempting construction — mirror the eye position, negate the pitch, and call lookAt —
+     * is subtly wrong, and wrong in a way that is easy to miss because the result still looks
+     * like a reflection. lookAt always builds a right-handed basis, so it recovers a *rotation*
+     * where the reflection is an improper transform; the image comes out mirrored left-to-right
+     * on top of being mirrored vertically, and in a scene without readable text nothing
+     * obviously screams about it. Composing the real view with an explicit mirror matrix is
+     * exact instead of nearly right, and it makes the consequence explicit: the transform has
+     * negative determinant, so triangle winding reverses and the pass has to cull front faces.
+     */
+    mat4 reflectionViewProj(float waterLevel) const {
+        mat4 mirror = mat4::identity();
+        mirror.m[5] = -1.f;                    // y -> -y
+        mirror.m[13] = 2.f * waterLevel;       // ...about the plane, not the origin
+        return projMat * (viewMat * mirror);
     }
 
     void setSceneUniforms(GLuint prog, const MapInfo& mi) {
@@ -1473,21 +1681,118 @@ struct Renderer {
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     }
 
-    void drawSky(const MapInfo& mi) {
-        drawTo(false);
+    /**
+     * The sky, from an arbitrary camera basis.
+     *
+     * Taken as parameters rather than read from the members because the reflection pass needs
+     * the sky the *mirrored* view would see. The shader builds a ray per pixel out of these
+     * three vectors, so handing it the mirrored basis gives the reflected sky for free — no
+     * separate code path, and no chance of the reflected sky drifting away from the real one.
+     */
+    void drawSkyBasis(const MapInfo& mi, vec3 fwd, vec3 right, vec3 up) {
         glDisable(GL_CULL_FACE);
         glDepthMask(GL_FALSE);
         glUseProgram(progSky);
         setSceneUniforms(progSky, mi);
-        glUniform3f(glGetUniformLocation(progSky, "uCamRight"), camRight.x, camRight.y, camRight.z);
-        glUniform3f(glGetUniformLocation(progSky, "uCamUp"), camUp.x, camUp.y, camUp.z);
-        glUniform3f(glGetUniformLocation(progSky, "uCamFwd"), camFwd.x, camFwd.y, camFwd.z);
+        glUniform3f(glGetUniformLocation(progSky, "uCamRight"), right.x, right.y, right.z);
+        glUniform3f(glGetUniformLocation(progSky, "uCamUp"), up.x, up.y, up.z);
+        glUniform3f(glGetUniformLocation(progSky, "uCamFwd"), fwd.x, fwd.y, fwd.z);
         glUniform1f(glGetUniformLocation(progSky, "uTanHalfFov"), tanf(settings.fov * 0.5f * 3.14159265f / 180.f));
         glUniform1f(glGetUniformLocation(progSky, "uAspect"), (float)width / (float)height);
         glBindVertexArray(fsVAO);
         glDrawArrays(GL_TRIANGLES, 0, 6);
         glDepthMask(GL_TRUE);
         glEnable(GL_CULL_FACE);
+    }
+
+    void drawSky(const MapInfo& mi) {
+        drawTo(false);
+        drawSkyBasis(mi, camFwd, camRight, camUp);
+    }
+
+    /**
+     * Render the two extra views the water surface samples: the world above the waterline
+     * mirrored through it, and the world below it.
+     *
+     * This is what replaces reflecting an analytic sky function. The difference is the whole
+     * point of the exercise — a sky-only reflection cannot show the lighthouse, the pier, or a
+     * boat in the water, so the surface reads as tinted glass over a painted backdrop no
+     * matter how good the wave shape is. Reflecting the actual scene is what makes it read as
+     * a harbour. Costs two more passes over the world every frame, which is why it is a
+     * setting; nothing else in the renderer depends on it being on.
+     *
+     * Must run before beginScene, since it binds its own framebuffers.
+     */
+    void renderPlanarPasses(const MapInfo& mi, World& w) {
+        planarReady = false;
+        if (!mi.hasWater || !settings.planarWater || !reflFBO || !refrFBO) return;
+
+        // Reflections and refractions are looked up through a distortion and then, in the
+        // reflection's case, mostly seen at a grazing angle under a Fresnel weight. Neither
+        // survives being scrutinised, so both passes trade shading quality for the two extra
+        // rasterisations they cost — this is the one place in the renderer where being
+        // approximately right is unambiguously the correct call.
+        const int shadowSave = settings.shadowQuality, aoSave = settings.aoQuality;
+        settings.shadowQuality = std::min(shadowSave, 1);
+        settings.aoQuality = 0;
+
+        glViewport(0, 0, planarW, planarH);
+
+        // ---- reflection: everything above the waterline, mirrored through it
+        {
+            glBindFramebuffer(GL_FRAMEBUFFER, reflFBO);
+            drawTo(false);
+            glClearColor(mi.skyHorizon.x, mi.skyHorizon.y, mi.skyHorizon.z, 1);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+            // camRight lies in the horizontal plane, so mirroring leaves it alone.
+            vec3 mFwd(camFwd.x, -camFwd.y, camFwd.z);
+            vec3 mUp(camUp.x, -camUp.y, camUp.z);
+            drawSkyBasis(mi, mFwd, camRight, mUp);
+
+            mat4 reflVP = reflectionViewProj(mi.waterLevel);
+            vec3 reflEye(camPos.x, 2.f * mi.waterLevel - camPos.y, camPos.z);
+            beginChunks(mi, mi.ambient);
+            // beginChunks asks for the geometry attachment, which these targets do not have —
+            // leaving it bound would make the framebuffer's draw-buffer state incomplete.
+            drawTo(false);
+            glUniformMatrix4fv(glGetUniformLocation(progChunk, "uViewProj"), 1, GL_FALSE, reflVP.m);
+            glUniform3f(glGetUniformLocation(progChunk, "uCamPos"), reflEye.x, reflEye.y, reflEye.z);
+            // Clip a few centimetres *below* the surface rather than exactly at it. Clipping on
+            // the nose leaves a hairline of unreflected background along the waterline, because
+            // the surface is displaced by the wave simulation and strays either side of the
+            // plane the mirror was built from; the overlap is cheaper than being exact.
+            glUniform4f(glGetUniformLocation(progChunk, "uClipPlane"), 0.f, 1.f, 0.f, -(mi.waterLevel - 0.06f));
+            glEnable(GL_CLIP_DISTANCE0);
+            // The mirror has negative determinant, so every triangle comes out wound the other
+            // way and back-face culling would remove exactly the faces that should be visible.
+            glCullFace(GL_FRONT);
+            drawChunks(w);
+            glCullFace(GL_BACK);
+            glDisable(GL_CLIP_DISTANCE0);
+        }
+
+        // ---- refraction: everything below the waterline, from the real camera
+        {
+            glBindFramebuffer(GL_FRAMEBUFFER, refrFBO);
+            drawTo(false);
+            // No sky in this one: below the surface the honest background is deep water, and
+            // clearing to it means anywhere the bed is missing reads as depth rather than as a
+            // hole with a sunset in it.
+            glClearColor(mi.waterColor.x, mi.waterColor.y, mi.waterColor.z, 1);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+            beginChunks(mi, mi.ambient);
+            drawTo(false);
+            glUniform4f(glGetUniformLocation(progChunk, "uClipPlane"), 0.f, -1.f, 0.f, mi.waterLevel + 0.06f);
+            glEnable(GL_CLIP_DISTANCE0);
+            drawChunks(w);
+            glDisable(GL_CLIP_DISTANCE0);
+        }
+
+        settings.shadowQuality = shadowSave;
+        settings.aoQuality = aoSave;
+        planarReady = true;
     }
 
     /** Identity spin — the static world, and anything that has already landed. */
@@ -1504,6 +1809,10 @@ struct Renderer {
         setSceneUniforms(progChunk, mi);
         glUniform1f(glGetUniformLocation(progChunk, "uVoxelSize"), VOXEL_SIZE);
         glUniform1f(glGetUniformLocation(progChunk, "uAmbient"), ambient);
+        // Distance 1 everywhere, i.e. nothing clipped. The planar water passes overwrite this
+        // right after calling in; setting it here means the ordinary pass can never inherit a
+        // half-space left behind by the previous frame's reflection.
+        glUniform4f(glGetUniformLocation(progChunk, "uClipPlane"), 0.f, 0.f, 0.f, 1.f);
         glUniform1i(glGetUniformLocation(progChunk, "uShadowQuality"), settings.shadowQuality);
         glUniform1i(glGetUniformLocation(progChunk, "uAOQuality"), settings.aoQuality);
         glUniform3f(glGetUniformLocation(progChunk, "uWorldSize"), (float)WX, (float)WY, (float)WZ);
@@ -1595,6 +1904,30 @@ struct Renderer {
         glUniform1i(glGetUniformLocation(progWater, "uWater"), 0);
         glUniform2f(glGetUniformLocation(progWater, "uWaterOrigin"), 0.f, 0.f);
         glUniform2f(glGetUniformLocation(progWater, "uWaterSize"), WX * VOXEL_SIZE, WZ * VOXEL_SIZE);
+        // The planar views and the surface detail maps.
+        const struct { int unit; const char* name; GLuint tex; } binds[] = {
+            { 1, "uRefl",       reflColor },
+            { 2, "uRefr",       refrColor },
+            { 3, "uRefrDepth",  refrDepth },
+            { 4, "uDudv",       dudvTex   },
+            { 5, "uWaveNormal", wnormTex  },
+        };
+        for (auto& b : binds) {
+            glActiveTexture(GL_TEXTURE0 + b.unit);
+            glBindTexture(GL_TEXTURE_2D, b.tex);
+            glUniform1i(glGetUniformLocation(progWater, b.name), b.unit);
+        }
+        glActiveTexture(GL_TEXTURE0);
+        glUniform1i(glGetUniformLocation(progWater, "uPlanar"), planarReady ? 1 : 0);
+        glUniform1f(glGetUniformLocation(progWater, "uNear"), NEAR_Z);
+        glUniform1f(glGetUniformLocation(progWater, "uFar"), FAR_Z);
+        // One repeat every 9 metres. Small enough that the chop has a visible scale next to a
+        // boat, large enough that the tile does not announce itself across the open harbour.
+        glUniform1f(glGetUniformLocation(progWater, "uTiling"), 1.f / 9.f);
+        // Wrapped rather than left to grow: the distortion is sampled with GL_REPEAT, so only
+        // the fractional part ever mattered, and a float that climbs for hours loses the
+        // precision to resolve a slow scroll long before the session ends.
+        glUniform1f(glGetUniformLocation(progWater, "uMoveFactor"), fmodf(time * 0.035f, 1.f));
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         glDisable(GL_CULL_FACE);

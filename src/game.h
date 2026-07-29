@@ -732,6 +732,11 @@ struct Game {
         ren.setCamera(eye, player.yaw, player.pitch, shakeAmp, shakeT);
         ren.settings.fov = 75.f;
 
+        // Reflection and refraction first: both bind their own framebuffers, and the water
+        // surface samples the results, so they have to be complete before the frame the player
+        // actually sees starts.
+        ren.renderPlanarPasses(mapInfo, world);
+
         ren.beginScene(mapInfo);
         ren.drawSky(mapInfo);
         ren.beginChunks(mapInfo, mapInfo.ambient);

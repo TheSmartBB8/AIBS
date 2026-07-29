@@ -255,6 +255,93 @@ struct Platform {
     }
 };
 
+#elif defined(VOXWRECK_EGL)  // ------------------- Linux offscreen GL (verification build)
+// A real GL context with no window and no display server, so the renderer can be run and
+// *looked at* on a build machine.
+//
+// This exists because the renderer was only ever reachable through the Win32 path, which
+// means that on any other machine the game could be compiled but never seen. Every visual
+// claim then rests on reasoning about code, and the recent history of this project is a
+// straight argument against that: four separate faults kept fire completely invisible, none
+// of them detectable without a picture, and two of them were introduced *by* reasoning that
+// sounded right. A renderer you cannot photograph is a renderer you cannot honestly review.
+//
+// Surfaceless EGL with a pbuffer, deliberately, rather than an FBO: a pbuffer gives a real
+// default framebuffer, so the game renders through exactly the same path it uses on
+// Windows. Binding an FBO instead would mean the verified path and the shipped path differ,
+// which defeats the point.
+//
+// Mesa's llvmpipe reports GL 4.5 core here, so this also verifies the 4.x features the
+// Win32 path asks for — it is not a reduced-capability stand-in.
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
+#include <chrono>
+#include <cstdio>
+#include <vector>
+
+struct Platform {
+    PlatformState st;
+    EGLDisplay dpy = EGL_NO_DISPLAY;
+    EGLContext ctx = EGL_NO_CONTEXT;
+    EGLSurface surf = EGL_NO_SURFACE;
+
+    bool init(const char*, int w, int h) {
+        st.width = w; st.height = h;
+        dpy = eglGetPlatformDisplay(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, nullptr);
+        if (dpy == EGL_NO_DISPLAY) { std::fprintf(stderr, "EGL: no display\n"); return false; }
+        EGLint major = 0, minor = 0;
+        if (!eglInitialize(dpy, &major, &minor)) { std::fprintf(stderr, "EGL: init failed\n"); return false; }
+        const EGLint cfgAttr[] = {
+            EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
+            EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
+            EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8,
+            EGL_DEPTH_SIZE, 24,
+            EGL_NONE };
+        EGLConfig cfg; EGLint n = 0;
+        if (!eglChooseConfig(dpy, cfgAttr, &cfg, 1, &n) || n < 1) {
+            std::fprintf(stderr, "EGL: no config\n"); return false;
+        }
+        if (!eglBindAPI(EGL_OPENGL_API)) { std::fprintf(stderr, "EGL: bindAPI failed\n"); return false; }
+        const EGLint ctxAttr[] = {
+            EGL_CONTEXT_MAJOR_VERSION, 4, EGL_CONTEXT_MINOR_VERSION, 3,
+            EGL_CONTEXT_OPENGL_PROFILE_MASK, EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT,
+            EGL_NONE };
+        ctx = eglCreateContext(dpy, cfg, EGL_NO_CONTEXT, ctxAttr);
+        if (ctx == EGL_NO_CONTEXT) { std::fprintf(stderr, "EGL: no 4.3 core context\n"); return false; }
+        const EGLint pb[] = { EGL_WIDTH, w, EGL_HEIGHT, h, EGL_NONE };
+        surf = eglCreatePbufferSurface(dpy, cfg, pb);
+        if (surf == EGL_NO_SURFACE) { std::fprintf(stderr, "EGL: no pbuffer\n"); return false; }
+        if (!eglMakeCurrent(dpy, surf, surf, ctx)) { std::fprintf(stderr, "EGL: makeCurrent failed\n"); return false; }
+        return true;
+    }
+    void setVsync(bool) {}
+    void setCapture(bool on) { st.captured = on; }
+    void toggleFullscreen() {}
+    void pollEvents() {}
+    void swap() { eglSwapBuffers(dpy, surf); }
+    double now() const {
+        using namespace std::chrono;
+        static auto t0 = steady_clock::now();
+        return duration_cast<duration<double>>(steady_clock::now() - t0).count();
+    }
+    std::string clipboardText() { return {}; }
+
+    /** Read the front buffer out as a binary PPM. Bottom-up in GL, top-down in the file. */
+    bool writePPM(const char* path) const {
+        const int w = st.width, h = st.height;
+        std::vector<unsigned char> px((size_t)w * h * 3);
+        glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        glReadBuffer(GL_BACK);
+        glReadPixels(0, 0, w, h, GL_RGB, GL_UNSIGNED_BYTE, px.data());
+        FILE* f = std::fopen(path, "wb");
+        if (!f) return false;
+        std::fprintf(f, "P6\n%d %d\n255\n", w, h);
+        for (int y = h - 1; y >= 0; y--) std::fwrite(&px[(size_t)y * w * 3], 1, (size_t)w * 3, f);
+        std::fclose(f);
+        return true;
+    }
+};
+
 #else  // ------------------------------------------------ null platform (selftest)
 #include <chrono>
 struct Platform {

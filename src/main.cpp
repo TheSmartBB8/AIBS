@@ -971,7 +971,55 @@ static int selftestMain() {
 }
 
 #ifndef _WIN32
+#ifdef VOXWRECK_EGL
+// Headless render: build the world, run the game loop for a fixed number of frames with a
+// fixed timestep, and write the last frame out.
+//
+// Fixed dt rather than wall clock, deliberately. The web renderer had exactly this harness
+// and it silently measured nothing for a while, because the sim kept advancing between
+// calls and the sky was re-read from the wall clock on every accumulation reset, so no two
+// runs rendered the same picture and a before/after comparison was pure drift. Anything
+// meant to be compared has to be reproducible first.
+static int renderMain(int argc, char** argv) {
+    int W = 960, H = 540, frames = 90, map = 0;
+    bool menu = false;
+    const char* out = "shots/native.ppm";
+    for (int i = 2; i < argc; i++) {
+        if (!std::strcmp(argv[i], "-w") && i + 1 < argc) W = std::atoi(argv[++i]);
+        else if (!std::strcmp(argv[i], "-h") && i + 1 < argc) H = std::atoi(argv[++i]);
+        else if (!std::strcmp(argv[i], "-n") && i + 1 < argc) frames = std::atoi(argv[++i]);
+        else if (!std::strcmp(argv[i], "-o") && i + 1 < argc) out = argv[++i];
+        else if (!std::strcmp(argv[i], "-m") && i + 1 < argc) map = std::atoi(argv[++i]);
+        else if (!std::strcmp(argv[i], "--menu")) menu = true;
+    }
+    Platform plat;
+    if (!plat.init("VoxWreck (headless)", W, H)) return 1;
+    Game game;
+    if (!game.ren.init(plat.st.width, plat.st.height)) {
+        std::fprintf(stderr, "renderer init failed\n");
+        return 1;
+    }
+    game.init(&plat);
+    // Straight into the world unless the menu is what is being looked at. Going through the
+    // UI would mean synthesising clicks against button rectangles, which makes the harness
+    // depend on the menu layout — a screenshot tool that breaks when a button moves is worse
+    // than no screenshot tool.
+    if (!menu) game.startSingleplayer(map);
+    for (int i = 0; i < frames; i++) {
+        game.update(1.0f / 60.0f);
+        game.renderFrame();
+    }
+    if (!plat.writePPM(out)) { std::fprintf(stderr, "could not write %s\n", out); return 1; }
+    std::printf("wrote %s (%dx%d, %d frames)\n", out, W, H, frames);
+    game.shutdown();
+    return 0;
+}
+#endif
+
 int main(int argc, char** argv) {
+#ifdef VOXWRECK_EGL
+    if (argc > 1 && !std::strcmp(argv[1], "--render")) return renderMain(argc, argv);
+#endif
     (void)argc; (void)argv;
     return selftestMain();
 }

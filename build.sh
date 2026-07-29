@@ -32,6 +32,24 @@ else
     echo "Install with: sudo apt-get install glslang-tools"
 fi
 
+# Offscreen renderer, for machines that have no display and no Windows.
+#
+# The point is to be able to *see* the renderer during development. Until this existed the
+# game could only draw on Win32, so on a build machine it could be compiled and tested for
+# logic but never looked at, and every visual claim rested on reading code. That is exactly
+# how four separate faults kept fire completely invisible in the sibling web build for days.
+if [ -f /usr/include/EGL/egl.h ]; then
+    echo
+    echo "== headless renderer (EGL, for screenshots) =="
+    g++ -std=c++17 -O2 -DVOXWRECK_EGL -Wall -Wno-unused-parameter -pthread \
+        src/main.cpp src/glapi.cpp -lEGL -lGL -ldl -o /tmp/voxwreck_render
+    echo "Built /tmp/voxwreck_render — use tools/shot_native.sh to take a picture."
+else
+    echo
+    echo "EGL headers not found; skipping the headless renderer."
+    echo "Install with: sudo apt-get install libegl1-mesa-dev libgl1-mesa-dev"
+fi
+
 if command -v x86_64-w64-mingw32-g++ >/dev/null 2>&1; then
     echo
     echo "== Windows exe build (MinGW-w64) =="

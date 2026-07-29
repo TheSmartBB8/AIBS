@@ -162,7 +162,12 @@ typedef void GLvoid;
     X(void, glDeleteFramebuffers, (GLsizei, const GLuint*)) \
     X(void, glBindFramebuffer, (GLenum, GLuint)) \
     X(void, glFramebufferTexture2D, (GLenum, GLenum, GLenum, GLuint, GLint)) \
-    X(GLenum, glCheckFramebufferStatus, (GLenum))
+    X(GLenum, glCheckFramebufferStatus, (GLenum)) \
+    /* Reading the framebuffer back. Only the offscreen verification build calls these, but
+       they belong in the shared loader rather than being resolved separately: a screenshot
+       has to come through the same entry points the frame was drawn with. */ \
+    X(void, glReadBuffer, (GLenum)) \
+    X(void, glReadPixels, (GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, void*))
 
 #define DECLARE_GL(ret, name, args) typedef ret (GLAPIENTRY *PFN_##name) args; extern PFN_##name name;
 GL11_FUNCS(DECLARE_GL)

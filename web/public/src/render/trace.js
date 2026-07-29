@@ -240,12 +240,15 @@ void main() {
     // and still throw light at you is a transport question and wants a long one.
     VHit h = traceVoxels(ro, D, uGiRange, 160);
     if (!h.hit) {
-      amb += skyRadiance(D);
+      // h.tr is 1 unless the ray came through glass. This term is what lights a room:
+      // indoors nearly every escaping ray leaves through a window, and until traceVoxels
+      // learned to pass through panes there were no escaping rays at all.
+      amb += skyRadiance(D) * h.tr;
     } else {
       // "the farther the ray travels, the more ambient lighting is used"
       float f = clamp(h.t / uAoRange, 0.0, 1.0);
       f = f * f * (3.0 - 2.0 * f);
-      amb += skyRadiance(D) * f;
+      amb += skyRadiance(D) * f * h.tr;
       if (uBounce > 0.0) {
         // A real second bounce. This used to weight the blocker's albedo by how sun-facing
         // it was and multiply by uBounceSun — "the discount for not knowing whether it is
@@ -294,7 +297,9 @@ void main() {
           vec3 hp = ro + R * rh.t;
           Li = secondaryShade(hp, rh.n, rh.pal, rough < 0.45, 0.55);
         }
-        spec = Li * w;
+        // Whatever the reflection ray passed through on the way tints it, so a puddle
+        // beyond a pane reflects the room dimly rather than at full strength.
+        spec = Li * w * rh.tr;
       }
     }
   }

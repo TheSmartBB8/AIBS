@@ -291,10 +291,21 @@ struct VHit {
   float t;      // distance in voxel units
   vec3  n;      // world-space face normal
   float pal;    // palette index 0..255
+  vec3  tr;     // transmittance accumulated *before* the hit (1 if nothing was passed through)
 };
 
+// Walks the grid to the first opaque voxel, passing *through* transmissive ones and tinting
+// tr as it goes.
+//
+// Glass used to stop this trace dead, the same as brick. The sun ray had already been given
+// transmittance (traceTransmit) so a shaft of sunlight could land on an interior floor, but
+// the ambient and indirect rays had not, so every window in the level was a black wall to
+// them. That is most of why interiors read as caves: not that the hemisphere rays fail to
+// find the small openings, but that the openings are glazed and the light was being stopped
+// at the pane. A room lit through a window gets almost all of its brightness from the sky
+// seen through the glass, and none of that was arriving.
 VHit traceVoxels(vec3 ro, vec3 rd, float tMax, int maxSteps) {
-  VHit h; h.hit = false; h.t = tMax; h.n = vec3(0.0); h.pal = 0.0;
+  VHit h; h.hit = false; h.t = tMax; h.n = vec3(0.0); h.pal = 0.0; h.tr = vec3(1.0);
 
   vec3 sg = vec3(greaterThanEqual(rd, vec3(0.0))) * 2.0 - 1.0;
   rd = sg * max(abs(rd), vec3(1e-6));
@@ -327,10 +338,24 @@ VHit traceVoxels(vec3 ro, vec3 rd, float tMax, int maxSteps) {
       vec3 c0 = floor(p);
       float v = volFetch(c0);
       if (v > 0.0) {
-        h.hit = true; h.t = t; h.pal = v * 255.0;
-        h.n = vec3(0.0);
-        h.n[axis] = -sg[axis];
-        return h;
+        float idx = v * 255.0;
+        float trans = palPbr(idx).a;
+        if (trans > 0.001) {
+          // Transmissive: tint and keep going. Half the pane's colour, matching
+          // traceTransmit, so glass carries its tint without turning the room that colour.
+          h.tr *= mix(vec3(1.0), palColor(idx).rgb, 0.5) * trans;
+          if (max(h.tr.r, max(h.tr.g, h.tr.b)) < 0.01) {
+            // Effectively opaque now — report it as a hit rather than walking on for free.
+            h.hit = true; h.t = t; h.pal = idx;
+            h.n = vec3(0.0); h.n[axis] = -sg[axis];
+            return h;
+          }
+        } else {
+          h.hit = true; h.t = t; h.pal = idx;
+          h.n = vec3(0.0);
+          h.n[axis] = -sg[axis];
+          return h;
+        }
       }
       cs = 1.0;
     }

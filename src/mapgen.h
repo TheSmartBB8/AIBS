@@ -73,6 +73,12 @@ struct MapBuilder {
     // axis 0: runs +x, depth +z.  axis 1: runs +z, depth +x.
     // axis 2: runs +x, depth -z.  axis 3: runs +z, depth -x.
     void text3d(const char* s, int x, int y, int z, int axis, int scale, uint8_t p, int depth = 1) {
+        // Axes 2 and 3 face the opposite way from 0 and 1, so their run direction is
+        // reversed on screen and the glyphs have to be laid out backwards to read forwards.
+        // Without this the giant EVERMORE MALL sign on the mall's south facade — the first
+        // thing visible on that map — rendered as a mirror image.
+        const int W = fontTextWidth(s, scale);
+        const bool flip = (axis == 2 || axis == 3);
         int cx = 0;
         for (const char* c = s; *c; c++) {
             const uint8_t* g = fontGlyph(*c);
@@ -83,6 +89,7 @@ struct MapBuilder {
                         for (int sxx = 0; sxx < scale; sxx++)
                             for (int d = 0; d < depth; d++) {
                                 int u = (cx + col) * scale + sxx;
+                                if (flip) u = W - 1 - u;
                                 int vy = y - row * scale - sy;
                                 switch (axis) {
                                     case 0: w.setRaw(x + u, vy, z + d, p); break;

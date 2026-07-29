@@ -71,8 +71,33 @@ const spread = await probe.evaluate(async (b64) => {
 await probe.close();
 console.log('luma range', JSON.stringify(spread));
 const drew = spread.hi - spread.lo > 40;
+
+// Fire, in the artifact that actually ships.
+//
+// A static frame passing every check above is not evidence that the dynamic half works.
+// Fire was completely invisible in shipped builds for a long time behind four separate
+// faults, and none of them would have moved the luma range of a street view by one count.
+// This lights a patch of the wooden shed, runs the sim, and asserts that voxels are burning
+// and that the particle system is still emitting from them a second and a half later —
+// which is the specific thing that was broken, since ignition alone used to produce one
+// puff per voxel and then silence.
+await page.evaluate(() => window.__app.simulate(1.0));
+const lit = await page.evaluate(() => window.__app.engine.tools.ctx.igniteAt(8.85, 2.45, 9.45, 0.9, 2));
+await page.evaluate(() => window.__app.simulate(1.5));
+const fire = await page.evaluate(() => ({
+  fires: window.__app.engine.fire.count,
+  particles: window.__app.engine.particles.aliveCount,
+  drawn: (window.__app.renderer._particleInst?.additive?.count | 0)
+       + (window.__app.renderer._particleInst?.blend?.count | 0),
+}));
+console.log('fire —', JSON.stringify({ lit, ...fire }));
+// Particles must beat the number of voxels lit: one each is exactly the broken behaviour.
+const burns = lit > 0 && fire.fires > 0 && fire.particles > lit && fire.drawn > 0;
+console.log(burns ? 'PASS: fire burns, emits, and reaches the renderer'
+                  : 'FAIL: fire is not producing particles in the packed build');
+
 console.log(drew ? 'PASS: the packed build renders a real image with no server'
                  : 'FAIL: canvas is flat — nothing was drawn');
 if (errors.length) { console.log('page errors:'); errors.slice(0, 8).forEach((e) => console.log('  ', e)); }
 await browser.close();
-process.exit(drew ? 0 : 1);
+process.exit(drew && burns ? 0 : 1);

@@ -267,6 +267,84 @@ static void placeContainer(MapBuilder& B, const Pals& P, int x, int y, int z, in
     else        { for (int i = 2; i < L; i += 4) B.fill(x, y, z + i, x + lx - 1, y + H - 1, z + i, rib); }
 }
 
+// ---------------------------------------------------------------- harbour vernacular
+//
+// The three things that most separate a reference photograph of this kind of place from a
+// box of coloured cubes, none of which are lighting: buildings have pitched roofs that
+// overhang their walls, timber decks have railings, and the whole place is strung together
+// by power lines on leaning poles. Flat-topped boxes read as programmer art no matter how
+// good the renderer is, because the silhouette is wrong before a single ray is traced.
+
+/**
+ * Gable roof over the box (x0..x1, z0..z1), ridge running along z, sitting at y0.
+ *
+ * `eave` is how far it overhangs the walls, which is the part that actually matters: a roof
+ * flush with its walls still reads as a box with a triangle on top. Real eaves throw a
+ * shadow line across the wall below and that shadow is most of the silhouette.
+ */
+static void placeGableRoof(MapBuilder& B, int x0, int y0, int z0, int x1, int z1,
+                           uint8_t roofPal, uint8_t soffitPal, int eave = 2) {
+    int ox0 = x0 - eave, ox1 = x1 + eave;
+    int half = (ox1 - ox0) / 2;
+    for (int s = 0; s <= half; s++) {
+        int y = y0 + s;
+        // two slopes closing toward the ridge
+        B.fill(ox0 + s, y, z0 - eave, ox0 + s, y, z1 + eave, roofPal);
+        B.fill(ox1 - s, y, z0 - eave, ox1 - s, y, z1 + eave, roofPal);
+        // close the gable ends so the roof is not hollow when seen end-on
+        B.fill(ox0 + s, y0, z0 - eave, ox1 - s, y, z0 - eave, soffitPal);
+        B.fill(ox0 + s, y0, z1 + eave, ox1 - s, y, z1 + eave, soffitPal);
+    }
+    // ridge cap
+    B.fill(ox0 + half, y0 + half, z0 - eave, ox1 - half, y0 + half, z1 + eave, soffitPal);
+}
+
+/** A timber railing along z: posts with two horizontal rails, as on every pier in the refs. */
+static void placeRailing(MapBuilder& B, const Pals& P, int x, int y, int z0, int z1, int alongX) {
+    uint8_t post = P.woodDark, rail = P.wood;
+    int len = (alongX ? 0 : 1);
+    for (int t = z0; t <= z1; t++) {
+        int px = alongX ? t : x, pz = alongX ? x : t;
+        bool isPost = ((t - z0) % 9) == 0;
+        if (isPost) B.fill(px, y, pz, px, y + 5, pz, post);
+        else { B.fill(px, y + 2, pz, px, y + 2, pz, rail); B.fill(px, y + 4, pz, px, y + 4, pz, rail); }
+        (void)len;
+    }
+}
+
+/**
+ * A leaning timber pole with a crossarm, and the catenary to the next one.
+ *
+ * The sag is the whole point. A straight line between poles reads as a fence wire; the
+ * parabola is what says "power line" instantly, and it is the single cheapest piece of
+ * silhouette in this file.
+ */
+static void placePowerLine(MapBuilder& B, const Pals& P, int x0, int y, int z0,
+                           int x1, int z1, int height, bool drawPole = true) {
+    uint8_t pole = P.trunk, wire = P.black;
+    if (drawPole) {
+        B.fill(x0, y, z0, x0, y + height, z0, pole);
+        B.fill(x0 - 3, y + height - 2, z0, x0 + 3, y + height - 2, z0, pole);   // crossarm
+        B.fill(x0 - 2, y + height - 1, z0, x0 - 2, y + height - 1, z0, P.white); // insulators
+        B.fill(x0 + 2, y + height - 1, z0, x0 + 2, y + height - 1, z0, P.white);
+    }
+    int span = std::max(abs(x1 - x0), abs(z1 - z0));
+    if (span < 4) return;
+    for (int off = -2; off <= 2; off += 4) {           // two wires, one per crossarm end
+        for (int s = 0; s <= span; s++) {
+            float t = (float)s / (float)span;
+            int wx = x0 + (int)((x1 - x0) * t);
+            int wz = z0 + (int)((z1 - z0) * t);
+            // parabolic sag, deepest at mid-span
+            int sag = (int)(4.0f * t * (1.0f - t) * (float)span * 0.16f);
+            int wy = y + height - 1 - sag;
+            // offset perpendicular to the run so the pair of wires stays separated
+            if (abs(x1 - x0) >= abs(z1 - z0)) B.fill(wx, wy, wz + off, wx, wy, wz + off, wire);
+            else                              B.fill(wx + off, wy, wz, wx + off, wy, wz, wire);
+        }
+    }
+}
+
 // ---------------------------------------------------------------- industrial process plant
 //
 // The parts of a working harbour that make it read as industrial rather than as a car park
@@ -421,11 +499,19 @@ static MapInfo genMall(World& w, uint32_t seed = 1337) {
     w.mapId = 0;
     MapBuilder B(w, seed);
     Pals P = makeCommonPalette(w);
-    uint8_t signOrange = w.addPal(255, 150, 40, M_LIGHT, 5.0f);
-    uint8_t signWhite  = w.addPal(240, 245, 255, M_LIGHT, 4.0f);
-    uint8_t signCyan   = w.addPal(80, 220, 235, M_LIGHT, 4.5f);
-    uint8_t signPink   = w.addPal(250, 90, 160, M_LIGHT, 4.5f);
-    uint8_t signGreen  = w.addPal(110, 235, 90, M_LIGHT, 4.5f);
+    // Sign emissives, deliberately low.
+    //
+    // These were 4.0 to 5.0, which is several times the bloom threshold, so every sign in the
+    // level rendered as a blown-out white light box with a halo around it — the lettering was
+    // unreadable and the whole quay looked like a casino. In the reference photographs of a
+    // working harbour, signage is *painted*: it catches the sun and at dusk it is barely
+    // brighter than the wall it is bolted to. A little emission separates it from the wall; a
+    // lot destroys it.
+    uint8_t signOrange = w.addPal(255, 150, 40, M_LIGHT, 1.3f);
+    uint8_t signWhite  = w.addPal(240, 245, 255, M_LIGHT, 1.1f);
+    uint8_t signCyan   = w.addPal(80, 220, 235, M_LIGHT, 1.2f);
+    uint8_t signPink   = w.addPal(250, 90, 160, M_LIGHT, 1.2f);
+    uint8_t signGreen  = w.addPal(110, 235, 90, M_LIGHT, 1.2f);
     uint8_t fountainW  = w.addPal(90, 170, 200, M_LIGHT, 0.25f);
 
     const int G = 8;              // ground surface: solid 0..G-1, stand on y=G
@@ -765,8 +851,8 @@ static MapInfo genMarina(World& w, uint32_t seed = 4242) {
     w.mapId = 1;
     MapBuilder B(w, seed);
     Pals P = makeCommonPalette(w);
-    uint8_t signWhite = w.addPal(240, 245, 255, M_LIGHT, 4.0f);
-    uint8_t signRed   = w.addPal(255, 90, 70, M_LIGHT, 4.5f);
+    uint8_t signWhite = w.addPal(240, 245, 255, M_LIGHT, 1.1f);
+    uint8_t signRed   = w.addPal(255, 90, 70, M_LIGHT, 1.2f);
     uint8_t beacon    = w.addPal(255, 220, 120, M_LIGHT, 8.0f);
     uint8_t hullWhite = w.addPal(228, 230, 232, M_MED);
     uint8_t hullRed   = w.addPal(170, 52, 44, M_MED);
@@ -998,13 +1084,31 @@ static MapInfo genMarina(World& w, uint32_t seed = 4242) {
         B.fill(X1, Q + 3, Z0 + 6, X1, Q + 8, Z0 + 12, P.glassBlue);
         B.fill(X1, Q + 3, Z1 - 12, X1, Q + 8, Z1 - 6, P.glassBlue);
         B.clear(X1, Q, (Z0 + Z1) / 2 - 3, X1, Q + 9, (Z0 + Z1) / 2 + 3);
-        for (int i = 0; i < 8; i++)
-            B.fill(X0 - 1 + i, Q + 12 + i, Z0 - 1, X1 + 1 - i, Q + 12 + i, Z1 + 1, hullRed);
+        placeGableRoof(B, X0, Q + 12, Z0, X1, Z1, hullRed, P.woodDark, 3);
         const char* t = "OFFICE";
         int tw = B.textLen(t, 1);
         int tz = (Z0 + Z1) / 2 - tw / 2;
         B.fill(X1, Q + 9, tz - 2, X1, Q + 11, tz + tw + 1, P.signBack);
         B.text3d(t, X1 + 1, Q + 10, tz, 3, 1, signWhite, 1);
+    }
+
+    // ---- power lines down the quay
+    //
+    // Poles every 15 m with the wire sagging between them. In the reference photographs of
+    // this kind of harbour the cables cross most of the frame, and their catenary is the one
+    // curve in a scene otherwise made entirely of boxes — which is exactly why it reads.
+    {
+        const int PX = 152;                 // inland edge of the quay strip
+        for (int z = 40; z < 250; z += 75)
+            placePowerLine(B, P, PX, Q, z, PX, z + 75, 26, true);
+        // a spur crossing the yard to the warehouse
+        placePowerLine(B, P, PX, Q, 265, 96, 265, 24, true);
+    }
+
+    // ---- pier railings
+    for (int z = 150; z < 246; z += 48) {
+        placeRailing(B, P, 188, Q, z, z + 40, 0);
+        placeRailing(B, P, 176, Q, z, z + 40, 0);
     }
 
     // ---- quay lamps, pallets, trees
@@ -1054,8 +1158,8 @@ static MapInfo genHub(World& w, uint32_t seed = 777) {
     Pals P = makeCommonPalette(w);
     uint8_t siding    = w.addPal(214, 186, 112, M_MED);    // pale-yellow painted wood
     uint8_t roofDark  = w.addPal(70, 62, 58, M_MED);
-    uint8_t signOrange = w.addPal(255, 150, 40, M_LIGHT, 5.0f);
-    uint8_t signWhite  = w.addPal(240, 245, 255, M_LIGHT, 4.0f);
+    uint8_t signOrange = w.addPal(255, 150, 40, M_LIGHT, 1.3f);
+    uint8_t signWhite  = w.addPal(240, 245, 255, M_LIGHT, 1.1f);
     uint8_t hullRed    = w.addPal(170, 60, 46, M_MED);
 
     const int G = 12;     // stand level on grass (top voxel at G-1)

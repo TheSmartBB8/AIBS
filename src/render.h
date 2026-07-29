@@ -581,9 +581,25 @@ void main() {
     // The simulated surface carries the large waves. Fine ripples stay procedural: the grid
     // is half-metre and cannot represent them, and they are the one part of a water surface
     // where a sum of sines is honestly the right model.
+    //
+    // But a sine with a fixed spatial frequency is only honest up close. Cast across open
+    // water at a shallow angle and the same 5-cycles-per-metre pattern that looks like a
+    // ripple at your feet is fifty cycles inside one far-away pixel — undersampled well past
+    // Nyquist, with no mip chain to fall back on the way a texture would have. The renderer
+    // does resolve *geometric* edges by accumulating jittered frames, but a jitter of a
+    // fraction of a pixel cannot supersample content that is aliasing many times over per
+    // pixel to begin with, so what should read as shimmer instead collapses into a rigid
+    // grid — the "blocky" look. The fix is the same one texture minification uses: fade the
+    // detail out once the screen-space derivative shows it is going sub-pixel, so the ripple
+    // is present exactly where it is resolvable and gone exactly where it would alias,
+    // leaving the simulated field's own (already band-limited) normal to carry the far water.
+    float texelWorld = max(length(vec2(dFdx(p.x), dFdy(p.x))), length(vec2(dFdx(p.y), dFdy(p.y))));
+    float cyclesPerPixel = 5.3 * texelWorld * 0.15915494;   // dominant ripple freq / 2*pi
+    float rippleFade = 1.0 - smoothstep(0.12, 0.35, cyclesPerPixel);
+
     float r1 = sin(p.x * 5.3 + t * 2.1) * 0.5 + sin(p.x * 2.7 - p.y * 3.1 + t * 1.7) * 0.5;
     float r2 = sin(p.y * 4.9 + t * 1.9) * 0.5 + sin(p.x * 3.3 + p.y * 2.3 - t * 2.3) * 0.5;
-    vec3 N = normalize(vFieldN + vec3(-r1 * 0.06, 0.0, -r2 * 0.06));
+    vec3 N = normalize(vFieldN + vec3(-r1 * 0.06 * rippleFade, 0.0, -r2 * 0.06 * rippleFade));
 
     vec3 V = normalize(uCamPos - vWorld);
     float NoV = max(dot(N, V), 0.0);

@@ -21,8 +21,14 @@ import { VOXEL } from '../voxel/world.js';
 // mostly flame with smoke lifting off it and the occasional ember; embers are rare per
 // voxel but live for seconds, so a wall of fire still throws a steady drift of them.
 const FLAME_RATE = 9.0;
-const SMOKE_RATE = 2.4;      // further scaled by the material's smoke multiplier
-const EMBER_RATE = 0.7;
+// Smoke lives 3-6.5 s against flame's 0.28-0.62, so its rate buys ten times the standing
+// population that the same number would buy in flame. At 2.4 a hundred burning voxels held
+// 525 puffs and the plume swallowed the fire that was making it.
+const SMOKE_RATE = 1.1;      // further scaled by the material's smoke multiplier
+// Embers live 1.4-3.6 s and each one blooms, so they accumulate into a field of white
+// spheres that reads as falling snow rather than as sparks. Sparse is the whole point of an
+// ember: a few drifting up out of the flame, not a curtain.
+const EMBER_RATE = 0.22;
 // The pool is 8192 and destruction alone can fill a good part of it. Past this many live
 // particles fire stops emitting rather than starving debris and dust of slots — a fire
 // that has already drawn 2600 puffs does not read any hotter for a few hundred more.
@@ -47,7 +53,13 @@ export class Engine {
       onBurnAway: (x, y, z, pal) => {
         world.set(x, y, z, 0);
         this.physics.afterEdit({ x0: x - 1, y0: y - 1, z0: z - 1, x1: x + 1, y1: y + 1, z1: z + 1 });
-        this.particles.impactBurst([(x + 0.5) * VOXEL, (y + 0.5) * VOXEL, (z + 0.5) * VOXEL], [0, 1, 0], pal, 0.4);
+        // Embers and a puff of smoke, not impactBurst. That is the sledgehammer effect —
+        // pale masonry dust and chips — and a hundred voxels consuming themselves filled the
+        // frame with drifting white spheres that read as falling snow. Wood that has burned
+        // through collapses into sparks and ash; it does not throw rubble.
+        const p = [(x + 0.5) * VOXEL, (y + 0.5) * VOXEL, (z + 0.5) * VOXEL];
+        this.particles.emberEmit(p, 1.1);
+        this.particles.smokePlume(p, 0.7);
       },
       onIgnite: (x, y, z) => {
         this.particles.fireEmit([(x + 0.5) * VOXEL, (y + 0.5) * VOXEL, (z + 0.5) * VOXEL], 1);

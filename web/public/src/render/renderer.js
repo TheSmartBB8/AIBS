@@ -110,10 +110,16 @@ export const DEFAULTS = {
                           // size needs portal sampling, not more bounces.
   specRange: 300,
   emissivePower: 1.0,
-  fireEmissive: 6.0,      // gain on additive particles going into the HDR buffer, so fire
-                          // crosses bloomThreshold. See the note in particles.js: the ramp
-                          // peaks at 1.0 and the threshold is 1.75, so the value matters —
-                          // at 1.0 a flame glows exactly as much as no flame at all.
+  fireEmissive: 1.2,      // gain on additive particles going into the HDR buffer, so fire
+                          // crosses bloomThreshold (1.75) while the ramp peaks at 1.0.
+                          //
+                          // Was 6.0, derived when a blast produced exactly *one* fire
+                          // particle: a lone sprite does need a large multiplier to clear
+                          // the threshold. Continuous emission invalidated the premise —
+                          // several hundred additive sprites now overlap in the same cubic
+                          // metre — and 6.0 rendered a featureless white disc. Swept
+                          // 0.12/0.3/0.6/1.2/2.5 against the burning shed: 1.2 keeps a
+                          // hot core and a bloom halo with the flame shape still legible.
   lightScale: 0.22,
   voxelEdge: 0.16,        // seam darkening between adjacent voxels — the strongest cue
                           // that a merged quad is actually made of cubes.

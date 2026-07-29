@@ -364,7 +364,13 @@ export class ParticleSystem {
     this.size1[i] = this.size0[i] * rng.range(1.6, 2.6);
     this.rotVel[i] = rng.sym(3.5);
     this.alphaPeak[i] = rng.range(0.65, 0.95);
-    setRamp(this, i, 1.0, 0.92, 0.62, 0.85, 0.22, 0.045);   // white-hot -> deep red
+    // Orange-hot -> deep red. This used to start at (1.0, 0.92, 0.62), which is very nearly
+    // white, and the flame rendered as a pale grey smudge at every emissive gain from 0.12
+    // to 2.5 — brightness could not fix it because the cause was not brightness. An additive
+    // layer sums: a few hundred sprites averaging a warm tan add up to white by
+    // construction. To read orange on screen the individual sprite has to be far more
+    // saturated than the colour you want out of the stack.
+    setRamp(this, i, 1.00, 0.55, 0.16, 0.80, 0.09, 0.01);
     return i;
   }
 

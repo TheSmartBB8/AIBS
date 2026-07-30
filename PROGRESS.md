@@ -46,8 +46,10 @@ Update this the moment a system changes status, before starting the next one.
 | Material-density buoyancy | built | wood floats, masonry sinks |
 | Fire extinguished by water | built | `props.h` |
 | Harbour extinction | built | not clear-ocean coefficients |
-| Dynamic lights reflected in the surface | in progress | the lamp-streak look from reference |
-| Wake / foam from moving objects | in progress | |
+| Reflections gathered along a vertical smear | built | compact sources elongate into shafts; measured -22% mean gradient |
+| Foam field (deposit, decay, spread, breakers) | built | `water.h`, constants measured |
+| Foam wired to the renderer | built | R32F upload + shader term; calm 0.006, post-blast 0.178 mean on visible water |
+| Foam deposited by moving objects | partial | player and loose props churn; **no vehicles exist to leave a wake** |
 | Residual ~7 px banding, water 17-66 m out | open | **unattributed.** Ruled out by measurement: planar views, wave normal (0.000, bit-constant), sky reflection, depth channel, alpha blend, the distance fades |
 
 ## Simulation
@@ -67,9 +69,9 @@ Update this the moment a system changes status, before starting the next one.
 | Evermore Mall | built | |
 | Sandpoint Marina | built | incl. West Point industrial area |
 | Hub / home yard | built | |
-| Vehicles (car, suspension, damage) | built | |
-| Boat | not started | listed in the brief's vehicle minimum |
-| Forklift / truck | not started | |
+| Vehicles | **not started (native)** | corrected: cars exist only in the `web/` ThreeJS build (`web/public/src/scene/cars.js`). The native build — which is the product — has no vehicle code at all. An earlier version of this file said "built"; that was wrong. |
+| Boat | not started | brief's vehicle minimum, and the wake in the reference needs it |
+| Forklift / truck | not started | brief's vehicle minimum |
 | Tool roster (14 tools) | built | viewmodels rebuilt to be recognisable |
 | Sandbox spawn menu / time of day / cheats | not started | |
 | Menus, HUD, options | built | |

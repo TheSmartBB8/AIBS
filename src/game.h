@@ -54,6 +54,7 @@ struct Game {
     bool wasInWater = false;  // edge-detects water entry/exit for splash fx
     WaterSim water;
     std::vector<float> waterPacked;
+    std::vector<float> foamPacked;
     Rng fxRng{20260722};      // cosmetic-only randomness (particles/loose spawns from cluster fx)
 
     GameState state = ST_MAIN_MENU;
@@ -639,9 +640,36 @@ struct Game {
         // heights the surface is drawn at, and a simulation the renderer owned would drift
         // from the one the game does.
         if (mapInfo.hasWater && water.ready) {
+            // Anything ploughing through the surface churns it. This is the dominant foam
+            // source — the simulation's own breaking-wave term is deliberately subtle, so
+            // without something moving there is nothing to leave a trail and the foam field
+            // may as well not exist.
+            //
+            // Deposit rate scales with speed, because foam is entrained air and it takes
+            // energy to entrain it: a hull at a crawl leaves almost nothing, and the same hull
+            // at speed leaves the wake the reference footage is built around.
+            auto churn = [&](vec3 p, float speed, float radius) {
+                if (speed < 0.6f) return;
+                float surf = water.heightAt(p.x, p.z);
+                if (p.y > surf + 0.6f || p.y < surf - 1.5f) return;   // must be at the surface
+                water.addFoam(p.x, p.z, radius, std::min(0.9f, speed * 0.10f) * dt * 6.f);
+            };
+            {
+                vec3 pv = player.vel;
+                churn(player.pos, sqrtf(pv.x * pv.x + pv.z * pv.z), 0.6f);
+            }
+            for (auto& lv : loose.props)
+                if (lv.alive && !lv.held)
+                    churn(lv.pos, vlen(lv.vel), 0.35f);
+            // Vehicles would be the interesting caller here — a hull under way is what the
+            // reference footage's wake comes from — but the native build has none yet. The
+            // hook is one `churn` call away when it does.
+
             water.update(dt);
             water.pack(waterPacked);
             ren.uploadWaterField(waterPacked.data(), water.nx, water.nz);
+            water.packFoam(foamPacked);
+            ren.uploadFoamField(foamPacked.data(), water.nx, water.nz);
         }
         // thrown props smash glass where they land (networked via the normal op path)
         loose.update(dt, world, [&](vec3 p, vec3 v) {

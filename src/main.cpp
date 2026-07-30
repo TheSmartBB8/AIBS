@@ -1149,6 +1149,19 @@ static int renderMain(int argc, char** argv) {
             if (lv.floating) afloat++;
             else if (game.mapInfo.hasWater && lv.pos.y < game.mapInfo.waterLevel) sunk++;
         }
+        // Foam actually present in the field, so a claim about the wake is a measurement
+        // rather than an impression of a grey image.
+        if (game.water.ready) {
+            double fsum = 0; float fmax = 0; int fn = 0, fover = 0;
+            for (size_t i = 0; i < game.water.foam.size(); i++) {
+                if (game.water.solid[i]) continue;
+                float v = game.water.foam[i];
+                fsum += v; if (v > fmax) fmax = v; if (v > 0.02f) fover++;
+                fn++;
+            }
+            std::printf("foam: mean %.4f, max %.4f, %.2f%% of wet cells above 0.02\n",
+                        fn ? fsum / fn : 0.0, fmax, fn ? 100.0 * fover / fn : 0.0);
+        }
         std::printf("blast: %d clusters, %d spinning, peak spin %.2f rad/s | props %d, floating %d, sunk %d\n",
                     (int)game.world.clusters.size(), spin, maxW,
                     (int)game.loose.props.size(), afloat, sunk);

@@ -649,10 +649,14 @@ uniform sampler2D uRefrDepth;
 // convention, so no axis swizzle has to hide in here).
 uniform sampler2D uDudv;
 uniform sampler2D uWaveNormal;
+// Simulated foam coverage, 0..1, on the same grid as the field texture.
+uniform sampler2D uFoam;
 uniform float uMoveFactor;      // scrolls the distortion, in texture repeats
 uniform float uTiling;          // texture repeats per metre
 uniform float uNear, uFar;      // must match the projection, to invert its depth
 uniform float uPixelAngle;      // radians of view angle per vertical pixel
+uniform vec2 uWaterOrigin;
+uniform vec2 uWaterSize;
 uniform int uPlanar;            // 0 = no reflection/refraction targets available
 // Visualise one intermediate of the surface instead of shading it. Every term below feeds the
 // same pixels, so when something is visibly wrong in the water the picture alone cannot say
@@ -888,6 +892,12 @@ void main() {
     // the surface is opaque and nothing behind it can be mistaken for the term being inspected.
     // Bounded to the modes handled here: an open-ended `!= 0` swallowed the reflection modes
     // below and returned black for them, which reads exactly like a term that evaluates to zero.
+    if (uDebug == 11) {   // simulated foam coverage on its own
+        // Green flags "this fragment is water", so a measurement over the image can separate
+        // the surface from the sky and geometry that are still shaded normally around it.
+        FragColor = vec4(texture(uFoam, (p - uWaterOrigin) / uWaterSize).r, 1.0, 0.0, 1.0);
+        return;
+    }
     if (uDebug >= 1 && uDebug <= 8) {
         vec3 o = vec3(0.0);
         if      (uDebug == 1) o = fieldN * 0.5 + 0.5;              // simulated normal
@@ -964,7 +974,13 @@ void main() {
     float shore = 1.0 - smoothstep(0.0, 1.1, min(vDepth, waterDepth));
     float steep = smoothstep(0.16, 0.55, 1.0 - fieldN.y);
     float crest = smoothstep(0.02, 0.14, vDisp);
-    float foam = clamp(shore * 0.85 + steep * 0.9 + crest * 0.5, 0.0, 1.0);
+    // Coverage carried by the simulation, which is the only term here with any memory of
+    // what happened a moment ago. The three above describe the surface as it is right now, so
+    // between them they can mark a breaking wave front but can never draw a wake — the boat
+    // that made it has moved on. Weighted to dominate where it exists, because a wake is
+    // supposed to be the brightest thing on the water.
+    float trail = texture(uFoam, (p - uWaterOrigin) / uWaterSize).r;
+    float foam = clamp(shore * 0.85 + steep * 0.9 + crest * 0.5 + trail * 1.6, 0.0, 1.0);
     // Break the shoreline band up, or it reads as a painted stripe following the coast.
     foam *= 0.65 + 0.35 * sin(p.x * 7.0 + p.y * 5.0 + t * 1.3);
     col = mix(col, vec3(0.92, 0.95, 0.97), clamp(foam, 0.0, 1.0) * 0.85);
@@ -1332,7 +1348,7 @@ struct Renderer {
     // fullscreen quad
     GLuint fsVAO = 0, fsVBO = 0;
     // water quad
-    GLuint waterVAO = 0, waterVBO = 0, waterTex = 0;
+    GLuint waterVAO = 0, waterVBO = 0, waterTex = 0, foamTex = 0;
     int waterVerts = 0, waterTexW = 0, waterTexH = 0;
     // particles
     GLuint partVAO = 0, partQuadVBO = 0, partInstVBO = 0;
@@ -2126,6 +2142,28 @@ struct Renderer {
         glGenerateMipmap(GL_TEXTURE_2D);
     }
 
+    /**
+     * Hand the simulation's foam coverage to the GPU.
+     *
+     * Its own single-channel texture rather than a fifth slot in the field texture, because
+     * that one already uses all four RGBA channels and repacking it to make room would mean
+     * moving the still-water depth — which never changes after the map loads — into the
+     * per-frame upload. A second small R32F upload is cheaper than re-sending static data
+     * sixty times a second.
+     */
+    void uploadFoamField(const float* r, int w, int h) {
+        if (!foamTex) {
+            glGenTextures(1, &foamTex);
+            glBindTexture(GL_TEXTURE_2D, foamTex);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        }
+        glBindTexture(GL_TEXTURE_2D, foamTex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, w, h, 0, GL_RED, GL_FLOAT, r);
+    }
+
     void drawWater(const MapInfo& mi) {
         drawTo(false);
         if (!mi.hasWater) return;
@@ -2145,6 +2183,7 @@ struct Renderer {
             { 3, "uRefrDepth",  refrDepth },
             { 4, "uDudv",       dudvTex   },
             { 5, "uWaveNormal", wnormTex  },
+            { 6, "uFoam",       foamTex   },
         };
         for (auto& b : binds) {
             glActiveTexture(GL_TEXTURE0 + b.unit);

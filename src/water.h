@@ -230,22 +230,34 @@ struct WaterSim {
         const float C2 = 0.32f;            // wave speed squared, in cells per step
         const float DAMP = 0.996f;         // slow decay, so a blast ring dies out eventually
 
-        // Foam constants. All three are per-second or dimensionless quantities converted to
-        // the step below, rather than per-step numbers tuned by eye, so that the one place
-        // that would have to change if H changed is H.
+        // Foam constants. Written as rates per second and converted to the step here, rather
+        // than as the per-step numbers they end up as, so that H is the only place that has to
+        // change if the step ever does — and so that the time constant can be read off the
+        // line as a time.
         //
-        // The 5 s time constant is the number the wake reads off: a boat crossing the basin
-        // should still be trailing a visible line of white a good few seconds after it has
-        // gone by, which is what the reference footage shows, and should have left nothing
-        // behind by the time it comes back round. Below about 2 s the trail dies inside the
-        // hull's own length and reads as spray rather than a wake; above about 10 s the
-        // harbour slowly turns white over a session, because deposition is continuous while
-        // the boat moves and only the decay ever takes anything away.
-        const float FOAM_TAU = 5.0f;               // seconds to fall to 1/e
+        // 5.5 s is the number the wake reads off, and it is a compromise between two failures
+        // either side of it. Under about 2 s the trail dies within a hull length of the stern
+        // and reads as spray rather than as a wake, which is the whole thing this field exists
+        // to draw. Over about 10 s the basin slowly turns white across a session, because
+        // deposition is continuous for as long as anything is moving and decay is the only
+        // thing that ever takes coverage away. Measured on a flat basin: a wake halves in 3.4 s
+        // and is down to a tenth in 13 s, and the centre of a deposit tracks exp(-t/5.5) to
+        // within 1.7% over the first ten seconds — the residual being the spread below, which
+        // takes a little off the middle of anything that is not already flat.
+        const float FOAM_TAU = 5.5f;               // seconds to fall to 1/e
         const float FOAM_DECAY = expf(-H / FOAM_TAU);
-        const float FOAM_SPREAD = 0.015f;          // fraction of the way to the 4-neighbour mean, per step
-        const float FOAM_SLOPE0 = 0.055f;          // surface slope at which a wave face starts to break
-        const float FOAM_BREAK = 1.2f;             // coverage per second per unit slope past that
+
+        // The spread is set by what it does over a wake's lifetime rather than by what it does
+        // in a step. At this rate the equivalent diffusion is 0.011 m^2/s, so in the ten-odd
+        // seconds a trail stays visible its edge blurs over about half a metre — two cells,
+        // enough to turn a stamped-out stripe into something with a soft edge that keeps
+        // widening as it fades. It cannot be turned up much further without changing what the
+        // decay measures: spreading also takes the top off a narrow deposit, so a wake's peak
+        // would start dying visibly faster than the time constant above says it should, which
+        // is a confusing thing to leave for whoever tunes this next.
+        const float FOAM_SPREAD = 0.006f;          // of the way to the 4-neighbour mean, per step
+        const float FOAM_SLOPE0 = 0.06f;           // surface slope at which a wave face starts to break
+        const float FOAM_BREAK = 12.0f;            // coverage per second per unit slope past that
         for (int s = 0; s < steps; s++) {
             for (int z = 1; z < nz - 1; z++) {
                 for (int x = 1; x < nx - 1; x++) {
@@ -301,20 +313,26 @@ struct WaterSim {
                     float f = (fc + ((fl + fr + fd + fu) * 0.25f - fc) * FOAM_SPREAD) * FOAM_DECAY;
 
                     // Water makes its own foam where it is breaking, and the surface already
-                    // knows where that is: a wave steep enough to break is a wave whose face
-                    // has a large gradient. Deriving it from the slope rather than from the
-                    // height means a big slow swell stays green while a short blast ring
-                    // whitens along its front, which is the right way round and is not
-                    // something an amplitude threshold can express.
+                    // knows where that is: a wave steep enough to break is a wave with a large
+                    // gradient across its face. Keying on the slope rather than on the height
+                    // is what lets a long slow swell stay green while a short blast ring
+                    // whitens along its front, and no threshold on amplitude can express that
+                    // distinction, because the two waves are the same height.
                     //
-                    // Deliberately weak — past the threshold this contributes a few percent
-                    // coverage a second, against the 0.3-odd an object dragging through
-                    // deposits per pass. The dominant source is meant to be things moving,
-                    // because that is what the eye is being asked to read. Turned up far
-                    // enough to be a source in its own right it undoes the whole point of the
-                    // field: foam appears wherever the water is lively rather than wherever
-                    // something has been, and the result is the shader's own steepness term
-                    // again, only laggier.
+                    // The threshold is placed by measurement rather than by taste. On a flat
+                    // basin the swell alone tops out at a slope of 0.011, a player hitting the
+                    // water reaches 0.076, and the largest blast the game can ask for reaches
+                    // 0.26. At 0.06 the swell can never reach it — which matters, since a
+                    // source that fires on the ambient surface would whiten the entire harbour
+                    // given a minute — while the events that ought to break do.
+                    //
+                    // Deliberately weak past it: that blast leaves about 0.07 coverage along
+                    // its front, against the 0.3-odd a hull deposits in a single pass. The
+                    // dominant source is meant to be things moving through, because that is
+                    // what the eye is being asked to read. Turned up far enough to stand on
+                    // its own it undoes the point of the field — foam would appear wherever
+                    // the water is lively rather than wherever something has been, which is
+                    // the shader's existing steepness term over again, only laggier.
                     float hc = h[i];
                     float hl = (okl && !solid[i - 1])  ? h[i - 1]  : hc;
                     float hr = (okr && !solid[i + 1])  ? h[i + 1]  : hc;
@@ -371,17 +389,16 @@ struct WaterSim {
     /**
      * Pack the foam coverage on its own, one float per cell, in pack()'s layout.
      *
-     * A second buffer and a second texture rather than a fifth channel, because pack() is
-     * already an RGBA and there is no room in it. The alternatives were both worse: widening
-     * that texture to carry one more number doubles the bandwidth of the field the surface
-     * shader samples several times per pixel, and dropping one of the gradients to make space
-     * would put them back in the shader as three extra taps each. A single-channel texture the
-     * renderer uploads separately costs a quarter of what the field does and can be sampled
-     * once.
+     * Its own buffer and its own single-channel texture, rather than a fifth channel on the
+     * field pack() already builds, because there is no five-channel format to widen it into.
+     * Carrying foam there would mean a second RGBA alongside the first — four times the upload
+     * and four times the sample cost for the one number being added. Freeing a channel by
+     * dropping a gradient is worse again: the shader would have to recover it with three extra
+     * taps per pixel, which is the exact cost pack() computes the gradients here to avoid.
      *
-     * The field is already row-major in exactly the order asked for, so this is a copy; it is
-     * a function rather than a caller reaching into `foam` so that the packing stays a
-     * decision this file makes, as it is for pack().
+     * The field is already row-major in the order asked for, so this is a copy. It is a
+     * function rather than the renderer reaching into `foam` directly so that the layout stays
+     * a decision this file makes, as it is for pack().
      */
     void packFoam(std::vector<float>& out) const {
         out.assign(foam.begin(), foam.end());

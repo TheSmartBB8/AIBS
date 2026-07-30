@@ -539,6 +539,7 @@ uniform float uWaterLevel;
 uniform sampler2D uWater;
 uniform vec2 uWaterOrigin;            // world metres of the field's (0,0) corner
 uniform vec2 uWaterSize;              // world metres the field spans
+uniform vec3 uCamPos;
 out vec3 vWorld;
 out vec3 vFieldN;                     // surface normal from the simulated gradient
 out float vDepth;                     // still-water depth under this point
@@ -550,8 +551,21 @@ void main() {
     // Real displacement, not just a perturbed normal. The surface used to be a flat quad
     // with the waves painted on as a normal, which holds up until anything crosses the
     // waterline: a hull sat in a mirror-flat plane while its reflection rippled.
-    vWorld = vec3(aPos.x, uWaterLevel + f.r, aPos.y);
-    vDisp = f.r;
+    // Displacement fades out with distance, and the surface goes geometrically flat well
+    // before the horizon.
+    //
+    // Not a level-of-detail saving — the vertices are drawn either way. It is a filtering
+    // requirement. The mesh is a regular 0.12 m grid, so beyond about 40 m each quad is smaller
+    // than a pixel, and a displaced sub-pixel grid beats against the pixel raster to produce a
+    // steady diamond lattice across the distant water. That lattice is the "blocky" horizon,
+    // and it is aliasing in the strict sense: the geometry carries detail the raster cannot
+    // sample. The correctly filtered answer for a wavy surface averaged over a pixel footprint
+    // is the mean surface, which is flat, so flattening it is not a cheat — it is the limit the
+    // right answer converges to. Waves 2 cm high are not resolvable at 60 m regardless.
+    float camDist = length(uCamPos - vec3(aPos.x, uWaterLevel, aPos.y));
+    float dispFade = 1.0 - smoothstep(28.0, 75.0, camDist);
+    vWorld = vec3(aPos.x, uWaterLevel + f.r * dispFade, aPos.y);
+    vDisp = f.r * dispFade;
     vDepth = f.a;
     // Gradients are per-cell differences, so scale by cell size to get a true slope.
     vFieldN = normalize(vec3(-f.g * 12.0, 1.0, -f.b * 12.0));
@@ -609,6 +623,39 @@ float linearDepth(float d) {
     return 2.0 * uNear * uFar / (uFar + uNear - (2.0 * d - 1.0) * (uFar - uNear));
 }
 
+/**
+ * The refracted view of the bed, blurred by how much water it is seen through.
+ *
+ * Beer-Lambert alone says a deep bed is darker and bluer, which is true and incomplete: it
+ * treats water as a tinted filter, when water also *scatters*. Light leaving the bed is
+ * deflected by suspended sediment on its way up, so the bed loses sharpness with depth as well
+ * as brightness — it is why you can read the pebbles at your feet and only see shapes a couple
+ * of metres out, and why no real harbour shows a crisp bottom.
+ *
+ * It also fixes something specific to a voxel world. The bed is built of 0.2 m cubes carrying
+ * a procedural surface grain, and a perfectly sharp refraction shows every one of them through
+ * shallow water: the tiling of the sea floor becomes the tiling of the water. Absorption cannot
+ * hide it here because this harbour is only about 1.2 m deep, where transmission is still 0.58
+ * in red and 0.90 in blue. Scattering is the term that was missing, and adding it is both more
+ * correct and the thing that stops the bed reading as tiles.
+ */
+vec3 refractedBed(vec2 uv, float depth) {
+    vec3 c = texture(uRefr, uv).rgb;
+    // Radius in screen UV, growing with path length and capped so a deep bed does not smear
+    // across the whole frame.
+    float r = min(depth * 0.0035, 0.010);
+    if (r < 0.0004) return c;
+    // A six-point ring plus the centre. Isotropic enough at this radius that more taps buy
+    // nothing, and rotated off-axis so the pattern cannot line up with the voxel grid it is
+    // meant to be dissolving.
+    const float TAU = 6.28318530718;
+    for (int i = 0; i < 6; i++) {
+        float a = (float(i) + 0.37) * TAU / 6.0;
+        c += texture(uRefr, clamp(uv + vec2(cos(a), sin(a)) * r, 0.002, 0.998)).rgb;
+    }
+    return c / 7.0;
+}
+
 void main() {
     vec2 p = vWorld.xz;
     float t = uTime;
@@ -631,6 +678,17 @@ void main() {
     // texture spanning 1/uTiling metres, whose sharpest detail is a handful of texels across.
     float detailM = (1.0 / max(uTiling, 0.001)) * (5.0 / 256.0);
     float detailFade = 1.0 - smoothstep(detailM * 0.5, detailM * 1.6, texelWorld);
+
+    // The same criterion applied to the simulation field itself, whose cells are 0.25 m.
+    //
+    // Fading the tiled maps was not enough, and the horizon proved it: with those switched off
+    // entirely, a regular lattice remained, because the field's own normal was still being point
+    // sampled from a 256-texel texture at pixels covering many texels each. Undersampling a
+    // gradient does not merely blur it, it folds high frequencies down into a coherent pattern.
+    // Above one cell per pixel the honest normal is the average over the footprint — flat — so
+    // the field tilts back toward vertical rather than reporting a sample it cannot support.
+    float fieldFade = 1.0 - smoothstep(0.25, 1.5, texelWorld);
+    vec3 fieldN = normalize(mix(vec3(0.0, 1.0, 0.0), vFieldN, fieldFade));
 
     // ---- screen-space lookup into the two extra views
     //
@@ -659,7 +717,7 @@ void main() {
         // depth stretched by the view angle — what this shader used before the planar passes
         // existed. It knows about the sea bed and nothing floating in it, but it keeps the
         // depth grading honest when the feature is switched off.
-        float NoVflat = max(dot(vFieldN, normalize(uCamPos - vWorld)), 0.12);
+        float NoVflat = max(dot(fieldN, normalize(uCamPos - vWorld)), 0.12);
         waterDepth = vDepth / NoVflat;
     }
 
@@ -698,7 +756,7 @@ void main() {
     // centimetre-scale chop the 0.25 m grid cannot represent. Sampled at the warped
     // coordinate so the bumps travel with the distortion instead of sliding through it.
     vec3 nm = texture(uWaveNormal, warpUV).rgb * 2.0 - 1.0;
-    vec3 N = normalize(vFieldN + vec3(nm.x, 0.0, nm.z) * 0.22 * detailFade);
+    vec3 N = normalize(fieldN + vec3(nm.x, 0.0, nm.z) * 0.22 * detailFade);
 
     vec3 V = normalize(uCamPos - vWorld);
     float NoV = max(dot(N, V), 0.0);
@@ -722,7 +780,7 @@ void main() {
     // The refracted sample is the real scene below the surface, so absorption applies to a
     // measured path length rather than a guess, and the bed no longer has to be approximated
     // by a hardcoded sand tone.
-    vec3 refracted = uPlanar == 1 ? texture(uRefr, sampleUV).rgb : vec3(0.62, 0.56, 0.42) * 0.6;
+    vec3 refracted = uPlanar == 1 ? refractedBed(sampleUV, waterDepth) : vec3(0.62, 0.56, 0.42) * 0.6;
     vec3 trans = exp(-EXTINCT * waterDepth);
     vec3 body = mix(uWaterColor, refracted, trans);
 
@@ -744,7 +802,7 @@ void main() {
     // not break. Reading the perturbed normal here put foam on every square metre of the
     // harbour, because the chop tilts the normal far more often than a wave front does.
     float shore = 1.0 - smoothstep(0.0, 1.1, min(vDepth, waterDepth));
-    float steep = smoothstep(0.16, 0.55, 1.0 - vFieldN.y);
+    float steep = smoothstep(0.16, 0.55, 1.0 - fieldN.y);
     float crest = smoothstep(0.02, 0.14, vDisp);
     float foam = clamp(shore * 0.85 + steep * 0.9 + crest * 0.5, 0.0, 1.0);
     // Break the shoreline band up, or it reads as a painted stripe following the coast.
@@ -1880,19 +1938,25 @@ struct Renderer {
         if (!waterTex) {
             glGenTextures(1, &waterTex);
             glBindTexture(GL_TEXTURE_2D, waterTex);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            // Mipmapped, and rebuilt every frame along with the field.
+            //
+            // A plain GL_LINEAR filter point samples one bilinear tap however many texels the
+            // pixel actually covers, which across a 64 m harbour at a grazing angle is dozens.
+            // The channels being filtered are a height and two gradients, and averaging those
+            // over a footprint is precisely the right operation — the mean of the gradients over
+            // an area *is* the gradient the surface presents at that scale. Regenerating the
+            // chain costs a 256x256 downsample per frame, which is nothing next to what it
+            // stops: undersampled gradients folding into a standing moire pattern.
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
             waterTexW = 0;
         }
         glBindTexture(GL_TEXTURE_2D, waterTex);
-        if (w != waterTexW || h != waterTexH) {
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, w, h, 0, GL_RGBA, GL_FLOAT, rgba);
-            waterTexW = w; waterTexH = h;
-        } else {
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, w, h, 0, GL_RGBA, GL_FLOAT, rgba);
-        }
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, w, h, 0, GL_RGBA, GL_FLOAT, rgba);
+        waterTexW = w; waterTexH = h;
+        glGenerateMipmap(GL_TEXTURE_2D);
     }
 
     void drawWater(const MapInfo& mi) {

@@ -24,6 +24,14 @@
 //
 // Boundaries come from the voxel world: any cell whose column is solid at the water line is
 // land, and is held at rest. That is what makes the reflections real rather than a box.
+//
+// There is a second field on the same grid, and it is here rather than in the shader for one
+// reason: foam has memory. Steepness and shoaling depth are both functions of what the surface
+// is doing *now*, so anything derived from them can only ever mark where a wave is breaking at
+// this instant — which is why the renderer's synthesised foam can draw a white line along a
+// wave front but can never draw a wake. A wake is a trail: the boat left it seconds ago and has
+// since gone somewhere else. Carrying coverage as its own field, deposited by whatever is
+// ploughing through the water and decaying on its own clock, is the whole difference.
 #pragma once
 #include <vector>
 #include <cmath>
@@ -44,12 +52,18 @@ struct WaterSim {
     std::vector<float> h, vel;         // displacement from rest, and its rate
     std::vector<float> depth;          // still-water depth to the sea bed, metres
     std::vector<uint8_t> solid;        // 1 = land, held at rest
+    std::vector<float> foam;           // surface coverage, 0..1, decaying on its own clock
+    // Scratch for the spread pass, kept as a member rather than allocated inside update()
+    // because that runs up to eight times a frame and a 65k-element allocation per step is
+    // real money for a buffer whose size never changes after build().
+    std::vector<float> foamTmp;
 
     bool ready = false;
     float accum = 0;
 
     void clear() {
         h.clear(); vel.clear(); depth.clear(); solid.clear();
+        foam.clear(); foamTmp.clear();
         nx = nz = 0; ready = false; accum = 0;
     }
 
@@ -73,6 +87,8 @@ struct WaterSim {
         vel.assign((size_t)nx * nz, 0.f);
         depth.assign((size_t)nx * nz, 0.f);
         solid.assign((size_t)nx * nz, 0);
+        foam.assign((size_t)nx * nz, 0.f);
+        foamTmp.assign((size_t)nx * nz, 0.f);
         for (int z = 0; z < nz; z++)
             for (int x = 0; x < nx; x++) {
                 float wx = originX + (x + 0.5f) * CELL, wz = originZ + (z + 0.5f) * CELL;
@@ -108,6 +124,39 @@ struct WaterSim {
                 // grid's own frequency and the ring comes out square.
                 float w = 0.5f + 0.5f * cosf(d * 3.14159265f);
                 vel[i] -= strength * w;
+            }
+    }
+
+    /**
+     * Lay foam down over a disc — a hull ploughing through, a body going in, spray landing.
+     *
+     * Saturating rather than accumulating, because the value is a coverage fraction: 1 means
+     * the cell is entirely white water and there is no such thing as more than that. The
+     * version that just added would look identical the moment it was on screen and then behave
+     * wrongly, since decay is proportional to the value — a spot driven over ten times would
+     * sit at 10 and take ten time constants to fall back through 1, so the trail's lifetime
+     * would depend on how many times the boat had crossed its own wake rather than on when it
+     * last passed.
+     *
+     * Same cosine bell as impulse(), for a different but related reason. There it keeps the
+     * grid's own frequency out of the wave solve; here a hard-edged disc would leave a trail
+     * with a stencilled rim, and the spread below is far too gentle to soften it within the few
+     * seconds the foam lives.
+     */
+    void addFoam(float wx, float wz, float radius, float amount) {
+        if (!ready) return;
+        int cx = (int)((wx - originX) / CELL), cz = (int)((wz - originZ) / CELL);
+        int r = std::max(1, (int)(radius / CELL));
+        for (int z = cz - r; z <= cz + r; z++)
+            for (int x = cx - r; x <= cx + r; x++) {
+                if (!inside(x, z)) continue;
+                size_t i = (size_t)idx(x, z);
+                if (solid[i]) continue;
+                float dx = (float)(x - cx), dz = (float)(z - cz);
+                float d = sqrtf(dx * dx + dz * dz) / (float)r;
+                if (d > 1.f) continue;
+                float w = 0.5f + 0.5f * cosf(d * 3.14159265f);
+                foam[i] = std::min(1.f, foam[i] + amount * w);
             }
     }
 
@@ -180,6 +229,23 @@ struct WaterSim {
 
         const float C2 = 0.32f;            // wave speed squared, in cells per step
         const float DAMP = 0.996f;         // slow decay, so a blast ring dies out eventually
+
+        // Foam constants. All three are per-second or dimensionless quantities converted to
+        // the step below, rather than per-step numbers tuned by eye, so that the one place
+        // that would have to change if H changed is H.
+        //
+        // The 5 s time constant is the number the wake reads off: a boat crossing the basin
+        // should still be trailing a visible line of white a good few seconds after it has
+        // gone by, which is what the reference footage shows, and should have left nothing
+        // behind by the time it comes back round. Below about 2 s the trail dies inside the
+        // hull's own length and reads as spray rather than a wake; above about 10 s the
+        // harbour slowly turns white over a session, because deposition is continuous while
+        // the boat moves and only the decay ever takes anything away.
+        const float FOAM_TAU = 5.0f;               // seconds to fall to 1/e
+        const float FOAM_DECAY = expf(-H / FOAM_TAU);
+        const float FOAM_SPREAD = 0.015f;          // fraction of the way to the 4-neighbour mean, per step
+        const float FOAM_SLOPE0 = 0.055f;          // surface slope at which a wave face starts to break
+        const float FOAM_BREAK = 1.2f;             // coverage per second per unit slope past that
         for (int s = 0; s < steps; s++) {
             for (int z = 1; z < nz - 1; z++) {
                 for (int x = 1; x < nx - 1; x++) {
@@ -199,6 +265,68 @@ struct WaterSim {
             }
             for (size_t i = 0; i < h.size(); i++)
                 if (!solid[i]) h[i] += vel[i];
+
+            // Foam, on the same fixed step as the wave solve.
+            //
+            // In the loop rather than once per frame because every part of it is rate-based:
+            // decayed once per frame the wake would evaporate faster on a fast machine, and
+            // spread once per frame it would blur further per second the higher the framerate
+            // — the class of bug that only ever shows up as "it looked right on my machine".
+            //
+            // Written into a second buffer and swapped, which is the part that is easy to get
+            // wrong. Diffusing in place turns a symmetric exchange into a sweep: a cell reads
+            // the new value from the neighbour behind it and the old value from the one ahead,
+            // so the pair no longer trade equal and opposite amounts, and the field creeps up
+            // the sweep direction while quietly gaining or losing total coverage. Out of place
+            // the exchange across every edge is exactly antisymmetric, so spreading moves foam
+            // around and cannot manufacture any — which matters because the only thing keeping
+            // a wake bounded is that nothing but addFoam and the breaker term below adds to it.
+            //
+            // Land is excluded from the exchange the same way it is excluded from the wave
+            // solve, by treating a solid neighbour as a copy of the cell in hand. Its real
+            // value is zero, so letting it into the mean would pull the whole shoreline down
+            // and eat a wake that ran alongside a quay; and foam is a thing on the water, so
+            // it must not climb onto the stone either.
+            for (int z = 0; z < nz; z++)
+                for (int x = 0; x < nx; x++) {
+                    size_t i = (size_t)idx(x, z);
+                    if (solid[i]) { foamTmp[i] = 0.f; continue; }
+                    bool okl = x > 0,      okr = x < nx - 1;
+                    bool okd = z > 0,      oku = z < nz - 1;
+                    float fc = foam[i];
+                    float fl = (okl && !solid[i - 1])  ? foam[i - 1]  : fc;
+                    float fr = (okr && !solid[i + 1])  ? foam[i + 1]  : fc;
+                    float fd = (okd && !solid[i - nx]) ? foam[i - nx] : fc;
+                    float fu = (oku && !solid[i + nx]) ? foam[i + nx] : fc;
+                    float f = (fc + ((fl + fr + fd + fu) * 0.25f - fc) * FOAM_SPREAD) * FOAM_DECAY;
+
+                    // Water makes its own foam where it is breaking, and the surface already
+                    // knows where that is: a wave steep enough to break is a wave whose face
+                    // has a large gradient. Deriving it from the slope rather than from the
+                    // height means a big slow swell stays green while a short blast ring
+                    // whitens along its front, which is the right way round and is not
+                    // something an amplitude threshold can express.
+                    //
+                    // Deliberately weak — past the threshold this contributes a few percent
+                    // coverage a second, against the 0.3-odd an object dragging through
+                    // deposits per pass. The dominant source is meant to be things moving,
+                    // because that is what the eye is being asked to read. Turned up far
+                    // enough to be a source in its own right it undoes the whole point of the
+                    // field: foam appears wherever the water is lively rather than wherever
+                    // something has been, and the result is the shader's own steepness term
+                    // again, only laggier.
+                    float hc = h[i];
+                    float hl = (okl && !solid[i - 1])  ? h[i - 1]  : hc;
+                    float hr = (okr && !solid[i + 1])  ? h[i + 1]  : hc;
+                    float hd = (okd && !solid[i - nx]) ? h[i - nx] : hc;
+                    float hu = (oku && !solid[i + nx]) ? h[i + nx] : hc;
+                    float gx = (hr - hl) * (0.5f / CELL), gz = (hu - hd) * (0.5f / CELL);
+                    float slope = sqrtf(gx * gx + gz * gz);
+                    if (slope > FOAM_SLOPE0) f += (slope - FOAM_SLOPE0) * FOAM_BREAK * H;
+
+                    foamTmp[i] = std::min(1.f, f);
+                }
+            foam.swap(foamTmp);
         }
     }
 
@@ -238,5 +366,24 @@ struct WaterSim {
                 out[i * 4 + 2] = gz;
                 out[i * 4 + 3] = solid[i] ? 0.f : depth[i];
             }
+    }
+
+    /**
+     * Pack the foam coverage on its own, one float per cell, in pack()'s layout.
+     *
+     * A second buffer and a second texture rather than a fifth channel, because pack() is
+     * already an RGBA and there is no room in it. The alternatives were both worse: widening
+     * that texture to carry one more number doubles the bandwidth of the field the surface
+     * shader samples several times per pixel, and dropping one of the gradients to make space
+     * would put them back in the shader as three extra taps each. A single-channel texture the
+     * renderer uploads separately costs a quarter of what the field does and can be sampled
+     * once.
+     *
+     * The field is already row-major in exactly the order asked for, so this is a copy; it is
+     * a function rather than a caller reaching into `foam` so that the packing stays a
+     * decision this file makes, as it is for pack().
+     */
+    void packFoam(std::vector<float>& out) const {
+        out.assign(foam.begin(), foam.end());
     }
 };

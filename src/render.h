@@ -706,6 +706,45 @@ float linearDepth(float d) {
  * in red and 0.90 in blue. Scattering is the term that was missing, and adding it is both more
  * correct and the thing that stops the bed reading as tiles.
  */
+/**
+ * The reflection, gathered along a vertical smear rather than as a single tap.
+ *
+ * This is what turns a lamp on a quay into the long shaft of light lying across the water in
+ * every night-time harbour photograph, and it is the most recognisable thing water does that
+ * a mirror does not. A single tap cannot produce it: it gives a perfect mirror image, so a
+ * compact bright source reflects as a compact bright dot and the surface reads as polished
+ * stone. What actually happens is that a rough surface presents, along the line between the
+ * viewer and the source, a whole run of wave facets tilted just enough to send that source to
+ * the eye. Each contributes, and the sum is a streak.
+ *
+ * The smear is vertical in screen space, and only vertical, because that is the direction the
+ * reflected ray's elevation changes fastest — a wave facet tilting toward or away from the
+ * viewer swings the reflection a long way up or down the surface, while tilting it sideways
+ * barely moves the reflection at all. Blurring isotropically would be the easy thing and is
+ * visibly wrong: it smudges the reflection into a soft blob instead of drawing it out.
+ *
+ * Length grows with both the surface roughness and the grazing angle, since the same facet
+ * tilt swings the reflection further the flatter the view. Beyond a cap it stops growing,
+ * or a distant reflection would smear over the entire frame.
+ */
+vec3 reflectedStreak(vec2 uv, float rough, float NoV) {
+    float len = min(rough * (0.02 + 0.10 / max(NoV, 0.05)), 0.075);
+    vec3 c = texture(uRefl, uv).rgb;
+    if (len < 0.0015) return c;
+    // Weighted toward the centre so the source still has a bright core with the streak
+    // trailing off it, rather than a uniform bar of light with hard ends.
+    float wsum = 1.0;
+    for (int i = 1; i <= 6; i++) {
+        float t = float(i) / 6.0;
+        float w = 1.0 - t * 0.85;
+        float off = t * len;
+        c += texture(uRefl, clamp(uv + vec2(0.0, off), 0.002, 0.998)).rgb * w;
+        c += texture(uRefl, clamp(uv - vec2(0.0, off), 0.002, 0.998)).rgb * w;
+        wsum += 2.0 * w;
+    }
+    return c / wsum;
+}
+
 vec3 refractedBed(vec2 uv, float depth) {
     vec3 c = texture(uRefr, uv).rgb;
     // Radius in screen UV, growing with path length and capped so a deep bed does not smear
@@ -877,7 +916,12 @@ void main() {
         return;
     }
 
-    vec3 reflected = uPlanar == 1 ? texture(uRefl, sampleUV).rgb : vec3(0.0);
+    // Roughness the reflection is gathered over. The chop carries it: where the normal map is
+    // still resolvable the surface is genuinely rough at the scale that matters, and where it
+    // has faded out toward the horizon the water is being viewed as a mean plane and reflects
+    // more like one. Grazing angle is folded in by reflectedStreak itself.
+    float surfRough = 0.25 + 0.75 * detailFade;
+    vec3 reflected = uPlanar == 1 ? reflectedStreak(sampleUV, surfRough, NoV) : vec3(0.0);
     // Off the edge of the mirrored view there is nothing rendered, and the sky is the honest
     // answer for what a reflection ray would have found. Also the fallback when the planar
     // targets are switched off entirely.

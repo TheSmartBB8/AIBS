@@ -134,13 +134,14 @@ vec3 skyColor(vec3 dir) {
         // 2.13^3, nearly ten times the base frequency, and well before the horizon it passes
         // Nyquist and folds into a stationary pattern of horizontal bars.
         //
-        // Those bars were the "blocky" water. Not the water at all, in fact — the water was
-        // faithfully mirroring an aliased sky, which is why it survived a distance fade on the
-        // wave detail, a rewrite of the reflection path, and switching the planar passes off
-        // altogether: every one of those still asked skyColor for the same reflected direction
-        // and got the same folded noise back. Grazing reflection is simply where it shows,
-        // because a reflected ray leaving the surface at two degrees sweeps the cloud plane
-        // hundreds of times faster than the pixel grid can sample it.
+        // Grazing reflection is where this would show worst, because a reflected ray leaving
+        // the surface at two degrees sweeps the cloud plane far faster than the pixel grid can
+        // sample it. An earlier version of this comment went further and blamed the banding
+        // visible in the marina's mid-distance water on exactly that. It should not have: with
+        // the rolloff in place the shaded image measured 3.39 rms either way, and rendering the
+        // reflected sky on its own put it at 0.42 rms where the water around it was at 4.76. So
+        // the aliasing described here is real and worth band-limiting on its own account, and it
+        // is not the source of that banding, which is still unattributed.
         //
         // fwidth on the cloud coordinate measures that sweep directly, so the rolloff follows
         // the real footprint instead of a hand-tuned function of elevation, and it works the
@@ -665,7 +666,21 @@ uniform int uDebug;
 // over sand is not. A single scalar tint cannot express it: the old shader used one colour
 // everywhere, so the harbour was the same slab of teal from the shoreline to the deep, and
 // no amount of wave detail fixes that because the cue is chromatic, not geometric.
-const vec3 EXTINCT = vec3(0.46, 0.16, 0.09);
+// Coefficients for working harbour water, not for a clear lake.
+//
+// These were an order too low, and the error only became visible once refraction started
+// showing the real bed instead of a flat sand tone. This basin is about 1.2 m deep, and at the
+// old coefficients that leaves transmission at 0.58 in red and 0.90 in blue — so most of the
+// sea floor arrived at the eye, and the harbour read as a pale wading pool with its voxel bottom
+// on display. That is genuinely what those numbers describe; they are roughly clear open ocean,
+// where tens of metres of depth do the hiding instead.
+//
+// A harbour is not that. Silt stirred by traffic, runoff and dredging put its visibility under
+// a metre or two, which is why harbour water photographs dark and opaque and mirror-like — the
+// reference images for this map included. Raising extinction to match means the same 1.2 m now
+// transmits 0.07 red and 0.43 blue, the bed is present as a hint in the shallows rather than as
+// the subject, and at any grazing angle the surface goes fully opaque and reflective.
+const vec3 EXTINCT = vec3(2.2, 1.1, 0.7);
 
 // Turn a window-space depth sample back into a distance in metres. This is the exact inverse
 // of the perspective projection's depth mapping, which is why uNear/uFar have to be the same
@@ -832,7 +847,9 @@ void main() {
 
     // Each of these is scaled into a visible range and written straight out, with alpha 1 so
     // the surface is opaque and nothing behind it can be mistaken for the term being inspected.
-    if (uDebug != 0) {
+    // Bounded to the modes handled here: an open-ended `!= 0` swallowed the reflection modes
+    // below and returned black for them, which reads exactly like a term that evaluates to zero.
+    if (uDebug >= 1 && uDebug <= 8) {
         vec3 o = vec3(0.0);
         if      (uDebug == 1) o = fieldN * 0.5 + 0.5;              // simulated normal
         else if (uDebug == 2) o = N * 0.5 + 0.5;                   // final normal
@@ -843,6 +860,20 @@ void main() {
         else if (uDebug == 7) o = vec3(texelWorld * 0.25);         // pixel footprint, metres
         else if (uDebug == 8) o = vec3(fract(vWorld.x), fract(vWorld.z), 0.0); // interpolated pos
         FragColor = vec4(o, 1.0);
+        return;
+    }
+    // Held separately from the modes above because it needs the reflection vector, which is
+    // only built below. At a grazing view R.y collapses to almost nothing, so the surface reads
+    // the sky across the first few degrees of elevation and spreads them over a handful of
+    // screen rows — a roughly tenfold magnification of the sky's own vertical gradient. Any
+    // structure the sky carries near its horizon is therefore amplified by the water, which is
+    // why this needs looking at on its own rather than inferring it from the shaded result.
+    if (uDebug == 9 || uDebug == 10) {
+        vec3 Rd = reflect(-Vf, N);
+        Rd.y = abs(Rd.y) + 0.02;
+        if (uDebug == 9) { FragColor = vec4(skyColor(normalize(Rd)), 1.0); return; }
+        // The elevation actually being sampled, stretched hard so a few thousandths show.
+        FragColor = vec4(vec3(fract(normalize(Rd).y * 64.0)), 1.0);
         return;
     }
 
@@ -906,7 +937,11 @@ void main() {
     float alpha = uPlanar == 1 ? clamp(waterDepth * 4.0, 0.0, 1.0)
                                : mix(0.55, 0.97, 1.0 - exp(-waterDepth * 0.8));
     alpha = max(alpha, foam * 0.9 * edge);
-    FragColor = vec4(col, alpha);
+    // Mode 11 shades normally but forces the surface opaque. The surface is blended, so a few
+    // percent of whatever is behind it reaches the frame; when the water itself measures flat in
+    // every input yet the result does not, that residue is the remaining suspect, and this is
+    // the way to hold it still.
+    FragColor = vec4(col, uDebug == 11 ? 1.0 : alpha);
 }
 )";
     return s;

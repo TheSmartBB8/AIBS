@@ -1039,6 +1039,7 @@ static int topdownMain(int argc, char** argv) {
 static int renderMain(int argc, char** argv) {
     int W = 960, H = 540, frames = 90, map = 0;
     bool menu = false, noaccum = false, nodenoise = false, noplanar = false;
+    int waterdbg = 0;
     int maxacc = -1; float phil = -1.f; int tool = -1;
     bool boom = false, nospin = false; float boomDist = 6.f, boomRadius = 3.2f; int boomRun = 12;
     // Free camera, for reviewing a map rather than whatever the spawn happens to face.
@@ -1058,6 +1059,7 @@ static int renderMain(int argc, char** argv) {
         // extra views or from the surface's own geometry and shading, which is otherwise very
         // hard to tell apart by looking.
         else if (!std::strcmp(argv[i], "--noplanar")) noplanar = true;
+        else if (!std::strcmp(argv[i], "--waterdebug") && i + 1 < argc) waterdbg = std::atoi(argv[++i]);
         else if (!std::strcmp(argv[i], "--samples") && i + 1 < argc) maxacc = std::atoi(argv[++i]);
         else if (!std::strcmp(argv[i], "--phil") && i + 1 < argc) phil = (float)std::atof(argv[++i]);
         else if (!std::strcmp(argv[i], "--tool") && i + 1 < argc) tool = std::atoi(argv[++i]);
@@ -1078,6 +1080,7 @@ static int renderMain(int argc, char** argv) {
     game.ren.settings.accumulate = !noaccum;
     if (nodenoise) game.ren.settings.denoisePasses = 0;
     if (noplanar) game.ren.settings.planarWater = false;
+    game.ren.settings.waterDebug = waterdbg;
     if (maxacc > 0) game.ren.settings.maxAccum = maxacc;
     if (phil > 0) game.ren.settings.denoisePhiL = phil;
     if (!game.ren.init(plat.st.width, plat.st.height)) {

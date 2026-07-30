@@ -605,6 +605,10 @@ uniform float uMoveFactor;      // scrolls the distortion, in texture repeats
 uniform float uTiling;          // texture repeats per metre
 uniform float uNear, uFar;      // must match the projection, to invert its depth
 uniform int uPlanar;            // 0 = no reflection/refraction targets available
+// Visualise one intermediate of the surface instead of shading it. Every term below feeds the
+// same pixels, so when something is visibly wrong in the water the picture alone cannot say
+// which input carried it in; this puts each one on screen on its own. 0 = shade normally.
+uniform int uDebug;
 )";
     s += GLSL_SKY_COMMON;
     s += R"(
@@ -760,6 +764,22 @@ void main() {
 
     vec3 V = normalize(uCamPos - vWorld);
     float NoV = max(dot(N, V), 0.0);
+
+    // Each of these is scaled into a visible range and written straight out, with alpha 1 so
+    // the surface is opaque and nothing behind it can be mistaken for the term being inspected.
+    if (uDebug != 0) {
+        vec3 o = vec3(0.0);
+        if      (uDebug == 1) o = fieldN * 0.5 + 0.5;              // simulated normal
+        else if (uDebug == 2) o = N * 0.5 + 0.5;                   // final normal
+        else if (uDebug == 3) o = vec3(fract(vDepth), 0.0, 0.0);   // still-water depth, wrapped
+        else if (uDebug == 4) o = vec3(fract(waterDepth * 0.5));   // measured thickness
+        else if (uDebug == 5) o = vec3(fieldFade, detailFade, 0.0);// the two distance fades
+        else if (uDebug == 6) o = vec3(vDisp * 20.0 + 0.5);        // displacement
+        else if (uDebug == 7) o = vec3(texelWorld * 0.25);         // pixel footprint, metres
+        else if (uDebug == 8) o = vec3(fract(vWorld.x), fract(vWorld.z), 0.0); // interpolated pos
+        FragColor = vec4(o, 1.0);
+        return;
+    }
 
     vec3 reflected = uPlanar == 1 ? texture(uRefl, sampleUV).rgb : vec3(0.0);
     // Off the edge of the mirrored view there is nothing rendered, and the sky is the honest
@@ -1130,6 +1150,9 @@ struct RenderSettings {
     // passes over the world per frame, at quarter the pixels and reduced shading quality, and
     // the surface falls back to the sky-only path cleanly when it is off.
     bool planarWater = true;
+    // Non-zero draws one of the water shader's intermediates instead of the shaded surface.
+    // Diagnostic only; see the uDebug switch in fsWater for what each value shows.
+    int waterDebug = 0;
     float fov = 75.f;
     float bloom = 0.55f;
     bool vsync = true;
@@ -1986,6 +2009,7 @@ struct Renderer {
         }
         glActiveTexture(GL_TEXTURE0);
         glUniform1i(glGetUniformLocation(progWater, "uPlanar"), planarReady ? 1 : 0);
+        glUniform1i(glGetUniformLocation(progWater, "uDebug"), settings.waterDebug);
         glUniform1f(glGetUniformLocation(progWater, "uNear"), NEAR_Z);
         glUniform1f(glGetUniformLocation(progWater, "uFar"), FAR_Z);
         // One repeat every 9 metres. Small enough that the chop has a visible scale next to a

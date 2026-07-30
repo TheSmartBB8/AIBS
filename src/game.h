@@ -8,6 +8,13 @@
 #include "weapons.h"
 #include "particles.h"
 #include "props.h"
+// The sky model arrives as its own file. Guarded so this compiles either way: the build stays
+// green while that work is in flight, and the menu's time-of-day control starts driving a real
+// sun the moment the file appears rather than needing a second edit here to switch it on.
+#if __has_include("timeofday.h")
+  #include "timeofday.h"
+  #define VOXWRECK_HAVE_TIMEOFDAY 1
+#endif
 #include "water.h"
 #include "audio.h"
 #include "net.h"
@@ -55,6 +62,19 @@ struct Game {
     WaterSim water;
     std::vector<float> waterPacked;
     std::vector<float> foamPacked;
+
+    // ---- sandbox build menu
+    //
+    // The brief's equivalent of the real game's build menu: spawn things, move the sun, turn
+    // the rules off. Kept as plain members rather than its own subsystem because every one of
+    // them is a single value the rest of the loop already reads.
+    bool sandboxOpen = false;
+    int  sandboxTab = 0;                 // 0 spawn, 1 world, 2 cheats
+    float todHours = 17.5f;              // 0..24; the maps' authored look sits near dusk
+    float todHaze = 0.f;                 // 0 clear .. 1 heavy fog
+    bool cheatNoFall = false;
+    bool cheatFlight = false;
+    bool cheatKeepDebris = false;        // debris never despawns
     Rng fxRng{20260722};      // cosmetic-only randomness (particles/loose spawns from cluster fx)
 
     GameState state = ST_MAIN_MENU;
@@ -504,19 +524,45 @@ struct Game {
     void updatePlaying(float dt) {
         PlatformState& in = plat->st;
         if (in.keyPressed[VK_ESCAPE]) {
-            paused = !paused;
-            plat->setCapture(!paused);
+            if (sandboxOpen) { sandboxOpen = false; plat->setCapture(true); }
+            else { paused = !paused; plat->setCapture(!paused); }
+        }
+        // The build menu. Held on TAB rather than a pause state of its own, because it is a
+        // sandbox tool and not a break in play — the world keeps simulating behind it, so a
+        // wave you started still arrives and a fire you lit still spreads while you pick the
+        // next thing to spawn.
+        if (in.keyPressed[VK_TAB]) {
+            sandboxOpen = !sandboxOpen;
+            plat->setCapture(!sandboxOpen);
         }
         if (paused) return;
 
-        // mouse look
-        player.applyMouseLook(in.mouseDX, in.mouseDY, 0.0022f);
+        // With the build menu up the player stops taking input, but nothing else does: the
+        // cursor is yours to point with while the world carries on around it. Gating the
+        // inputs rather than returning early is what keeps that true — an early return here
+        // would freeze the water, the fire and every falling piece of debris, which for a
+        // sandbox menu is the wrong behaviour and also makes it useless for watching what you
+        // just spawned actually land.
+        const bool ctl = !sandboxOpen;
+        if (!ctl) {
+            // Neutralised in one place rather than gated at twenty call sites downstream. The
+            // cursor belongs to the menu while it is up, and the failure this prevents is
+            // specific: without it, clicking a menu button also fires whatever tool is
+            // equipped at whatever happens to be behind the panel, so opening the spawn menu
+            // in front of a wall quietly demolishes it.
+            in.wheelDelta = 0;
+            for (int i = 0; i < 3; i++) { in.mouseDown[i] = false; in.mousePressed[i] = false; }
+            for (int k = 0; k < 10; k++) in.keyPressed[(unsigned char)(k < 9 ? '1' + k : '0')] = false;
+        }
 
-        float mz = (in.keyDown['W'] ? 1.f : 0.f) - (in.keyDown['S'] ? 1.f : 0.f);
-        float mx = (in.keyDown['D'] ? 1.f : 0.f) - (in.keyDown['A'] ? 1.f : 0.f);
-        bool jump = in.keyDown[VK_SPACE];
-        bool sprint = in.keyDown[VK_SHIFT];
-        bool crouch = in.keyDown[VK_CONTROL];
+        // mouse look
+        if (ctl) player.applyMouseLook(in.mouseDX, in.mouseDY, 0.0022f);
+
+        float mz = ctl ? (in.keyDown['W'] ? 1.f : 0.f) - (in.keyDown['S'] ? 1.f : 0.f) : 0.f;
+        float mx = ctl ? (in.keyDown['D'] ? 1.f : 0.f) - (in.keyDown['A'] ? 1.f : 0.f) : 0.f;
+        bool jump = ctl && in.keyDown[VK_SPACE];
+        bool sprint = ctl && in.keyDown[VK_SHIFT];
+        bool crouch = ctl && in.keyDown[VK_CONTROL];
         player.update(world, dt, mx, mz, jump, sprint, crouch, mapInfo.waterLevel, mapInfo.hasWater);
         if (player.inWater != wasInWater) {
             float speed = vlen(player.vel);
@@ -1043,7 +1089,7 @@ struct Game {
             case ST_OPTIONS: uiOptions(); break;
             case ST_LOADING: uiLoading(); break;
             case ST_DISCONNECTED: uiDisconnected(); break;
-            case ST_PLAYING: uiHud(); if (paused) uiPauseOverlay(); break;
+            case ST_PLAYING: uiHud(); if (sandboxOpen) uiSandboxMenu(); if (paused) uiPauseOverlay(); break;
             default: break;
         }
         if (statusTimer > 0 && (state == ST_MP_MENU || state == ST_MAIN_MENU))
@@ -1232,6 +1278,151 @@ struct Game {
         ren.uiTextCentered("DISCONNECTED", cx, cy - 60, 3.2f, 1, 0.4f, 0.35f, 1);
         ren.uiTextCentered(statusMsg.c_str(), cx, cy - 10, 1.6f, 0.8f, 0.8f, 0.82f, 0.9f);
         if (btn(cx - 130, cy + 40, 260, 54, "MAIN MENU")) { audio.play(SND_CLICK); returnToMenu(); }
+    }
+
+    /** A small labelled toggle row that reports whether it was clicked this frame. */
+    bool toggleRow(float x, float y, float w, const char* label, bool on) {
+        bool hit = btn(x, y, w, 40, label, on);
+        ren.uiRect(x + w - 46, y + 12, 30, 16, on ? UI_ACCENT_R : 0.25f,
+                   on ? UI_ACCENT_G : 0.26f, on ? UI_ACCENT_B : 0.30f, 1.f);
+        return hit;
+    }
+
+    /** A click-anywhere-on-the-track slider. Returns true while being dragged. */
+    bool sliderRow(float x, float y, float w, const char* label, float& v, float lo, float hi) {
+        PlatformState& in = plat->st;
+        ren.uiText(label, x, y, 1.7f, 0.75f, 0.78f, 0.84f, 1.f);
+        float ty = y + 22, th = 12;
+        ren.uiRect(x, ty, w, th, 0.14f, 0.15f, 0.18f, 1.f);
+        float t = clampf((v - lo) / (hi - lo), 0.f, 1.f);
+        ren.uiRect(x, ty, w * t, th, UI_ACCENT_R, UI_ACCENT_G, UI_ACCENT_B, 0.9f);
+        ren.uiRect(x + w * t - 3, ty - 4, 6, th + 8, 1.f, 1.f, 1.f, 0.9f);
+        bool over = in.mouseX >= x && in.mouseX <= x + w && in.mouseY >= ty - 8 && in.mouseY <= ty + th + 8;
+        if (over && in.mouseDown[0]) {
+            v = lo + (hi - lo) * clampf((in.mouseX - x) / w, 0.f, 1.f);
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * The build menu. Everything in it is meant to be reachable in one click from playing —
+     * no nested pages — because in a sandbox the menu is a tool you reach for constantly and
+     * anything deeper than one level gets used once and then avoided.
+     */
+    void uiSandboxMenu() {
+        float W = (float)plat->st.width, H = (float)plat->st.height;
+        float pw = 470, ph = 520, px = 40, py = H * 0.5f - ph * 0.5f;
+        ren.uiRect(px, py, pw, ph, 0.05f, 0.055f, 0.065f, 0.94f);
+        ren.uiRect(px, py, pw, 3.f, UI_ACCENT_R, UI_ACCENT_G, UI_ACCENT_B, 0.9f);
+        ren.uiText("BUILD MENU", px + 20, py + 18, 2.6f, 1.f, 1.f, 1.f, 1.f);
+        ren.uiText("TAB TO CLOSE", px + pw - 150, py + 24, 1.5f, 0.55f, 0.58f, 0.64f, 1.f);
+
+        const char* tabs[3] = { "SPAWN", "WORLD", "CHEATS" };
+        for (int i = 0; i < 3; i++) {
+            float tx = px + 20 + i * 145;
+            if (btn(tx, py + 52, 138, 38, tabs[i], sandboxTab == i)) {
+                sandboxTab = i; audio.play(SND_CLICK, 0.5f);
+            }
+        }
+        float cx = px + 20, cy = py + 110, cw = pw - 40;
+
+        if (sandboxTab == 0) {
+            ren.uiText("SPAWN AT CROSSHAIR", cx, cy, 1.7f, 0.75f, 0.78f, 0.84f, 1.f);
+            cy += 28;
+            // Props come from the world palette, so whatever the map is made of is what you
+            // can throw around — no separate spawn catalogue to keep in sync with the maps.
+            struct { const char* name; uint8_t mat; } kinds[] = {
+                { "WOODEN CRATE",  M_MED    },
+                { "CONCRETE BLOCK", M_HEAVY },
+                { "GLASS PANE",    M_LIGHT  },
+            };
+            for (auto& k : kinds) {
+                if (btn(cx, cy, cw, 42, k.name)) {
+                    spawnPropAhead(k.mat);
+                    audio.play(SND_CLICK, 0.6f);
+                }
+                cy += 50;
+            }
+            cy += 8;
+            ren.uiText("VEHICLES", cx, cy, 1.7f, 0.75f, 0.78f, 0.84f, 1.f);
+            cy += 28;
+            ren.uiText("none in this build yet", cx, cy, 1.6f, 0.5f, 0.52f, 0.56f, 1.f);
+        } else if (sandboxTab == 1) {
+            char lbl[64];
+            std::snprintf(lbl, sizeof lbl, "TIME OF DAY   %02d:%02d",
+                          (int)todHours, (int)((todHours - (int)todHours) * 60.f));
+            if (sliderRow(cx, cy, cw, lbl, todHours, 0.f, 24.f)) applyTimeOfDay();
+            cy += 62;
+            std::snprintf(lbl, sizeof lbl, "HAZE   %d%%", (int)(todHaze * 100.f));
+            if (sliderRow(cx, cy, cw, lbl, todHaze, 0.f, 1.f)) applyTimeOfDay();
+            cy += 72;
+            ren.uiText("PRESETS", cx, cy, 1.7f, 0.75f, 0.78f, 0.84f, 1.f);
+            cy += 28;
+            struct { const char* n; float h, z; } presets[] = {
+                { "NOON",           12.0f, 0.05f },
+                { "GOLDEN HOUR",    17.5f, 0.10f },
+                { "DUSK, FOGGY",    19.3f, 0.85f },
+                { "NIGHT",          23.0f, 0.35f },
+            };
+            for (auto& p : presets) {
+                if (btn(cx, cy, cw, 40, p.n)) {
+                    todHours = p.h; todHaze = p.z; applyTimeOfDay();
+                    audio.play(SND_CLICK, 0.6f);
+                }
+                cy += 46;
+            }
+        } else {
+            if (toggleRow(cx, cy, cw, "NO FALL DAMAGE", cheatNoFall)) {
+                cheatNoFall = !cheatNoFall; audio.play(SND_CLICK, 0.5f);
+            }
+            cy += 48;
+            if (toggleRow(cx, cy, cw, "FLIGHT", cheatFlight)) {
+                cheatFlight = !cheatFlight;
+                player.flying = cheatFlight;
+                audio.play(SND_CLICK, 0.5f);
+            }
+            cy += 48;
+            if (toggleRow(cx, cy, cw, "DEBRIS NEVER DESPAWNS", cheatKeepDebris)) {
+                cheatKeepDebris = !cheatKeepDebris;
+                loose.despawnTime = cheatKeepDebris ? -1.f : 30.f;
+                audio.play(SND_CLICK, 0.5f);
+            }
+            cy += 60;
+            ren.uiText("Every tool is already unlimited —", cx, cy, 1.5f, 0.5f, 0.52f, 0.56f, 1.f);
+            ren.uiText("that is what sandbox mode means.", cx, cy + 18, 1.5f, 0.5f, 0.52f, 0.56f, 1.f);
+        }
+    }
+
+    /**
+     * Push the menu's hour and haze into the scene.
+     *
+     * Accumulation is reset because the renderer's convergence assumes a static scene while
+     * the camera holds still — moving the sun under a settled history would blend the old
+     * lighting into the new for as long as the mean takes to forget it, which reads as the
+     * change lagging the slider by a second or two.
+     */
+    void applyTimeOfDay() {
+#ifdef VOXWRECK_HAVE_TIMEOFDAY
+        SkyState s = skyAt(todHours, todHaze);
+        mapInfo.sunDir = s.sunDir;
+        mapInfo.sunColor = s.sunColor;
+        mapInfo.skyHorizon = s.skyHorizon;
+        mapInfo.skyZenith = s.skyZenith;
+        mapInfo.ambient = s.ambient;
+        mapInfo.fogDensity = s.fogDensity;
+        ren.resetAccumulation();
+#endif
+    }
+
+    /** Drop a prop a couple of metres down the crosshair, so it lands where you are looking. */
+    void spawnPropAhead(uint8_t mat) {
+        vec3 at = player.eye() + player.forward() * 2.6f;
+        uint8_t pal = 0;
+        for (int i = 1; i < world.paletteCount; i++)
+            if (world.palette[i].mat == mat) { pal = (uint8_t)i; break; }
+        if (!pal) return;
+        loose.spawn(at, pal, player.forward() * 1.5f);
     }
 
     void uiPauseOverlay() {

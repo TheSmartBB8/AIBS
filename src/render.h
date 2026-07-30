@@ -1079,6 +1079,169 @@ void main() {
 }
 )";
 
+// ---------------------------------------------------------------- volumetric lighting
+//
+// Shafts of sun standing in the air. This is the one lighting cue nothing else in the
+// renderer can produce: every other pass asks what light reaches a *surface*, and a shaft is
+// light scattering off air where there is no surface at all. Marching the view ray and asking
+// the same occupancy volume the sun shadows use — at each step, in mid-air — is what carves
+// the silhouette of a crane boom or a doorframe into the haze.
+//
+// Rendered at quarter resolution, half in each axis. What comes out is low-frequency by
+// construction: a blocker's shadow smeared by a phase function, with no detail finer than the
+// blocker itself. It is therefore the cheapest thing in the frame to undersample and by far
+// the most expensive to compute — one hierarchical DDA per step per pixel — so full
+// resolution would cost four times as much to deliver an image the bilateral upsample below
+// reconstructs anyway.
+static std::string fsVolume() {
+    std::string s = R"(#version 330 core
+in vec2 vUV;
+out vec4 FragColor;
+uniform sampler2D uDepth;       // the scene's own depth attachment, at full resolution
+uniform vec2 uFullRes;          // its size in texels, for an unfiltered lookup
+uniform vec3 uCamPos, uCamRight, uCamUp, uCamFwd;
+uniform float uTanHalfFov, uAspect;
+uniform float uNear, uFar;
+uniform float uVoxelSize;
+uniform vec3 uSunDir;           // direction light travels
+uniform vec3 uSunColor;
+uniform float uFogDensity;      // the map's own extinction, per metre
+uniform float uScatter;         // share of it treated as directional sun in-scatter
+uniform float uPhaseG;
+uniform float uMaxDist;         // metres; past this there is nothing left to shadow the air
+)";
+    s += GLSL_TRACE_COMMON;
+    s += R"(
+// The exact inverse of the projection's depth mapping, as in the water shader: uNear/uFar
+// have to be the values the projection was built with or every distance below is wrong by a
+// scale factor.
+float linearDepth(float d) {
+    return 2.0 * uNear * uFar / (uFar + uNear - (2.0 * d - 1.0) * (uFar - uNear));
+}
+
+/**
+ * Henyey-Greenstein, normalised so that isotropic scattering is exactly 1.0.
+ *
+ * Without a phase function the in-scattered light would be the same in every direction and
+ * the whole effect would be a flat wash of extra brightness with holes in it. Real haze
+ * scatters overwhelmingly forward, which is why the air glows around the sun and looks clear
+ * with the sun behind you, and why the shafts are worth drawing at all: at g = 0.55 the
+ * forward lobe is about eight times isotropic and the backward one about a sixth of it, so
+ * pointing the camera at the sun is a different picture from pointing it away.
+ */
+float phaseHG(float cosT, float g) {
+    float g2 = g * g;
+    float denom = max(1.0 + g2 - 2.0 * g * cosT, 1e-4);
+    return (1.0 - g2) / pow(denom, 1.5);
+}
+
+void main() {
+    vec2 ndc = vUV * 2.0 - 1.0;
+    vec3 rd = normalize(uCamFwd + uCamRight * (ndc.x * uTanHalfFov * uAspect)
+                                + uCamUp * (ndc.y * uTanHalfFov));
+
+    // Nearest depth texel, fetched rather than filtered. A bilinear tap straddling a
+    // silhouette returns a depth that belongs to neither side of it, and the march would then
+    // run to a surface that is not there — fog poured into the gap around every edge.
+    ivec2 tc = clamp(ivec2(vUV * uFullRes), ivec2(0), ivec2(uFullRes) - 1);
+    float viewZ = linearDepth(texelFetch(uDepth, tc, 0).r);
+
+    // linearDepth measures along the camera axis; the march runs along the ray, which at the
+    // corner of a 75-degree frame is a third longer. Dividing by cos of that angle is the
+    // difference between a fog bank that is flat across the screen and one that bulges toward
+    // the middle.
+    float rayLen = min(viewZ / max(dot(rd, uCamFwd), 1e-3), uMaxDist);
+
+    vec3 toSun = -uSunDir;
+    // Nothing to scatter when the sun is under the horizon, and the trace would be answering
+    // a question about a light that is not there. Alpha still carries the depth, because the
+    // upsample needs it whatever the colour turns out to be.
+    if (toSun.y <= 0.01 || uFogDensity <= 0.0) { FragColor = vec4(0.0, 0.0, 0.0, viewZ); return; }
+
+    // Sixteen steps. The count is low because each one costs a full shadow trace, and it can
+    // afford to be: the dither below converts what would be sixteen visible slabs into noise,
+    // and the temporal accumulator then averages that noise away across frames — so the
+    // effective sample count while the camera holds still is sixteen times however many
+    // frames have accumulated, not sixteen.
+    const int STEPS = 16;
+    float stepLen = rayLen / float(STEPS);
+    float sigmaS = uFogDensity * uScatter;
+    float phase = phaseHG(dot(rd, toSun), uPhaseG);
+    float mx = max(uWorldSize.x, max(uWorldSize.y, uWorldSize.z)) * 1.4;
+
+    // Jittered start, per pixel and per accumulated frame. With every pixel starting its march
+    // at the same place the step boundaries line up across the screen into concentric shells
+    // of constant brightness — the banding that gives away a raymarched fog, and far more
+    // visible than the noise that replaces it. seedAt is the renderer's existing convention
+    // for "decorrelate this per frame while accumulating, hold it still when not".
+    float dither = hash13(seedAt(vec3(gl_FragCoord.xy, 0.0), 3.7));
+
+    vec3 inscat = vec3(0.0);
+    float trans = 1.0;
+    for (int i = 0; i < STEPS; i++) {
+        vec3 p = uCamPos + rd * ((float(i) + dither) * stepLen);
+        float vis = traceRay(p / uVoxelSize, toSun, mx);
+        inscat += uSunColor * (vis * phase * sigmaS * stepLen * trans);
+        // Beer-Lambert along the view ray, so a shaft forty metres out is dimmer than the
+        // same shaft at arm's length instead of the two summing as though the air between
+        // them were vacuum.
+        trans *= exp(-uFogDensity * stepLen);
+    }
+    FragColor = vec4(inscat, viewZ);
+}
+)";
+    return s;
+}
+
+/**
+ * The quarter-res march, weighted back up to full resolution by depth agreement.
+ *
+ * Plain bilinear magnification mixes the four coarse taps by screen distance alone, and
+ * across a silhouette that means fog computed for sky sixty metres away is averaged into a
+ * pixel sitting on a railing two metres in front of it. What that looks like is a bright
+ * outline tracing every edge in the frame, which is the standard giveaway of a
+ * half-resolution effect and much more noticeable than the resolution it bought.
+ *
+ * So each coarse tap carries the view depth it was marched against, and only contributes
+ * where that depth agrees with this pixel's. Where none of them agree — a railing thin enough
+ * to have no coarse sample of its own — the nearest in depth is taken whole, because one
+ * plausible answer beats the average of four wrong ones.
+ */
+static const char* FS_VOLUME_UP = R"(#version 330 core
+in vec2 vUV;
+out vec4 FragColor;
+uniform sampler2D uVolume;   // rgb = in-scattered light, a = the view depth it was marched to
+uniform sampler2D uDepth;
+uniform vec2 uVolRes;
+uniform float uNear, uFar;
+float linearDepth(float d) {
+    return 2.0 * uNear * uFar / (uFar + uNear - (2.0 * d - 1.0) * (uFar - uNear));
+}
+void main() {
+    float d0 = linearDepth(texelFetch(uDepth, ivec2(gl_FragCoord.xy), 0).r);
+    vec2 f = vUV * uVolRes - 0.5;
+    ivec2 b = ivec2(floor(f));
+    vec2 fr = f - vec2(b);
+    vec3 sum = vec3(0.0), best = vec3(0.0);
+    float wsum = 0.0, bestErr = 1e30;
+    for (int j = 0; j < 2; j++) {
+        for (int i = 0; i < 2; i++) {
+            ivec2 tc = clamp(b + ivec2(i, j), ivec2(0), ivec2(uVolRes) - 1);
+            vec4 s = texelFetch(uVolume, tc, 0);
+            float bw = (i == 0 ? 1.0 - fr.x : fr.x) * (j == 0 ? 1.0 - fr.y : fr.y);
+            // Tolerance proportional to the distance, since a metre of disagreement means
+            // something at two metres and nothing at two hundred.
+            float err = abs(s.a - d0);
+            float w = bw * exp(-err / (0.02 * d0 + 0.05));
+            sum += s.rgb * w;
+            wsum += w;
+            if (err < bestErr) { bestErr = err; best = s.rgb; }
+        }
+    }
+    FragColor = vec4(wsum > 1e-4 ? sum / wsum : best, 0.0);
+}
+)";
+
 // ---------------------------------------------------------------- post
 static const char* FS_BRIGHT = R"(#version 330 core
 in vec2 vUV;
@@ -1106,6 +1269,50 @@ void main() {
     FragColor = vec4(c, 1.0);
 }
 )";
+// ---------------------------------------------------------------- auto-exposure metering
+//
+// The log of scene luminance, reduced down a chain of ever smaller targets. Averaging the log
+// and exponentiating at the end is the geometric mean, and the reason for measuring the scene
+// that way rather than as a plain average is entirely about what a single very bright thing
+// does to the number.
+//
+// Take a frame that is middle grey at 0.18 with one percent of its pixels — a lamp, a muzzle
+// flash, the sun's own disc — sitting at 1000. Its arithmetic mean is 10.2, fifty-six times
+// the brightness the picture is actually made of, and an exposure derived from that crushes
+// the entire scene to black to make room for a light bulb. The same frame's geometric mean is
+// exp(0.01*ln 1000 + 0.99*ln 0.18) = 0.20: nine percent up, which is about how much a light
+// bulb ought to matter. Multiplicative metering is the whole trick, and the 1e-4 floor is the
+// other half of it — an unlit pixel at zero would otherwise contribute minus infinity.
+static const char* FS_LOGLUMA = R"(#version 330 core
+in vec2 vUV;
+out vec4 FragColor;
+uniform sampler2D uTex;
+uniform vec2 uDstTexel;
+void main() {
+    // Four taps spread across this destination texel's own footprint, not across the source's.
+    // The first reduction is from the full render target to 64x64, so one destination texel
+    // covers something like a dozen by seven source pixels; offsetting by source texels would
+    // sample four neighbours out of eighty and call it a tile average.
+    float l = 0.0;
+    for (int j = 0; j < 2; j++)
+        for (int i = 0; i < 2; i++) {
+            vec3 c = texture(uTex, vUV + (vec2(i, j) - 0.5) * 0.5 * uDstTexel).rgb;
+            l += log(max(dot(c, vec3(0.2126, 0.7152, 0.0722)), 1e-4));
+        }
+    FragColor = vec4(l * 0.25, 0.0, 0.0, 1.0);
+}
+)";
+// One bilinear tap, which is an exact box filter and not an approximation of one: halving the
+// size puts every destination texel centre precisely on the corner shared by four source
+// texels, where bilinear weighting is 0.25 each. Four explicit taps would fetch the same four
+// values and average them by hand.
+static const char* FS_DOWNSAMPLE = R"(#version 330 core
+in vec2 vUV;
+out vec4 FragColor;
+uniform sampler2D uTex;
+void main() { FragColor = texture(uTex, vUV); }
+)";
+
 // Running mean of the scene buffer.
 //
 // uBlend is 1/(n+1), so this is a plain unweighted average of every frame since the last
@@ -1236,6 +1443,11 @@ uniform sampler2D uScene;
 uniform sampler2D uBloom;
 uniform float uBloomStrength;
 uniform float uVignette;
+// Scene-referred exposure, applied where a hardcoded 0.85 used to be. The tonemap is the only
+// place that constant ever appeared, so metering the frame and varying it here is the whole
+// of auto-exposure as far as the shading is concerned — and with the feature off the renderer
+// hands over exactly 0.85 again, so the maps that were graded against it are untouched.
+uniform float uExposure;
 vec3 aces(vec3 x) {
     const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
     return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
@@ -1243,7 +1455,7 @@ vec3 aces(vec3 x) {
 void main() {
     vec3 c = texture(uScene, vUV).rgb;
     c += texture(uBloom, vUV).rgb * uBloomStrength;
-    c = aces(c * 0.85);
+    c = aces(c * uExposure);
     c = pow(c, vec3(1.0 / 2.2));
     // final grade: a mild S-curve contrast around mid-gray plus a small saturation lift.
     // Cheap, display-referred polish pass -- the flat ACES+gamma output on its own reads as
@@ -1313,6 +1525,14 @@ struct RenderSettings {
     // Non-zero draws one of the water shader's intermediates instead of the shaded surface.
     // Diagnostic only; see the uDebug switch in fsWater for what each value shows.
     int waterDebug = 0;
+    // Sun shafts through the map's own haze, quarter-res and bilaterally upsampled. Its
+    // strength is tied to the map's fog density, so a map authored with clear air pays for the
+    // pass and gets nothing visible out of it — which is also why switching this on does not
+    // change how the existing maps look, only how they look when the air is thick.
+    bool volumetric = true;
+    // Meter the frame and drive the tonemap's exposure from it. Off restores the fixed 0.85
+    // the grade was built around, exactly.
+    bool autoExposure = true;
     float fov = 75.f;
     float bloom = 0.55f;
     bool vsync = true;
@@ -1344,6 +1564,8 @@ struct Renderer {
     GLuint progChunk = 0, progSky = 0, progWater = 0, progPart = 0, progModel = 0;
     GLuint progBright = 0, progBlur = 0, progComposite = 0, progUI = 0;
     GLuint progAccum = 0, progDenoise = 0;
+    GLuint progVolume = 0, progVolumeUp = 0;
+    GLuint progLogLuma = 0, progDownsample = 0;
     GLuint denoiseFBO[2] = {0, 0}, denoiseTex[2] = {0, 0};
     // fullscreen quad
     GLuint fsVAO = 0, fsVBO = 0;
@@ -1361,6 +1583,23 @@ struct Renderer {
     GLuint sceneFBO = 0, sceneColor = 0, sceneDepth = 0, sceneGeom = 0;
     GLuint bloomFBO[2] = {0, 0}, bloomTex[2] = {0, 0};
     int bloomW = 0, bloomH = 0;
+    // In-scattered sunlight, at half the scene's resolution in each axis. Alpha carries the
+    // view depth each pixel was marched against, which is what lets the upsample tell a tap
+    // that belongs to this surface from one that belongs to the sky behind it.
+    GLuint volFBO = 0, volTex = 0;
+    int volW = 0, volH = 0;
+    // The scene colour attached *without* its depth buffer. The bilateral upsample blends into
+    // the colour while sampling the depth, and a framebuffer that has both attached is a
+    // feedback loop — legal to write, undefined to read, and undefined on the hardware that
+    // decides to notice. A second framebuffer object naming only the colour costs nothing and
+    // makes the read unambiguous.
+    GLuint sceneColorOnlyFBO = 0;
+    // Luminance reduction chain for the metering, 64 -> 32 -> 16 -> 8, then a 4x4 tail that is
+    // double-buffered so the readback can ask for the grid the *previous* frame produced.
+    GLuint expFBO[4] = {0, 0, 0, 0}, expTex[4] = {0, 0, 0, 0};
+    GLuint expTailFBO[2] = {0, 0}, expTailTex[2] = {0, 0};
+    int expIdx = 0;
+    bool expWritten = false;
     // Planar reflection and refraction targets. Two extra views of the world, rendered every
     // frame the water is visible: the scene above the waterline mirrored through it, and the
     // scene below it. Both carry a depth texture — the refraction one because the water shader
@@ -1388,6 +1627,50 @@ struct Renderer {
     // invert exactly this projection to turn a depth sample back into metres.
     static constexpr float NEAR_Z = 0.08f, FAR_Z = 900.f;
 
+    // ---- volumetric constants
+    //
+    // Only four percent of the map's extinction is treated as directional in-scatter, and that
+    // number is small on purpose. Haze is very nearly a pure scatterer, so the physically
+    // honest coefficient would be the density itself — but the chunk and water shaders already
+    // blend toward the fog colour with distance, and that term is standing in for the light
+    // this march would compute. Billing it twice is not a subtlety: at the full density the
+    // marina's mean channel moved by 9.6 of 255 with 97% of the frame changed, which is not a
+    // sun shaft, it is a second fog layer. What the march is here to add is the part an
+    // analytic fade cannot express — the forward lobe around the sun and the shadow a crane
+    // casts into the air — so it is scaled until that structure is what is left. At 0.04 the
+    // same frame moves 1.5 of 255, and a view into the sun carries fourteen times that because
+    // the phase function is fourteen times higher there.
+    static constexpr float VOL_SCATTER = 0.04f;
+    static constexpr float VOL_PHASE_G = 0.55f;
+    // Sixty-four metres is the world's own width. Past the edge of the voxel volume there is
+    // nothing left that could shadow the air, so a longer march would only be re-deriving the
+    // uniform haze the analytic fog term already applies — at the price of a shadow trace per
+    // step that can only ever return "unblocked".
+    static constexpr float VOL_MAX_DIST = 64.f;
+
+    // ---- exposure constants
+    //
+    // FIXED_EXPOSURE is the constant the composite used before any of this existed and what it
+    // returns to when metering is off. EXPOSURE_KEY is the luminance the metered scene is
+    // mapped to, and it is not the textbook 0.18: it was picked so that Sandpoint Marina, the
+    // map the grade was tuned against, meters to within a couple of percent of the old fixed
+    // value. That makes auto-exposure a generalisation of the hand-tuned constant rather than
+    // a replacement for it, and it is why turning it on does not restyle the existing maps.
+    static constexpr float FIXED_EXPOSURE = 0.85f;
+    static constexpr float EXPOSURE_KEY = 0.115f;
+    // Bounds, so a frame that is almost entirely sky or almost entirely unlit interior cannot
+    // drive the exposure somewhere the tonemap has no useful range left.
+    static constexpr float EXPOSURE_MIN = 0.25f, EXPOSURE_MAX = 4.0f;
+    // Asymmetric, and the asymmetry is the point. Walking out of a dark interior into daylight
+    // the frame is blown out and the exposure has to come *down*, which the eye does in a
+    // fraction of a second; walking back in it has to come up, and that takes many seconds in
+    // a real eye and about a second and a half here before it stops being a delay and starts
+    // being an annoyance. Getting these the same way round is what makes an auto-exposure feel
+    // like vision rather than like a camera hunting.
+    static constexpr float EXPOSURE_TAU_DOWN = 0.35f, EXPOSURE_TAU_UP = 1.6f;
+    // Tiles read back per axis. Sixteen values, not one, so the tails can be trimmed too.
+    static constexpr int EXPOSURE_TILES = 4;
+
     // ---------------------------------------------------------------- temporal accumulation
     //
     // The AO and reflection rays pick their directions from hash13(vWorld) — a hash of the
@@ -1414,6 +1697,26 @@ struct Renderer {
     vec3 lastCamFwd = vec3(0, 0, 0);
     unsigned lastWorldRev = ~0u;
 
+    // ---------------------------------------------------------------- auto-exposure
+    //
+    // What the composite multiplies the scene by before the tonemap. Public because it is a
+    // number a caller may legitimately want — a HUD readout, or a weapon flash that should not
+    // fight the metering — and because it is the honest way to show that the feature is
+    // settling rather than hunting.
+    float exposure = FIXED_EXPOSURE;
+    bool exposureValid = false;    // has any frame been metered since the targets were built
+    float lastMeterTime = 0.f;
+
+    // The scene lighting the last setSceneUniforms call was handed.
+    //
+    // The volumetric pass runs in endScene, which takes no MapInfo and cannot be given one:
+    // game.h calls it with no arguments and this branch is not allowed to change that file.
+    // Copying the handful of values out as they go past is a smaller thing to defend than a
+    // second path for the same numbers, which could drift out of step with the one the chunk
+    // and water shaders are using and produce shafts that disagree with the fog they are in.
+    vec3 sceneSunDir = vec3(0, -1, 0), sceneSunColor = vec3(0, 0, 0);
+    float sceneFogDensity = 0.f;
+
     /** Halton, for the sub-pixel jitter that turns accumulation into antialiasing too. */
     static float halton(int i, int b) {
         float f = 1, r = 0;
@@ -1435,6 +1738,10 @@ struct Renderer {
         progComposite = linkProgram(VS_FULLSCREEN, FS_COMPOSITE, "composite");
         progAccum = linkProgram(VS_FULLSCREEN, FS_ACCUM, "accum");
         progDenoise = linkProgram(VS_FULLSCREEN, FS_DENOISE, "denoise");
+        progVolume = linkProgram(VS_FULLSCREEN, fsVolume().c_str(), "volume");
+        progVolumeUp = linkProgram(VS_FULLSCREEN, FS_VOLUME_UP, "volumeup");
+        progLogLuma = linkProgram(VS_FULLSCREEN, FS_LOGLUMA, "logluma");
+        progDownsample = linkProgram(VS_FULLSCREEN, FS_DOWNSAMPLE, "downsample");
         progUI = linkProgram(VS_UI, FS_UI, "ui");
 
         // fullscreen triangle-pair
@@ -1664,6 +1971,45 @@ struct Renderer {
             glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, *p.col, 0);
             glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, *p.dep, 0);
         }
+        // Half in each axis, floored at 8 so a pathologically small window still has something
+        // to march into rather than a zero-sized target the driver refuses.
+        volW = std::max(8, renderW / 2);
+        volH = std::max(8, renderH / 2);
+        if (volFBO) { glDeleteFramebuffers(1, &volFBO); volFBO = 0; }
+        makeTex2D(volTex, volW, volH, GL_RGBA16F, GL_RGBA, GL_FLOAT);
+        glGenFramebuffers(1, &volFBO);
+        glBindFramebuffer(GL_FRAMEBUFFER, volFBO);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, volTex, 0);
+        if (sceneColorOnlyFBO) { glDeleteFramebuffers(1, &sceneColorOnlyFBO); sceneColorOnlyFBO = 0; }
+        glGenFramebuffers(1, &sceneColorOnlyFBO);
+        glBindFramebuffer(GL_FRAMEBUFFER, sceneColorOnlyFBO);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, sceneColor, 0);
+
+        // Metering chain. Fixed sizes rather than a fraction of the window: this is a
+        // statistic, not an image, and 64x64 log-luminance tiles describe a 4K frame exactly as
+        // well as a 720p one. Square, so the tiles are not the frame's aspect — which does not
+        // matter either, since every tile covers the same fraction of the picture.
+        for (int i = 0; i < 4; i++) {
+            int s = 64 >> i;
+            if (expFBO[i]) { glDeleteFramebuffers(1, &expFBO[i]); expFBO[i] = 0; }
+            makeTex2D(expTex[i], s, s, GL_R32F, GL_RED, GL_FLOAT);
+            glGenFramebuffers(1, &expFBO[i]);
+            glBindFramebuffer(GL_FRAMEBUFFER, expFBO[i]);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, expTex[i], 0);
+        }
+        for (int i = 0; i < 2; i++) {
+            if (expTailFBO[i]) { glDeleteFramebuffers(1, &expTailFBO[i]); expTailFBO[i] = 0; }
+            makeTex2D(expTailTex[i], EXPOSURE_TILES, EXPOSURE_TILES, GL_R32F, GL_RED, GL_FLOAT);
+            glGenFramebuffers(1, &expTailFBO[i]);
+            glBindFramebuffer(GL_FRAMEBUFFER, expTailFBO[i]);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, expTailTex[i], 0);
+        }
+        expWritten = false;
+        // Snap rather than fade on the next metered frame. The targets are only rebuilt on
+        // startup and on a resize, and adapting from a stale exposure across either of those
+        // would show as a second of visible correction that nothing in the scene asked for.
+        exposureValid = false;
+
         resetAccumulation();
         bloomW = renderW / 2; bloomH = renderH / 2;
         if (bloomW < 1) bloomW = 1;
@@ -1905,6 +2251,11 @@ struct Renderer {
         glUniform1i(glGetUniformLocation(prog, "uSkyStyle"), mi.skyStyle);
         glUniform3f(glGetUniformLocation(prog, "uFogColor"), mi.skyHorizon.x, mi.skyHorizon.y, mi.skyHorizon.z);
         glUniform1f(glGetUniformLocation(prog, "uFogDensity"), mi.fogDensity);
+        // Kept for the volumetric pass, which runs after the frame is drawn and has no map to
+        // read from by then.
+        sceneSunDir = mi.sunDir;
+        sceneSunColor = mi.sunColor;
+        sceneFogDensity = mi.fogDensity;
     }
 
     // Attachment 1 carries surface normal + view depth for the cleanup filter, and only the
@@ -2285,10 +2636,181 @@ struct Renderer {
         glBindVertexArray(0);
     }
 
+    /**
+     * March the sun's in-scattering and add it to the frame.
+     *
+     * Runs before the temporal accumulation rather than after it, which is the whole reason
+     * the march can afford sixteen steps and a dithered start. Added afterwards, the dither
+     * would be a fixed pattern painted over a converged image — visibly worse than the banding
+     * it was there to break up. Added here it is one more noisy estimate in a renderer built
+     * around averaging noisy estimates, and it converges with everything else.
+     *
+     * Before the bright pass for a second reason: a shaft of sun is a bright thing in the
+     * frame, and bloom is what makes bright things read as bright. God rays that do not bloom
+     * look like grey geometry.
+     */
+    void renderVolumetrics() {
+        if (!settings.volumetric || !volFBO || sceneFogDensity <= 0.f) return;
+        // The sun's elevation, since sunDir is the direction light travels. Below the horizon
+        // there is no directional source to scatter and the whole pass is a no-op with a
+        // shadow trace attached.
+        if (-sceneSunDir.y <= 0.01f) return;
+
+        glBindFramebuffer(GL_FRAMEBUFFER, volFBO);
+        glViewport(0, 0, volW, volH);
+        glUseProgram(progVolume);
+        glUniform3f(glGetUniformLocation(progVolume, "uCamPos"), camPos.x, camPos.y, camPos.z);
+        glUniform3f(glGetUniformLocation(progVolume, "uCamRight"), camRight.x, camRight.y, camRight.z);
+        glUniform3f(glGetUniformLocation(progVolume, "uCamUp"), camUp.x, camUp.y, camUp.z);
+        glUniform3f(glGetUniformLocation(progVolume, "uCamFwd"), camFwd.x, camFwd.y, camFwd.z);
+        glUniform1f(glGetUniformLocation(progVolume, "uTanHalfFov"), tanf(settings.fov * 0.5f * 3.14159265f / 180.f));
+        glUniform1f(glGetUniformLocation(progVolume, "uAspect"), (float)width / (float)height);
+        glUniform1f(glGetUniformLocation(progVolume, "uNear"), NEAR_Z);
+        glUniform1f(glGetUniformLocation(progVolume, "uFar"), FAR_Z);
+        glUniform1f(glGetUniformLocation(progVolume, "uVoxelSize"), VOXEL_SIZE);
+        glUniform2f(glGetUniformLocation(progVolume, "uFullRes"), (float)renderW, (float)renderH);
+        glUniform3f(glGetUniformLocation(progVolume, "uSunDir"), sceneSunDir.x, sceneSunDir.y, sceneSunDir.z);
+        glUniform3f(glGetUniformLocation(progVolume, "uSunColor"), sceneSunColor.x, sceneSunColor.y, sceneSunColor.z);
+        glUniform1f(glGetUniformLocation(progVolume, "uFogDensity"), sceneFogDensity);
+        glUniform1f(glGetUniformLocation(progVolume, "uScatter"), VOL_SCATTER);
+        glUniform1f(glGetUniformLocation(progVolume, "uPhaseG"), VOL_PHASE_G);
+        glUniform1f(glGetUniformLocation(progVolume, "uMaxDist"), VOL_MAX_DIST);
+        glUniform3f(glGetUniformLocation(progVolume, "uWorldSize"), (float)WX, (float)WY, (float)WZ);
+        // Same rule the scene passes follow: a new dither every frame while the accumulator is
+        // running, and a frozen one when it is not, so switching accumulation off leaves a
+        // still pattern rather than a crawling one.
+        glUniform1f(glGetUniformLocation(progVolume, "uSampleSeed"),
+                    settings.accumulate ? (float)(accumSamples % 4096) : 0.0f);
+        const struct { int unit; const char* name; GLenum target; GLuint tex; } binds[] = {
+            { 0, "uDepth",     GL_TEXTURE_2D, sceneDepth   },
+            { 1, "uOcc",       GL_TEXTURE_3D, occTex       },
+            { 2, "uOccMid",    GL_TEXTURE_3D, occMidTex    },
+            { 3, "uOccCoarse", GL_TEXTURE_3D, occCoarseTex },
+        };
+        for (auto& b : binds) {
+            glActiveTexture(GL_TEXTURE0 + b.unit);
+            glBindTexture(b.target, b.tex);
+            glUniform1i(glGetUniformLocation(progVolume, b.name), b.unit);
+        }
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+
+        // ---- bilateral upsample, added straight into the scene colour
+        glBindFramebuffer(GL_FRAMEBUFFER, sceneColorOnlyFBO);
+        glViewport(0, 0, renderW, renderH);
+        glUseProgram(progVolumeUp);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, volTex);
+        glUniform1i(glGetUniformLocation(progVolumeUp, "uVolume"), 0);
+        glActiveTexture(GL_TEXTURE0 + 1);
+        glBindTexture(GL_TEXTURE_2D, sceneDepth);
+        glUniform1i(glGetUniformLocation(progVolumeUp, "uDepth"), 1);
+        glActiveTexture(GL_TEXTURE0);
+        glUniform2f(glGetUniformLocation(progVolumeUp, "uVolRes"), (float)volW, (float)volH);
+        glUniform1f(glGetUniformLocation(progVolumeUp, "uNear"), NEAR_Z);
+        glUniform1f(glGetUniformLocation(progVolumeUp, "uFar"), FAR_Z);
+        // In-scattered light is light that arrives on top of whatever was already there, so it
+        // adds rather than blending. Nothing here is occluded by what is in the buffer; the
+        // march has already stopped at the surface the pixel shows.
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_ONE, GL_ONE);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+        glDisable(GL_BLEND);
+    }
+
+    /**
+     * Meter the frame and move the exposure toward what it asks for.
+     *
+     * The grid read back is the one the *previous* frame reduced. glReadPixels is synchronous
+     * and reading a target the GPU has only just finished writing is a pipeline stall; reading
+     * one it finished with a frame ago usually is not. A frame of latency in a quantity that
+     * is then low-pass filtered over a second is not a quantity anyone can perceive being late
+     * — a stall to avoid it would be paid every single frame. Doing this properly needs a
+     * pixel buffer object and a fence, neither of which the loader carries.
+     */
+    void meterExposure(GLuint lit) {
+        if (!settings.autoExposure || !expTailFBO[0]) { exposure = FIXED_EXPOSURE; return; }
+
+        if (expWritten) {
+            const int N = EXPOSURE_TILES * EXPOSURE_TILES;
+            float tiles[N];
+            glBindFramebuffer(GL_FRAMEBUFFER, expTailFBO[expIdx]);
+            glReadPixels(0, 0, EXPOSURE_TILES, EXPOSURE_TILES, GL_RED, GL_FLOAT, tiles);
+            // A NaN anywhere in the frame would come through as a NaN here, and an exposure is
+            // multiplied into every pixel — so one bad frame would black out the game and stay
+            // that way. Refusing to meter a grid that is not entirely finite keeps last
+            // frame's perfectly good value instead.
+            bool usable = true;
+            for (int i = 0; i < N; i++)
+                if (!(tiles[i] == tiles[i]) || tiles[i] < -30.f || tiles[i] > 30.f) usable = false;
+            if (usable) {
+                // Trim the tails as well as metering multiplicatively. A geometric mean already
+                // survives a bright speck; what it does not survive is a bright *region* — a
+                // third of the frame filled with sunset sky, or a wall of fire — which is a
+                // legitimate part of the picture and still not the part the exposure should be
+                // set by. Dropping the brightest four tiles and the darkest four and averaging
+                // the middle eight is a photographer's answer to the same problem, and it stays
+                // continuous in the tile values: two tiles swapping rank does not move the
+                // result, so nothing jumps as the camera turns.
+                std::sort(tiles, tiles + N);
+                double s = 0;
+                int lo = N / 4, hi = N - N / 4;
+                for (int i = lo; i < hi; i++) s += tiles[i];
+                float lum = expf((float)(s / (double)(hi - lo)));
+                float target = clampf(EXPOSURE_KEY / std::max(lum, 1e-4f), EXPOSURE_MIN, EXPOSURE_MAX);
+                if (!exposureValid) {
+                    // Nothing to adapt from on the first frame after a map loads. Fading in
+                    // from a default would open every level with a second of visible
+                    // correction, which reads as a bug to anyone who did not write it.
+                    exposure = target;
+                    exposureValid = true;
+                } else {
+                    // The blend runs on the log of the exposure so that a halving takes exactly
+                    // as long as a doubling. Blended linearly, the same time constant makes a
+                    // bright-to-dark transition crawl and a dark-to-bright one snap, for no
+                    // reason except where zero happens to sit.
+                    float dt = clampf(time - lastMeterTime, 0.f, 0.25f);
+                    float tau = target < exposure ? EXPOSURE_TAU_DOWN : EXPOSURE_TAU_UP;
+                    float k = 1.f - expf(-dt / tau);
+                    exposure = expf(logf(exposure) + (logf(target) - logf(exposure)) * k);
+                }
+                lastMeterTime = time;
+            }
+        }
+
+        // ---- reduce this frame's luminance down to the 4x4 grid the next one will read
+        int cur = expIdx ^ 1;
+        glUseProgram(progLogLuma);
+        glBindFramebuffer(GL_FRAMEBUFFER, expFBO[0]);
+        glViewport(0, 0, 64, 64);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, lit);
+        glUniform1i(glGetUniformLocation(progLogLuma, "uTex"), 0);
+        glUniform2f(glGetUniformLocation(progLogLuma, "uDstTexel"), 1.f / 64.f, 1.f / 64.f);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+        glUseProgram(progDownsample);
+        glUniform1i(glGetUniformLocation(progDownsample, "uTex"), 0);
+        for (int i = 1; i < 4; i++) {
+            int s = 64 >> i;
+            glBindFramebuffer(GL_FRAMEBUFFER, expFBO[i]);
+            glViewport(0, 0, s, s);
+            glBindTexture(GL_TEXTURE_2D, expTex[i - 1]);
+            glDrawArrays(GL_TRIANGLES, 0, 6);
+        }
+        glBindFramebuffer(GL_FRAMEBUFFER, expTailFBO[cur]);
+        glViewport(0, 0, EXPOSURE_TILES, EXPOSURE_TILES);
+        glBindTexture(GL_TEXTURE_2D, expTex[3]);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+        expIdx = cur;
+        expWritten = true;
+    }
+
     // ---------------- post processing to backbuffer
     void endScene() {
         glDisable(GL_DEPTH_TEST);
         glBindVertexArray(fsVAO);
+
+        // ---- volumetric sun shafts, added into the scene buffer itself
+        renderVolumetrics();
 
         // ---- temporal accumulation
         //
@@ -2357,6 +2879,13 @@ struct Renderer {
             glActiveTexture(GL_TEXTURE0);
         }
 
+        // ---- metering, off the same image the composite is about to tonemap
+        //
+        // After the denoiser rather than off sceneColor, because a metering pass reading raw
+        // ray noise measures the noise as well as the picture, and the log it takes weights a
+        // dark speckle more heavily than the bright one beside it cancels.
+        meterExposure(lit);
+
         // bright pass -> bloom[0]
         glBindFramebuffer(GL_FRAMEBUFFER, bloomFBO[0]);
         glViewport(0, 0, bloomW, bloomH);
@@ -2391,6 +2920,7 @@ struct Renderer {
         glUniform1i(glGetUniformLocation(progComposite, "uBloom"), 1);
         glUniform1f(glGetUniformLocation(progComposite, "uBloomStrength"), settings.bloom);
         glUniform1f(glGetUniformLocation(progComposite, "uVignette"), 0.35f);
+        glUniform1f(glGetUniformLocation(progComposite, "uExposure"), exposure);
         glBindVertexArray(fsVAO);
         glDrawArrays(GL_TRIANGLES, 0, 6);
         glEnable(GL_DEPTH_TEST);

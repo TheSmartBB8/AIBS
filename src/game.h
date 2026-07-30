@@ -11,6 +11,7 @@
 // The sky model arrives as its own file. Guarded so this compiles either way: the build stays
 // green while that work is in flight, and the menu's time-of-day control starts driving a real
 // sun the moment the file appears rather than needing a second edit here to switch it on.
+#include "vehicles.h"
 #if __has_include("timeofday.h")
   #include "timeofday.h"
   #define VOXWRECK_HAVE_TIMEOFDAY 1
@@ -75,6 +76,9 @@ struct Game {
     bool cheatNoFall = false;
     bool cheatFlight = false;
     bool cheatKeepDebris = false;        // debris never despawns
+
+    VehicleSystem vehicles;
+    int drivingVehicle = -1;             // index into vehicles.list, or -1 on foot
     Rng fxRng{20260722};      // cosmetic-only randomness (particles/loose spawns from cluster fx)
 
     GameState state = ST_MAIN_MENU;
@@ -685,6 +689,38 @@ struct Game {
         // in the renderer because it is physics: buoyancy and splash fx read the same
         // heights the surface is drawn at, and a simulation the renderer owned would drift
         // from the one the game does.
+        // ---- vehicles
+        //
+        // Driving replaces the movement inputs rather than adding a second control path: the
+        // player rides along at the seat, so every system that already reads player.pos —
+        // audio, the water splash test, the renderer's camera — keeps working untouched
+        // instead of each needing to learn that a car exists.
+        if (drivingVehicle >= 0 && drivingVehicle < (int)vehicles.list.size()) {
+            Vehicle& dv = vehicles.list[drivingVehicle];
+            dv.throttle = ctl ? ((in.keyDown['W'] ? 1.f : 0.f) - (in.keyDown['S'] ? 1.f : 0.f)) : 0.f;
+            dv.steer    = ctl ? ((in.keyDown['D'] ? 1.f : 0.f) - (in.keyDown['A'] ? 1.f : 0.f)) : 0.f;
+            dv.brake    = (ctl && in.keyDown[VK_SPACE]) ? 1.f : 0.f;
+            dv.occupied = true;
+            if (ctl && in.keyPressed['E']) { dv.occupied = false; drivingVehicle = -1; }
+            else {
+                player.pos = vehicles.seatPos(drivingVehicle);
+                player.vel = vec3(0, 0, 0);
+            }
+        } else if (ctl && in.keyPressed['E']) {
+            // Not `near`: windows.h defines that as a macro, and the Windows build is the
+            // product, so it fails only in the cross-compile at the very end of build.sh.
+            int cand = vehicles.findNearest(player.pos, 3.2f);
+            if (cand >= 0) { drivingVehicle = cand; audio.play(SND_CLICK, 0.7f); }
+        }
+        vehicles.update(dt, world,
+                        water.ready ? std::function<float(float,float)>(
+                            [&](float x, float z) { return water.heightAt(x, z); })
+                                    : nullptr,
+                        [&](vec3 p, float spd) {
+                            particles.dust(p, vec3(0, 1.2f, 0), 0.18f, 0.7f, 0.55f, 0.53f, 0.5f);
+                            audio.play(SND_DEBRIS, std::min(1.f, 0.25f + spd * 0.05f));
+                        });
+
         if (mapInfo.hasWater && water.ready) {
             // Anything ploughing through the surface churns it. This is the dominant foam
             // source — the simulation's own breaking-wave term is deliberately subtle, so
@@ -707,9 +743,8 @@ struct Game {
             for (auto& lv : loose.props)
                 if (lv.alive && !lv.held)
                     churn(lv.pos, vlen(lv.vel), 0.35f);
-            // Vehicles would be the interesting caller here — a hull under way is what the
-            // reference footage's wake comes from — but the native build has none yet. The
-            // hook is one `churn` call away when it does.
+            for (auto& v : vehicles.list)
+                if (v.alive) churn(v.pos, vlen(v.vel), v.kind == VK_BOAT ? 1.3f : 0.7f);
 
             water.update(dt);
             water.pack(waterPacked);
@@ -821,6 +856,19 @@ struct Game {
         for (auto& r : remotes) {
             if (!r.used) continue;
             drawAvatar(r);
+        }
+
+        // vehicles
+        if (!vehicles.list.empty()) {
+            static std::vector<VehicleBox> vb;
+            vb.clear();
+            for (int i = 0; i < (int)vehicles.list.size(); i++)
+                if (vehicles.list[i].alive && i != drivingVehicle) vehicles.appendBoxes(i, vb);
+            if (!vb.empty()) {
+                ren.modelBegin();
+                for (auto& b : vb) ren.modelBox(b.center, b.half, b.r, b.g, b.b);
+                ren.modelDraw(mat4::identity(), mapInfo, mapInfo.ambient);
+            }
         }
 
         // loose grabbable debris props (the one currently held is drawn with the viewmodel)
@@ -1345,9 +1393,23 @@ struct Game {
                 cy += 50;
             }
             cy += 8;
-            ren.uiText("VEHICLES", cx, cy, 1.7f, 0.75f, 0.78f, 0.84f, 1.f);
+            ren.uiText("VEHICLES   (E TO DRIVE)", cx, cy, 1.7f, 0.75f, 0.78f, 0.84f, 1.f);
             cy += 28;
-            ren.uiText("none in this build yet", cx, cy, 1.6f, 0.5f, 0.52f, 0.56f, 1.f);
+            struct { const char* n; VehicleKind k; } vk[] = {
+                { "CAR",   VK_CAR   },
+                { "TRUCK", VK_TRUCK },
+                { "BOAT",  VK_BOAT  },
+            };
+            for (auto& e : vk) {
+                if (btn(cx, cy, cw, 40, e.n)) {
+                    // Dropped a little above whatever is ahead, so the springs catch it rather
+                    // than it starting interpenetrated with the ground.
+                    vec3 at = player.pos + player.forwardFlat() * 5.0f + vec3(0, 1.2f, 0);
+                    vehicles.spawn(e.k, at, player.yaw);
+                    audio.play(SND_CLICK, 0.6f);
+                }
+                cy += 46;
+            }
         } else if (sandboxTab == 1) {
             char lbl[64];
             std::snprintf(lbl, sizeof lbl, "TIME OF DAY   %02d:%02d",

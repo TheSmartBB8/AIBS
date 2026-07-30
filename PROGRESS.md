@@ -30,9 +30,9 @@ Update this the moment a system changes status, before starting the next one.
 | Bloom / ACES / grade / vignette | built | |
 | Procedural surface texturing | built | no texture assets ship |
 | Analytic distant environment | built | kills the diorama look |
-| Volumetric lighting | not started | in the brief's post stack, absent here |
+| Volumetric lighting | built | quarter-res march, HG phase, bilateral upsample. Scatter at 0.04 of extinction — at full density it moved the frame 9.6/255, which is a second fog layer, not a sun shaft |
 | TAA (beyond accumulation-while-still) | not started | no motion vectors yet |
-| Auto-exposure | not started | exposure is fixed |
+| Auto-exposure | built | luminance mip chain, asymmetric adaptation |
 | Portal sampling for interiors | not started | |
 
 ## Water
@@ -69,11 +69,14 @@ Update this the moment a system changes status, before starting the next one.
 | Evermore Mall | built | |
 | Sandpoint Marina | built | incl. West Point industrial area |
 | Hub / home yard | built | |
-| Vehicles | **not started (native)** | corrected: cars exist only in the `web/` ThreeJS build (`web/public/src/scene/cars.js`). The native build — which is the product — has no vehicle code at all. An earlier version of this file said "built"; that was wrong. |
-| Boat | not started | brief's vehicle minimum, and the wake in the reference needs it |
-| Forklift / truck | not started | brief's vehicle minimum |
+| Vehicles: car | built | `vehicles.h`. Sprung suspension; rests at 0.48 m ride height with 0.0000 residual velocity, 88 km/h top speed |
+| Vehicles: truck | built | same chassis, heavier and slower |
+| Vehicles: boat | built | buoyancy + wave-following attitude; pitch tracks a 2.86 deg water slope at 2.86 deg |
+| Vehicles: drive / enter / exit | built | E to enter within 3.2 m, WASD + space, E to leave |
+| Vehicles: wake | built | hulls churn the foam field |
+| Forklift | not started | truck stands in for the brief's "truck or forklift" |
 | Tool roster (14 tools) | built | viewmodels rebuilt to be recognisable |
-| Sandbox spawn menu / time of day / cheats | not started | |
+| Sandbox build menu (TAB) | built | spawn props + vehicles, time of day, haze, cheats; does not pause the world |
 | Menus, HUD, options | built | |
 | Synthesised audio | built | |
 

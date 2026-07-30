@@ -1399,14 +1399,17 @@ struct Renderer {
             glBindFramebuffer(GL_FRAMEBUFFER, denoiseFBO[i]);
             glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, denoiseTex[i], 0);
         }
-        // Reflection and refraction, at half the scene resolution in each axis.
+        // Reflection and refraction at the full scene resolution.
         //
-        // Half is not a compromise here so much as an acknowledgement: both textures are
-        // sampled through a distortion that moves the lookup by several pixels anyway, so
-        // detail finer than that is thrown away before it can be seen. Full resolution costs
-        // four times the fill for an image that arrives blurred either way.
-        planarW = std::max(8, renderW / 2);
-        planarH = std::max(8, renderH / 2);
+        // Half in each axis is the usual choice and the usual argument for it is sound as far as
+        // it goes — both textures are read through a distortion that moves the lookup anyway.
+        // But the distortion here is deliberately small, a couple of thousandths of the screen,
+        // so it does not hide a halved reflection the way a heavier wobble would; what it hides
+        // is much less than the sharpness given up. A reflected mast or a lighthouse stripe is a
+        // high-contrast thin feature, exactly the content that suffers most from being resolved
+        // at half rate and then magnified back.
+        planarW = std::max(8, renderW);
+        planarH = std::max(8, renderH);
         struct { GLuint* fbo; GLuint* col; GLuint* dep; } planar[2] = {
             { &reflFBO, &reflColor, &reflDepth },
             { &refrFBO, &refrColor, &refrDepth },

@@ -84,6 +84,26 @@ float fbm(vec2 p) {
     for (int i = 0; i < 4; i++) { v += a * vnoise(p); p *= 2.13; a *= 0.5; }
     return v;
 }
+/**
+ * The same fbm with its high octaves rolled off, `lod` octaves' worth.
+ *
+ * A texture gets this for free from its mip chain; procedural noise has to be told, and if it
+ * is not told it aliases. Each suppressed octave is replaced by its own mean rather than simply
+ * dropped, so the sum keeps the value it would have had and only loses the detail — dropping
+ * the terms outright would darken the field and shift where the cloud threshold bites.
+ *
+ * With lod at 0 this is identical to fbm() above, so nothing changes anywhere the noise was
+ * already being sampled densely enough.
+ */
+float fbmLod(vec2 p, float lod) {
+    float v = 0.0, a = 0.5;
+    for (int i = 0; i < 4; i++) {
+        float keep = clamp(1.0 - (lod - float(i)), 0.0, 1.0);
+        v += a * mix(0.5, vnoise(p), keep);
+        p *= 2.13; a *= 0.5;
+    }
+    return v;
+}
 vec3 skyColor(vec3 dir) {
     float el = clamp(dir.y, -0.05, 1.0);
     float h = pow(1.0 - max(el, 0.0), 3.0);
@@ -95,10 +115,37 @@ vec3 skyColor(vec3 dir) {
     col += uSunColor * 0.12 * pow(sd, 16.0);
     if (uSkyStyle == 1) col += uSunColor * 0.10 * pow(sd, 4.0);
     // clouds on a plane
+    //
+    // The cloud coordinate and its screen footprint are computed before the branch, not inside
+    // it. Derivatives taken in non-uniform control flow are undefined, and the horizon cutoff
+    // below is precisely that case: a 2x2 quad sitting on the boundary has lanes on both sides
+    // of it, so a fwidth evaluated within the branch would be reading lanes that never ran.
+    vec2 cuv = dir.xz / (dir.y + 0.12) * 1.6 + vec2(uTime * 0.008, uTime * 0.003);
+    vec2 q = cuv * 1.4;
+    float cfw = max(length(vec2(dFdx(q.x), dFdy(q.x))), length(vec2(dFdx(q.y), dFdy(q.y))));
+    float clod = max(0.0, log2(max(cfw, 1e-6) / 0.5) / log2(2.13));
     if (dir.y > 0.015) {
-        vec2 cuv = dir.xz / (dir.y + 0.12) * 1.6;
-        cuv += vec2(uTime * 0.008, uTime * 0.003);
-        float cl = fbm(cuv * 1.4);
+        // Band-limit the cloud noise to what this pixel can actually resolve.
+        //
+        // Projecting the clouds onto a plane by dividing by dir.y is what gives them
+        // perspective, and it is also a singularity: approaching the horizon the divisor tends
+        // to its floor while the numerator keeps sweeping, so an unbounded stretch of cloud
+        // plane is crushed into a handful of pixels. The finest of the four octaves runs at
+        // 2.13^3, nearly ten times the base frequency, and well before the horizon it passes
+        // Nyquist and folds into a stationary pattern of horizontal bars.
+        //
+        // Those bars were the "blocky" water. Not the water at all, in fact — the water was
+        // faithfully mirroring an aliased sky, which is why it survived a distance fade on the
+        // wave detail, a rewrite of the reflection path, and switching the planar passes off
+        // altogether: every one of those still asked skyColor for the same reflected direction
+        // and got the same folded noise back. Grazing reflection is simply where it shows,
+        // because a reflected ray leaving the surface at two degrees sweeps the cloud plane
+        // hundreds of times faster than the pixel grid can sample it.
+        //
+        // fwidth on the cloud coordinate measures that sweep directly, so the rolloff follows
+        // the real footprint instead of a hand-tuned function of elevation, and it works the
+        // same whether the caller is the sky itself or a reflection off anything else.
+        float cl = fbmLod(q, clod);
         float cover = uSkyStyle == 1 ? 0.58 : 0.52;
         float cm = smoothstep(cover, cover + 0.22, cl);
         float fade = smoothstep(0.015, 0.12, dir.y);
@@ -604,6 +651,7 @@ uniform sampler2D uWaveNormal;
 uniform float uMoveFactor;      // scrolls the distortion, in texture repeats
 uniform float uTiling;          // texture repeats per metre
 uniform float uNear, uFar;      // must match the projection, to invert its depth
+uniform float uPixelAngle;      // radians of view angle per vertical pixel
 uniform int uPlanar;            // 0 = no reflection/refraction targets available
 // Visualise one intermediate of the surface instead of shading it. Every term below feeds the
 // same pixels, so when something is visibly wrong in the water the picture alone cannot say
@@ -674,10 +722,27 @@ void main() {
     // and the renderer's jittered accumulation cannot either, since a sub-pixel jitter does
     // not supersample content aliasing many times over per pixel.
     //
-    // So retire the detail on the same criterion texture minification uses, from the
-    // fragment's own screen-space derivative: present where it is resolvable, gone where it
-    // would alias, leaving the field's already band-limited normal to carry the far water.
-    float texelWorld = max(length(vec2(dFdx(p.x), dFdy(p.x))), length(vec2(dFdx(p.y), dFdy(p.y))));
+    // So retire the detail on the same criterion texture minification uses: present where it is
+    // resolvable, gone where it would alias, leaving the field's already band-limited normal to
+    // carry the far water.
+    //
+    // The footprint is computed in closed form and NOT from dFdx/dFdy, which is what the first
+    // two versions of this did. Screen-space derivatives are evaluated once per 2x2 pixel quad,
+    // so every quantity derived from them is piecewise constant over 2x2 blocks. In a value used
+    // directly that is invisible; in one driving a fade it is not, because across the width of
+    // the transition the fade then steps in 2x2 squares — a blocky pattern occupying precisely
+    // the band where the fade ramps, which for a grazing view of water is the whole middle
+    // distance. Measured against the rest of the frame, that derivative-driven fade carried a
+    // two-pixel alternating component of 2.61 where the simulated normal's was 0.00 and the
+    // final image's 0.28: the fade was the largest source of pixel-scale structure in the water,
+    // and it was introduced to cure pixel-scale structure.
+    //
+    // For a plane there is no need to differentiate anything. A pixel subtends a fixed angle,
+    // the ray runs `dist` metres to reach the surface, and the footprint is stretched by 1/cos
+    // of the incidence angle — a factor of thirty at two degrees above the water. That is exact,
+    // smooth per pixel, and cheaper than three derivative pairs.
+    vec3 Vf = normalize(uCamPos - vWorld);
+    float texelWorld = length(vWorld - uCamPos) * uPixelAngle / max(abs(Vf.y), 0.002);
     // Finest feature in the distortion/normal maps, in metres, at the tiling in use: a 256-px
     // texture spanning 1/uTiling metres, whose sharpest detail is a handful of texels across.
     float detailM = (1.0 / max(uTiling, 0.001)) * (5.0 / 256.0);
@@ -721,7 +786,7 @@ void main() {
         // depth stretched by the view angle — what this shader used before the planar passes
         // existed. It knows about the sea bed and nothing floating in it, but it keeps the
         // depth grading honest when the feature is switched off.
-        float NoVflat = max(dot(fieldN, normalize(uCamPos - vWorld)), 0.12);
+        float NoVflat = max(dot(fieldN, Vf), 0.12);
         waterDepth = vDepth / NoVflat;
     }
 
@@ -762,7 +827,7 @@ void main() {
     vec3 nm = texture(uWaveNormal, warpUV).rgb * 2.0 - 1.0;
     vec3 N = normalize(fieldN + vec3(nm.x, 0.0, nm.z) * 0.22 * detailFade);
 
-    vec3 V = normalize(uCamPos - vWorld);
+    vec3 V = Vf;
     float NoV = max(dot(N, V), 0.0);
 
     // Each of these is scaled into a visible range and written straight out, with alpha 1 so
@@ -2012,6 +2077,10 @@ struct Renderer {
         glUniform1i(glGetUniformLocation(progWater, "uDebug"), settings.waterDebug);
         glUniform1f(glGetUniformLocation(progWater, "uNear"), NEAR_Z);
         glUniform1f(glGetUniformLocation(progWater, "uFar"), FAR_Z);
+        // Radians of view angle per vertical pixel of the internal render target, which is what
+        // the surface needs to work out its own footprint without differentiating anything.
+        glUniform1f(glGetUniformLocation(progWater, "uPixelAngle"),
+                    2.f * tanf(settings.fov * 0.5f * 3.14159265f / 180.f) / (float)renderH);
         // One repeat every 9 metres. Small enough that the chop has a visible scale next to a
         // boat, large enough that the tile does not announce itself across the open harbour.
         glUniform1f(glGetUniformLocation(progWater, "uTiling"), 1.f / 9.f);

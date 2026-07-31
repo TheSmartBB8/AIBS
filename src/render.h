@@ -952,7 +952,19 @@ void main() {
     // by a hardcoded sand tone.
     vec3 refracted = uPlanar == 1 ? refractedBed(sampleUV, waterDepth) : vec3(0.62, 0.56, 0.42) * 0.6;
     vec3 trans = exp(-EXTINCT * waterDepth);
-    vec3 body = mix(uWaterColor, refracted, trans);
+    // The water's own colour and its foam are albedos, not emission, and have to be lit by
+    // whatever light the sky is actually giving — otherwise the harbour glows at midnight.
+    // That failure is not subtle when it happens: with the sun down, the reflected and
+    // refracted terms correctly go dark because they come from real rendered views, while
+    // these two constants stay at their daytime values, so the water ends up brighter than the
+    // sky above it and the wake reads as a strip light lying in the bay.
+    //
+    // Normalised against the clear-noon sky so that the daylight look, which the maps were
+    // authored against, is left exactly where it was.
+    float skyLit = clamp(dot((uSkyHorizon + uSkyZenith) * 0.5 + uSunColor * 0.22,
+                             vec3(0.2126, 0.7152, 0.0722)) / 1.35, 0.015, 1.0);
+
+    vec3 body = mix(uWaterColor * skyLit, refracted, trans);
 
     vec3 col = mix(body, reflected, fres);
 
@@ -983,7 +995,7 @@ void main() {
     float foam = clamp(shore * 0.85 + steep * 0.9 + crest * 0.5 + trail * 1.1, 0.0, 1.0);
     // Break the shoreline band up, or it reads as a painted stripe following the coast.
     foam *= 0.65 + 0.35 * sin(p.x * 7.0 + p.y * 5.0 + t * 1.3);
-    col = mix(col, vec3(0.92, 0.95, 0.97), clamp(foam, 0.0, 1.0) * 0.85);
+    col = mix(col, vec3(0.92, 0.95, 0.97) * skyLit, clamp(foam, 0.0, 1.0) * 0.85);
 
     float dist = length(vWorld - uCamPos);
     float f = 1.0 - exp(-pow(dist * uFogDensity, 1.5));

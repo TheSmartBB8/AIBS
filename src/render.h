@@ -922,7 +922,21 @@ void main() {
     // centimetre-scale chop the 0.25 m grid cannot represent. Sampled at the warped
     // coordinate so the bumps travel with the distortion instead of sliding through it.
     vec3 nm = texture(uWaveNormal, warpUV).rgb * 2.0 - 1.0;
-    vec3 N = normalize(fieldN + vec3(nm.x, 0.0, nm.z) * 0.22 * detailFade);
+    // 0.22 here was a workaround for a bug that was later fixed a different way, and leaving
+    // it behind cost the water most of its character.
+    //
+    // The chop was cut from 0.85 to 0.22 because foam was appearing across the whole harbour —
+    // the shader's steepness term was reading this fully perturbed normal, so centimetre
+    // ripples were being counted as breaking waves. That was then fixed at source by having
+    // steepness read the simulated field normal instead, which is the only one that describes
+    // waves large enough to break. The constant was never put back, so the surface has been
+    // running at a quarter of its intended chop ever since, and two separate faults trace to
+    // it: near water carried *less* structure than far water (ripple rms 0.08 against 1.01,
+    // the exact inverse of what perspective does), and a lamp's reflection came back as a
+    // smooth ribbon rather than breaking into the ladder of discrete glints that a real
+    // rippled surface produces. Restoring it is one change for both, because both were only
+    // ever the same missing detail seen from different directions.
+    vec3 N = normalize(fieldN + vec3(nm.x, 0.0, nm.z) * 0.70 * detailFade);
 
     vec3 V = Vf;
     float NoV = max(dot(N, V), 0.0);

@@ -980,7 +980,7 @@ void main() {
     // that made it has moved on. Weighted to dominate where it exists, because a wake is
     // supposed to be the brightest thing on the water.
     float trail = texture(uFoam, (p - uWaterOrigin) / uWaterSize).r;
-    float foam = clamp(shore * 0.85 + steep * 0.9 + crest * 0.5 + trail * 1.6, 0.0, 1.0);
+    float foam = clamp(shore * 0.85 + steep * 0.9 + crest * 0.5 + trail * 1.1, 0.0, 1.0);
     // Break the shoreline band up, or it reads as a painted stripe following the coast.
     foam *= 0.65 + 0.35 * sin(p.x * 7.0 + p.y * 5.0 + t * 1.3);
     col = mix(col, vec3(0.92, 0.95, 0.97), clamp(foam, 0.0, 1.0) * 0.85);

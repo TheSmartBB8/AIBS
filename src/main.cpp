@@ -1089,7 +1089,6 @@ static int renderMain(int argc, char** argv) {
     if (nodenoise) game.ren.settings.denoisePasses = 0;
     if (noplanar) game.ren.settings.planarWater = false;
     game.ren.settings.waterDebug = waterdbg;
-    if (todH >= 0.f) { game.todHours = todH; game.todHaze = todZ; game.applyTimeOfDay(); }
     if (maxacc > 0) game.ren.settings.maxAccum = maxacc;
     if (phil > 0) game.ren.settings.denoisePhiL = phil;
     if (!game.ren.init(plat.st.width, plat.st.height)) {
@@ -1102,6 +1101,9 @@ static int renderMain(int argc, char** argv) {
     // depend on the menu layout — a screenshot tool that breaks when a button moves is worse
     // than no screenshot tool.
     if (!menu) game.startSingleplayer(map);
+    // After the map loads, not before: loading writes mapInfo wholesale, so a sky applied
+    // ahead of it is silently discarded and the flag looks like it does nothing.
+    if (todH >= 0.f) { game.todHours = todH; game.todHaze = todZ; game.applyTimeOfDay(); }
     if (tool >= 0 && tool < TOOL_COUNT) game.weapons.current = (Tool)tool;
     // Settle the world, then hold it still.
     //

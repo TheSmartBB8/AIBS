@@ -734,7 +734,14 @@ struct Game {
                 if (speed < 0.6f) return;
                 float surf = water.heightAt(p.x, p.z);
                 if (p.y > surf + 0.6f || p.y < surf - 1.5f) return;   // must be at the surface
-                water.addFoam(p.x, p.z, radius, std::min(0.9f, speed * 0.10f) * dt * 6.f);
+                // Rate chosen against how long a cell stays under the hull, not by eye. A boat
+                // at 5.7 m/s with a 1.3 m radius covers a given cell for about 2r/v = 0.46 s,
+                // so anything above ~0.022 per frame drives that cell to full coverage before
+                // it emerges. Saturating is not merely "too much foam": it flattens the
+                // cosine-bell deposit into a plateau, so the trail loses its soft edge and its
+                // falloff at once and lies on the water as a hard-edged grey slab. Peak lands
+                // near 0.5 now, which leaves the decay and the spread something to shape.
+                water.addFoam(p.x, p.z, radius, std::min(0.9f, speed * 0.10f) * dt * 1.9f);
             };
             {
                 vec3 pv = player.vel;

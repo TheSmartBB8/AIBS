@@ -158,6 +158,11 @@ static Pals makeCommonPalette(World& w) {
     return P;
 }
 
+// Detail libraries. Split out because they are long, self-contained and about one subject
+// each; they need MapBuilder and Pals, so they are included here rather than standing alone.
+#include "facade.h"
+#include "waterfront.h"
+
 // ---------------------------------------------------------------- shared props
 static void placeTree(MapBuilder& B, const Pals& P, int x, int groundY, int z) {
     int h = B.rng.ri(9, 14);
@@ -859,6 +864,7 @@ static MapInfo genMarina(World& w, uint32_t seed = 4242) {
     w.mapId = 1;
     MapBuilder B(w, seed);
     Pals P = makeCommonPalette(w);
+    WfPals F = makeWfPals(w);
     uint8_t signWhite = w.addPal(240, 245, 255, M_LIGHT, 1.1f);
     uint8_t signRed   = w.addPal(255, 90, 70, M_LIGHT, 1.2f);
     uint8_t beacon    = w.addPal(255, 220, 120, M_LIGHT, 8.0f);
@@ -890,9 +896,8 @@ static MapInfo genMarina(World& w, uint32_t seed = 4242) {
         B.fill(150, std::max(4, Q - 2 - i / 4), 258 + i * 2, LANDX + 30, std::max(4, Q - 1 - i / 4), 259 + i * 2, P.sand);
     B.fill(150, 4, 300, WX - 1, 5, WZ - 1, P.sand);
 
-    // bollards
-    for (int z = 16; z < 250; z += 20)
-        B.fill(LANDX - 1, Q, z, LANDX, Q + 1, z + 1, P.black);
+    // (The seaward quay edge is dressed at the end of this function, with the channel banks —
+    // it has to run after the warehouse and the yard or their stamps land on top of it.)
 
     // ---- warehouse x=60..150, z=40..130
     {
@@ -909,6 +914,7 @@ static MapInfo genMarina(World& w, uint32_t seed = 4242) {
         }
         B.fill(X0, H, Z0, X1, H + 1, Z1, P.metalDark);
         B.fill(X0, Q - 1, Z0, X1, Q - 1, Z1, P.concreteDark);
+
         // big sliding door on east wall (facing quay), opening 74..96
         B.fill(X1 - 1, Q, 70, X1, Q + 19, 100, P.metalDark);
         B.clear(X1 - 1, Q, 74, X1, Q + 13, 96);
@@ -936,25 +942,80 @@ static MapInfo genMarina(World& w, uint32_t seed = 4242) {
         for (int z = Z0 + 12; z < Z1 - 8; z += 22)
             for (int x = X0 + 12; x < X1 - 8; x += 26)
                 B.fill(x, H - 1, z, x + 4, H - 1, z + 1, P.ceilLight);
+
+        // ---- the elevations
+        //
+        // Corrugation alone gave this shed 70 x 28 voxels of vertical stripe and nothing else:
+        // within-surface variation measured at 2 to 7 levels of 255 across the whole plane. It
+        // is also the largest single surface on the map and it faces the channel, so it is in
+        // frame from most of the level.
+        //
+        // A shed is not a storeyed building and must not be dressed as one — no floor lines, no
+        // grid of domestic windows. What it has is a high clerestory band under the eaves where
+        // the daylight comes from, roller doors at ground level where the lorries go, and gable
+        // vents. Getting that vocabulary right matters more than the density: a warehouse with
+        // apartment windows in it reads worse than a blank one.
+        {
+            uint8_t clerGlass = weatheredPal(w, 150, 176, 184, M_LIGHT, 0.35f);
+            uint8_t clerLit   = w.addPal(255, 240, 205, M_LIGHT, 1.1f);
+            uint8_t doorPal   = weatheredPal(w, 142, 138, 128, M_HEAVY, 0.42f);
+            // Channel elevation: the one that is nearly always in shot.
+            placeWindowGrid(B, P, FACE_NX, X0, Z0 + 8, Z1 - 8, H - 12, H - 4,
+                            8, 6, 5, 6, clerGlass, P.frame, clerLit, 0.22f, 0.10f, 0.06f);
+            placeCornice(B, P, FACE_NX, X0, Z0, Z1, H - 2, P.metalDark, 3, 2);
+            placeCornice(B, P, FACE_NX, X0, Z0, Z1, Q + 1, P.concreteDark, 2, 2);
+            for (int z = Z0 + 14; z < Z1 - 22; z += 30)
+                placeRollerDoor(B, P, FACE_NX, X0, z, Q + 1, 18, 16, B.rng.ri(0, 9), doorPal);
+            placeDownpipe(B, P, FACE_NX, X0, Z0 + 3, Q, H - 3);
+            placeDownpipe(B, P, FACE_NX, X0, Z1 - 3, Q, H - 3);
+            for (int z = Z0 + 20; z < Z1 - 10; z += 37)
+                placeWallVent(B, P, FACE_NX, X0, z, 6, H - 20, 6, 5);
+            // Gable ends, same band, no doors — nothing drives round to them.
+            for (int e = 0; e < 2; e++) {
+                int face = e ? FACE_PZ : FACE_NZ, at = e ? Z1 : Z0;
+                placeWindowGrid(B, P, face, at, X0 + 8, X1 - 8, H - 12, H - 4,
+                                8, 6, 5, 6, clerGlass, P.frame, clerLit, 0.22f, 0.10f, 0.06f);
+                placeCornice(B, P, face, at, X0, X1, H - 2, P.metalDark, 3, 2);
+                placeWallVent(B, P, face, at, (X0 + X1) / 2 - 4, H - 19, 9, 6);
+                placeDownpipe(B, P, face, at, X0 + 3, Q, H - 3);
+                placeDownpipe(B, P, face, at, X1 - 3, Q, H - 3);
+            }
+            // Yard elevation keeps its big sliding door and its sign, so it gets the band and
+            // the trim only — a second set of openings there would fight both.
+            placeWindowGrid(B, P, FACE_PX, X1, Z0 + 8, 62, H - 12, H - 4,
+                            8, 6, 5, 6, clerGlass, P.frame, clerLit, 0.22f, 0.10f, 0.06f);
+            placeWindowGrid(B, P, FACE_PX, X1, 104, Z1 - 8, H - 12, H - 4,
+                            8, 6, 5, 6, clerGlass, P.frame, clerLit, 0.22f, 0.10f, 0.06f);
+            placeCornice(B, P, FACE_PX, X1, Z0, Z1, H - 2, P.metalDark, 3, 2);
+            placeFireEscape(B, P, FACE_PX, X1, Z1 - 26, Q + 8, 12, 2);
+            // Roof: a parapet to end the wall deliberately, and plant so the roofline has parts.
+            // This roof is overlooked from the gantry crane and from the bridge, so it is seen.
+            placeParapet(B, P, X0, Z0, X1, Z1, H + 1, 4, P.metalDark, P.concreteDark);
+            placeRoofClutter(B, P, X0, Z0, X1, Z1, H + 2, 11);
+        }
     }
 
     // ---- container yard z=145..245
     {
+        // Everything here must stay east of the channel (x >= 116). The yard was laid out when
+        // the map was one continuous waterfront; the cut at x=62..108 went in later and took
+        // half of it with it, leaving a gantry standing on one leg over open water and a row of
+        // containers that existed for exactly as long as it took the clear() to reach them.
         int ci = 0;
         for (int z = 148; z <= 215; z += 36)
-            for (int x = 64; x <= 110; x += 46) {
+            for (int x = 118; x <= 164; x += 46) {
                 placeContainer(B, P, x, Q, z, 1, ci++);
                 if (B.rng.uf() < 0.6f) placeContainer(B, P, x, Q + 13, z, 1, ci++);
             }
-        placeContainer(B, P, 124, Q, 150, 0, ci++);
-        placeContainer(B, P, 124, Q, 190, 0, ci++);
+        placeContainer(B, P, 122, Q, 232, 0, ci++);
+        placeContainer(B, P, 152, Q, 232, 0, ci++);
         // gantry crane: legs + beam + container hanging from a cable — shoot it down!
         int gy = Q + 44;
-        B.fill(70, Q, 186, 74, gy - 1, 190, P.steel);
-        B.fill(140, Q, 186, 144, gy - 1, 190, P.steel);
-        B.fill(70, gy, 184, 144, gy + 4, 192, P.steel);
-        B.fill(106, Q + 26, 187, 107, gy, 188, P.black);   // cable
-        placeContainer(B, P, 91, Q + 13, 182, 1, 1);       // hanging container
+        B.fill(118, Q, 186, 122, gy - 1, 190, P.steel);
+        B.fill(178, Q, 186, 182, gy - 1, 190, P.steel);
+        B.fill(118, gy, 184, 182, gy + 4, 192, P.steel);
+        B.fill(148, Q + 26, 187, 149, gy, 188, P.black);   // cable
+        placeContainer(B, P, 133, Q + 13, 182, 1, 1);      // hanging container
     }
 
     // ---- industrial process plant, west strip x=8..58
@@ -988,8 +1049,13 @@ static MapInfo genMarina(World& w, uint32_t seed = 4242) {
         // Conveyor from a hopper up into the chute tower.
         placeConveyor(B, P, 46, Q, 96, 150, 22);
 
-        // Gantry on rails, out at the quay edge, boom reaching over the water.
-        placeRailCrane(B, P, craneOchre, 156, Q, 96, 40, 46);
+        // Gantry on rails, out at the quay edge, boom reaching over the open sea.
+        //
+        // At x=156, z=96 it stood buried inside the warehouse: the shed was widened east to
+        // clear the channel and swallowed it whole, rails and all. A crane belongs on the
+        // seaward quay by definition, so it moved to where the quay now is rather than where
+        // it was when the crane was written.
+        placeRailCrane(B, P, craneOchre, 162, Q, 200, 40, 46);
 
         // Loose industrial clutter along the run: pallets, barrels, crates.
         for (int i = 0; i < 22; i++) {
@@ -1171,6 +1237,36 @@ static MapInfo genMarina(World& w, uint32_t seed = 4242) {
             B.fill(CH0 - 2, 4, z, CH0 - 1, Q - 1 - j / 4, z, P.concreteDark);
             B.fill(CH1 + 1, 4, z, CH1 + 2, Q - 1 - j / 4, z, P.concreteDark);
         }
+
+        // ---- the waterfront proper, on all three edges, last of all
+        //
+        // The cut on its own produced a drainage canal: two sheer walls, a grass strip on each
+        // coping and a flat plane between them. Measured or not, it was the most artificial
+        // thing in any frame that contained water, and it is not a shading fault — there was
+        // nothing at the edge to shade. What follows is the edge.
+        //
+        // Last in the file for the same reason the cut is: every one of these is small, sits
+        // exactly on a boundary, and would be erased by any stamp that came after it.
+        detailQuayRun(B, P, F, CH0 - 1, +1, 4, WZ - 5, 4, SEA, Q - 1);   // channel, west bank
+        detailQuayRun(B, P, F, CH1 + 1, -1, 4, WZ - 5, 4, SEA, Q - 1);   // channel, east bank
+        detailQuayRun(B, P, F, LANDX,   +1, 6, 252,    4, SEA, Q - 1);   // the open-sea quay
+
+        // Pontoons and the boats on them. Kept clear of z=140..172, which is the bridge, its
+        // abutments and the deck footprint the bascule snapshots at startup — anything left
+        // inside that box becomes part of the deck and rises with it.
+        placePontoon(B, F, CH0 + 4, 44, 104, 10, +1, SEA, CH0 - 1, Q - 1);
+        placeMooredBoat(B, F, CH0 + 20, 48,  SEA, 1, 0);
+        placeMooredBoat(B, F, CH0 + 20, 86,  SEA, 0, 2);
+        placePontoon(B, F, CH1 - 4, 186, 244, 10, -1, SEA, CH1 + 1, Q - 1);
+        placeMooredBoat(B, F, CH1 - 20, 190, SEA, 2, 1);
+        placeMooredBoat(B, F, CH1 - 20, 224, SEA, 0, 0);
+
+        // A slipway on each side of the channel, offset from each other so the two banks are
+        // never each other's mirror image — which, cut from one clear() call, they otherwise
+        // are to the voxel.
+        placeSlipway(B, F, CH0 - 1, +1, 118, 132, SEA, Q - 1);
+        placeSlipway(B, F, CH1 + 1, -1, 62,  76,  SEA, Q - 1);
+        placeSlipway(B, F, LANDX,   +1, 96,  112, SEA, Q - 1);
     }
 
     // ---- the lift bridge across the channel

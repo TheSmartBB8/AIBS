@@ -1181,7 +1181,11 @@ static MapInfo genMarina(World& w, uint32_t seed = 4242) {
     // facing each other across the gap. The landings are outside the channel walls either way,
     // so building last costs nothing and the span survives.
     {
-        const int BX0 = 56, BX1 = 114;        // deck spans the channel and lands on both banks
+        // Span an EVEN number of columns. A double-leaf bascule splits at the middle, and an
+        // odd span cannot halve: one leaf ends up a voxel longer and its tip rises 0.18 m
+        // higher than its partner's, which is small but is exactly the symmetry the mechanism
+        // exists to show.
+        const int BX0 = 56, BX1 = 115;        // 60 columns, spans the channel, lands both banks
         const int BZ0 = 148, BZ1 = 163;       // ~3 m wide
         // Abutments: the deck has to arrive at something, and a walkway that simply stops at
         // the water's edge is the clearest tell that a level was assembled from stamps.
@@ -1200,19 +1204,45 @@ static MapInfo genMarina(World& w, uint32_t seed = 4242) {
         B.fill(BX0, Q + 2, BZ0, BX1, Q + 2, BZ0, P.metalDark);
         B.fill(BX0, Q + 2, BZ1, BX1, Q + 2, BZ1, P.metalDark);
 
-        // Control post on the east bank, with a lit panel so it can be found at night. Set
-        // back from the hinge so you are not standing on the deck when it starts to move.
-        const int PX = BX1 + 4, PZ = BZ1 + 4;
-        B.fill(PX, Q, PZ, PX + 1, Q + 5, PZ + 1, P.metalDark);
-        B.fill(PX, Q + 5, PZ, PX + 1, Q + 6, PZ + 1, signRed);
+        // Control booth on the east bank.
+        //
+        // A booth rather than the thin post this started as, for two reasons. It is where the
+        // bridge keeper stands, so it belongs on a bascule the way a signal box belongs on a
+        // railway — the mechanism reads as operated rather than automatic. And it gives the
+        // control a silhouette you can find from across the channel, which a 0.4 m pole does
+        // not; the player has to be able to see where to run to.
+        //
+        // Set back from the hinge so you are not standing on the leaf when it starts to move.
+        const int PX = BX1 + 3, PZ = BZ1 + 3;
+        const int PW = 7, PD = 7, PH = 9;
+        B.fill(PX, Q, PZ, PX + PW, Q, PZ + PD, P.concreteDark);                 // floor slab
+        for (int y = Q + 1; y <= Q + PH; y++) {                                  // walls
+            B.fill(PX, y, PZ, PX + PW, y, PZ, P.woodDark);
+            B.fill(PX, y, PZ + PD, PX + PW, y, PZ + PD, P.woodDark);
+            B.fill(PX, y, PZ, PX, y, PZ + PD, P.woodDark);
+            B.fill(PX + PW, y, PZ, PX + PW, y, PZ + PD, P.woodDark);
+        }
+        B.clear(PX + 1, Q + 1, PZ + 1, PX + PW - 1, Q + PH, PZ + PD - 1);        // hollow
+        // Glazing all the way round at eye level — a keeper has to watch both the channel and
+        // the road, so the booth is mostly window, which is also what makes it read as one.
+        for (int y = Q + 4; y <= Q + 7; y++) {
+            B.fill(PX + 1, y, PZ, PX + PW - 1, y, PZ, P.glassBlue);
+            B.fill(PX + 1, y, PZ + PD, PX + PW - 1, y, PZ + PD, P.glassBlue);
+            B.fill(PX, y, PZ + 1, PX, y, PZ + PD - 1, P.glassBlue);
+            B.fill(PX + PW, y, PZ + 1, PX + PW, y, PZ + PD - 1, P.glassBlue);
+        }
+        B.fill(PX - 1, Q + PH + 1, PZ - 1, PX + PW + 1, Q + PH + 1, PZ + PD + 1, P.metalDark);  // roof, overhanging
+        B.clear(PX + 2, Q + 1, PZ, PX + 3, Q + 3, PZ);                           // doorway
+        // The lit control panel itself, on the channel-facing wall.
+        B.fill(PX - 1, Q + 3, PZ + 3, PX - 1, Q + 4, PZ + 4, signRed);
+
+        mi.brButton = vec3((PX - 1) * VOXEL_SIZE, (Q + 3) * VOXEL_SIZE, (PZ + 3) * VOXEL_SIZE);
 
         mi.hasBridge = true;
         mi.brX0 = BX0; mi.brY0 = Q;     mi.brZ0 = BZ0;
         mi.brX1 = BX1; mi.brY1 = Q + 2; mi.brZ1 = BZ1;
         // Spans X, so it must hinge about Z, at the east landing.
-        mi.brHingeAlongX = false;
-        mi.brHingeVox = BX1;
-        mi.brButton = vec3((PX + 1) * VOXEL_SIZE, (Q + 5) * VOXEL_SIZE, (PZ + 1) * VOXEL_SIZE);
+        mi.brHingeAlongX = false;   // deck spans X, so the two hinge lines run along Z
     }
 
     mi.waterLevel = SEA * VOXEL_SIZE;

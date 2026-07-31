@@ -184,7 +184,6 @@ struct Game {
         if (mapInfo.hasBridge) {
             bridge.x0 = mapInfo.brX0; bridge.y0 = mapInfo.brY0; bridge.z0 = mapInfo.brZ0;
             bridge.x1 = mapInfo.brX1; bridge.y1 = mapInfo.brY1; bridge.z1 = mapInfo.brZ1;
-            bridge.hingeVox = mapInfo.brHingeVox;
             bridge.hingeAlongX = mapInfo.brHingeAlongX;
             bridge.buttonPos = mapInfo.brButton;
             bridge.arm(world);
@@ -906,15 +905,20 @@ struct Game {
         // The lift bridge's deck, while it is out of the voxel grid. Drawn from the same
         // snapshot that will be put back, so what you see rotating is exactly what returns.
         if (bridge.movingOrUp() && !bridge.deck.empty()) {
-            ren.modelBegin();
+            // One draw per leaf, because each carries its own transform — they pivot in
+            // opposite directions about opposite banks.
             const float h = VOXEL_SIZE * 0.5f;
-            for (const auto& v : bridge.deck) {
-                const PalEntry& pe = world.palette[v.pal];
-                ren.modelBox(vec3((v.x + 0.5f) * VOXEL_SIZE, (v.y + 0.5f) * VOXEL_SIZE,
-                                  (v.z + 0.5f) * VOXEL_SIZE),
-                             vec3(h, h, h), pe.r, pe.g, pe.b);
+            for (int leaf = 0; leaf < 2; leaf++) {
+                ren.modelBegin();
+                for (const auto& v : bridge.deck) {
+                    if (bridge.leafOf(v) != leaf) continue;
+                    const PalEntry& pe = world.palette[v.pal];
+                    ren.modelBox(vec3((v.x + 0.5f) * VOXEL_SIZE, (v.y + 0.5f) * VOXEL_SIZE,
+                                      (v.z + 0.5f) * VOXEL_SIZE),
+                                 vec3(h, h, h), pe.r, pe.g, pe.b);
+                }
+                ren.modelDraw(bridge.transform(leaf), mapInfo, mapInfo.ambient);
             }
-            ren.modelDraw(bridge.transform(), mapInfo, mapInfo.ambient);
         }
 
         // loose grabbable debris props (the one currently held is drawn with the viewmodel)

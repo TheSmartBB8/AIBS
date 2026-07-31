@@ -1042,6 +1042,7 @@ static int renderMain(int argc, char** argv) {
     int waterdbg = 0;
     float todH = -1.f, todZ = 0.f;      // --tod: hour and haze, for reviewing a lighting change
     int boatDrive = 0;                  // --boat N: spawn a boat ahead and run it under power
+    float bridgeT = -1.f;               // --bridge T: hold the lift bridge at T of its travel
     int maxacc = -1; float phil = -1.f; int tool = -1;
     bool boom = false, nospin = false; float boomDist = 6.f, boomRadius = 3.2f; int boomRun = 12;
     // Free camera, for reviewing a map rather than whatever the spawn happens to face.
@@ -1068,6 +1069,11 @@ static int renderMain(int argc, char** argv) {
             todH = (float)std::atof(argv[++i]); todZ = (float)std::atof(argv[++i]);
         }
         else if (!std::strcmp(argv[i], "--boat") && i + 1 < argc) boatDrive = std::atoi(argv[++i]);
+        // Park the bridge partway through its swing. The mechanism was verified entirely by
+        // measuring the simulation, which cannot see whether the deck rotates about the right
+        // axis or the right pivot — a bridge hinged on the wrong edge passes every numeric
+        // check in the harness and is obviously wrong the moment it is drawn.
+        else if (!std::strcmp(argv[i], "--bridge") && i + 1 < argc) bridgeT = (float)std::atof(argv[++i]);
         else if (!std::strcmp(argv[i], "--samples") && i + 1 < argc) maxacc = std::atoi(argv[++i]);
         else if (!std::strcmp(argv[i], "--phil") && i + 1 < argc) phil = (float)std::atof(argv[++i]);
         else if (!std::strcmp(argv[i], "--tool") && i + 1 < argc) tool = std::atoi(argv[++i]);
@@ -1104,6 +1110,13 @@ static int renderMain(int argc, char** argv) {
     // After the map loads, not before: loading writes mapInfo wholesale, so a sky applied
     // ahead of it is silently discarded and the flag looks like it does nothing.
     if (todH >= 0.f) { game.todHours = todH; game.todHaze = todZ; game.applyTimeOfDay(); }
+    if (bridgeT >= 0.f && game.bridge.armed) {
+        game.bridge.toggle(game.world);          // lifts the deck out of the grid
+        game.bridge.t = bridgeT;
+        game.bridge.state = bridgeT >= 1.f ? BR_UP : BR_RAISING;
+        std::printf("bridge: t=%.2f angle=%.1f deg, %zu deck voxels out of the grid\n",
+                    game.bridge.t, game.bridge.angle() * 57.2958f, game.bridge.deck.size());
+    }
     if (tool >= 0 && tool < TOOL_COUNT) game.weapons.current = (Tool)tool;
     // Settle the world, then hold it still.
     //

@@ -32,11 +32,18 @@ enum BridgeState { BR_DOWN, BR_RAISING, BR_UP, BR_LOWERING, BR_BROKEN };
 struct LiftBridge {
     struct DeckVox { int16_t x, y, z; uint8_t pal; };
 
-    // Footprint and hinge, in voxels. Filled from MapInfo.
+    // Footprint in voxels. Filled from MapInfo.
     int x0 = 0, y0 = 0, z0 = 0, x1 = -1, y1 = -1, z1 = -1;
-    int hingeVox = 0;              // coordinate of the hinge on the spanning axis
-    bool hingeAlongX = false;      // true = hinge line runs along X (deck spans Z)
+    bool hingeAlongX = false;      // true = hinge lines run along X (deck spans Z)
     vec3 buttonPos;
+
+    // Two leaves, hinged at opposite banks and opening together — a double-leaf bascule, as
+    // Tower Bridge is. A single leaf swinging up from one side is the cheaper mechanism and
+    // reads completely differently: the span becomes a wall standing on one bank rather than
+    // a gap opening in the middle, and the symmetry is most of what makes the movement
+    // recognisable. It also halves how far each leaf has to travel for the same clearance,
+    // which is why real spans of any size are built this way.
+    int splitVox = 0;              // last voxel of the near leaf, on the spanning axis
 
     float maxAngle = 1.15f;        // ~66 degrees
     float travelTime = 4.0f;       // seconds end to end — slow, because it is heavy
@@ -58,6 +65,9 @@ struct LiftBridge {
                     uint8_t p = w.get(x, y, z);
                     if (p) deck.push_back({(int16_t)x, (int16_t)y, (int16_t)z, p});
                 }
+        // Split at the middle of the span, so the two leaves are the same length and meet
+        // over the centre of the channel.
+        splitVox = hingeAlongX ? (z0 + z1) / 2 : (x0 + x1) / 2;
         armed = !deck.empty();
         state = BR_DOWN;
         t = 0.f;
@@ -112,19 +122,42 @@ struct LiftBridge {
         return e * maxAngle;
     }
 
-    /** World transform for drawing the deck while it is out of the grid. */
-    mat4 transform() const {
-        vec3 h = hingePoint();
-        mat4 r = hingeAlongX ? mat4_rotx(angle()) : mat4_rotz(angle());
+    /**
+     * Which leaf a deck voxel belongs to. 0 = the leaf hinged at the low end of the span,
+     * 1 = the leaf hinged at the high end.
+     */
+    int leafOf(const DeckVox& v) const {
+        int along = hingeAlongX ? v.z : v.x;
+        return along <= splitVox ? 0 : 1;
+    }
+
+    /**
+     * World transform for a leaf while it is out of the grid.
+     *
+     * The two leaves take opposite signs, which is the entire difference between a bascule and
+     * a ramp: they pivot away from each other so the gap opens in the middle of the channel
+     * where a boat actually is, rather than at one bank.
+     */
+    mat4 transform(int leaf) const {
+        vec3 h = hingePoint(leaf);
+        float a = leaf == 0 ? angle() : -angle();
+        mat4 r = hingeAlongX ? mat4_rotx(a) : mat4_rotz(a);
         return mat4_translate(h) * r * mat4_translate(vec3(-h.x, -h.y, -h.z));
     }
 
-    vec3 hingePoint() const {
-        // The hinge sits on the deck's underside at the landing, which is where the pivot of a
-        // real bascule is: rotating about the deck's centreline would sink half the span into
-        // the abutment as it opened.
-        float cx = hingeAlongX ? (x0 + x1 + 1) * 0.5f * VOXEL_SIZE : (hingeVox + 0.5f) * VOXEL_SIZE;
-        float cz = hingeAlongX ? (hingeVox + 0.5f) * VOXEL_SIZE : (z0 + z1 + 1) * 0.5f * VOXEL_SIZE;
+    /**
+     * The pivot for one leaf: on the deck's underside, at that leaf's own landing.
+     *
+     * Underside rather than centreline because that is where a real bascule's trunnion sits —
+     * pivoting about the middle of the deck's thickness would drive its inner half down into
+     * the abutment as the leaf came up.
+     */
+    vec3 hingePoint(int leaf) const {
+        int lo = hingeAlongX ? z0 : x0, hi = hingeAlongX ? z1 : x1;
+        float alongVox = (leaf == 0 ? lo : hi + 1);
+        float acrossMid = hingeAlongX ? (x0 + x1 + 1) * 0.5f : (z0 + z1 + 1) * 0.5f;
+        float cx = hingeAlongX ? acrossMid * VOXEL_SIZE : alongVox * VOXEL_SIZE;
+        float cz = hingeAlongX ? alongVox * VOXEL_SIZE : acrossMid * VOXEL_SIZE;
         return vec3(cx, y0 * VOXEL_SIZE, cz);
     }
 

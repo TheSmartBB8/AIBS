@@ -155,11 +155,34 @@ vec3 skyColor(vec3 dir) {
             : mix(vec3(0.75, 0.78, 0.84), vec3(1.25, 1.22, 1.15), 0.6 + 0.4 * sd);
         col = mix(col, cloudCol, cm * fade * 0.85);
     }
-    // subtle stars at dusk
+    // How much atmosphere is in the way, recovered from the map's extinction.
+    //
+    // The sky had no fog term at all, and that is a bigger omission than it sounds: fog was
+    // being applied to the chunks and to the water, so at heavy haze the world correctly
+    // greyed out while the sky above it stayed a crisp starlit cloudscape spanning almost the
+    // full tonal range. A viewer reads atmosphere mostly from the sky, so the frame went on
+    // announcing clear weather no matter what the geometry did — and the two symptoms it was
+    // reported as, "stars visible through 95% haze" and "sky contrast far too high for fog",
+    // are both just this.
+    //
+    // Density is mapped back to the 0..1 haze it came from rather than run through the
+    // distance formula, because the sky has no distance: an infinite ray through any non-zero
+    // extinction integrates to fully opaque, which would grey the sky out on a clear day too.
+    float hz = clamp(log(max(uFogDensity, 1e-5) / 0.0032) / log(10.9), 0.0, 1.0);
+
+    // Stars go out first and completely. Even light haze hides them — they are the faintest
+    // thing in the sky, and nothing gives a "clear night" away faster than a star surviving a
+    // fog bank.
     if (uSkyStyle == 1 && dir.y > 0.25) {
         float st = step(0.9985, hash21(floor(dir.xz / max(dir.y, 0.01) * 240.0)));
-        col += vec3(st) * 0.35 * smoothstep(0.25, 0.6, dir.y);
+        col += vec3(st) * 0.35 * smoothstep(0.25, 0.6, dir.y) * (1.0 - smoothstep(0.15, 0.45, hz));
     }
+
+    // Then the sky itself collapses toward the fog colour, taking the cloud contrast with it.
+    // Heavy fog is a featureless luminous plate, and the horizon goes first because that is
+    // where the sight line spends longest in the medium.
+    float toFog = hz * mix(0.95, 0.72, smoothstep(0.0, 0.55, dir.y));
+    col = mix(col, uFogColor, clamp(toFog, 0.0, 1.0));
     return col;
 }
 )";

@@ -1040,6 +1040,8 @@ static int renderMain(int argc, char** argv) {
     int W = 960, H = 540, frames = 90, map = 0;
     bool menu = false, noaccum = false, nodenoise = false, noplanar = false;
     int waterdbg = 0;
+    float todH = -1.f, todZ = 0.f;      // --tod: hour and haze, for reviewing a lighting change
+    int boatDrive = 0;                  // --boat N: spawn a boat ahead and run it under power
     int maxacc = -1; float phil = -1.f; int tool = -1;
     bool boom = false, nospin = false; float boomDist = 6.f, boomRadius = 3.2f; int boomRun = 12;
     // Free camera, for reviewing a map rather than whatever the spawn happens to face.
@@ -1060,6 +1062,12 @@ static int renderMain(int argc, char** argv) {
         // hard to tell apart by looking.
         else if (!std::strcmp(argv[i], "--noplanar")) noplanar = true;
         else if (!std::strcmp(argv[i], "--waterdebug") && i + 1 < argc) waterdbg = std::atoi(argv[++i]);
+        // The time of day and the wake are both things you can only otherwise reach by opening
+        // the build menu with a mouse, which a headless review pass has no way to do.
+        else if (!std::strcmp(argv[i], "--tod") && i + 2 < argc) {
+            todH = (float)std::atof(argv[++i]); todZ = (float)std::atof(argv[++i]);
+        }
+        else if (!std::strcmp(argv[i], "--boat") && i + 1 < argc) boatDrive = std::atoi(argv[++i]);
         else if (!std::strcmp(argv[i], "--samples") && i + 1 < argc) maxacc = std::atoi(argv[++i]);
         else if (!std::strcmp(argv[i], "--phil") && i + 1 < argc) phil = (float)std::atof(argv[++i]);
         else if (!std::strcmp(argv[i], "--tool") && i + 1 < argc) tool = std::atoi(argv[++i]);
@@ -1081,6 +1089,7 @@ static int renderMain(int argc, char** argv) {
     if (nodenoise) game.ren.settings.denoisePasses = 0;
     if (noplanar) game.ren.settings.planarWater = false;
     game.ren.settings.waterDebug = waterdbg;
+    if (todH >= 0.f) { game.todHours = todH; game.todHaze = todZ; game.applyTimeOfDay(); }
     if (maxacc > 0) game.ren.settings.maxAccum = maxacc;
     if (phil > 0) game.ren.settings.denoisePhiL = phil;
     if (!game.ren.init(plat.st.width, plat.st.height)) {
@@ -1116,8 +1125,28 @@ static int renderMain(int argc, char** argv) {
     };
     placeCam();
 
+    // A boat under power, so the wake has something making it. Driven straight ahead for a
+    // fixed run rather than steered, because the point of the picture is the trail it leaves.
+    int boatIdx = -1;
+    if (boatDrive > 0 && game.mapInfo.hasWater) {
+        vec3 at = game.player.pos + game.player.forwardFlat() * 6.f;
+        at.y = game.mapInfo.waterLevel + 0.6f;
+        boatIdx = game.vehicles.spawn(VK_BOAT, at, game.player.yaw);
+    }
+
     const int settle = frames < 30 ? frames : 30;
     for (int i = 0; i < settle; i++) { game.update(1.0f / 60.0f); placeCam(); game.renderFrame(); }
+    if (boatIdx >= 0) {
+        for (int i = 0; i < boatDrive; i++) {
+            game.vehicles.list[boatIdx].throttle = 1.f;
+            game.update(1.0f / 60.0f);
+            placeCam();
+            game.renderFrame();
+        }
+        Vehicle& bv = game.vehicles.list[boatIdx];
+        std::printf("boat: pos %.1f %.2f %.1f  speed %.2f m/s  pitch %+.1f deg\n",
+                    bv.pos.x, bv.pos.y, bv.pos.z, vlen(bv.vel), bv.pitch * 57.2958f);
+    }
 
     // Optional blast, for photographing destruction. Placed relative to the spawn so it does
     // not need to know anything about a particular map's layout.

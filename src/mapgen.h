@@ -1001,8 +1001,11 @@ static MapInfo genMarina(World& w, uint32_t seed = 4242) {
         // the map was one continuous waterfront; the cut at x=62..108 went in later and took
         // half of it with it, leaving a gantry standing on one leg over open water and a row of
         // containers that existed for exactly as long as it took the clear() to reach them.
+        // Starts south of z=170, because the bridge's east approach is z=146..165 and a stack
+        // of containers standing on the only road onto the only crossing is not clutter, it is
+        // a wall. It also put the spawn point inside a container.
         int ci = 0;
-        for (int z = 148; z <= 215; z += 36)
+        for (int z = 174; z <= 238; z += 34)
             for (int x = 118; x <= 164; x += 46) {
                 placeContainer(B, P, x, Q, z, 1, ci++);
                 if (B.rng.uf() < 0.6f) placeContainer(B, P, x, Q + 13, z, 1, ci++);
@@ -1206,8 +1209,18 @@ static MapInfo genMarina(World& w, uint32_t seed = 4242) {
     MapInfo mi;
     mi.name = "SANDPOINT MARINA";
     mi.desc = "SUNSET HARBOR: WAREHOUSE, CRANE, FUEL DEPOT, BOATS.";
-    mi.spawn = vec3(168 * VOXEL_SIZE, Q * VOXEL_SIZE + 0.92f, 105 * VOXEL_SIZE);
-    mi.spawnYaw = 3.14159f * 0.5f;   // face +x toward the water
+    // Spawn on the bridge's east landing, looking west down the channel.
+    //
+    // It used to be x=168, z=105, which is inside the warehouse: the player arrived in a dark
+    // shed looking at a doorway, having seen none of the level. This is the one spot that shows
+    // what the map is in a single frame — the channel, the bascule you are standing at the end
+    // of, the plant on the far bank, and the water either side — and a first frame that shows
+    // the level is worth more than any amount of detail the player has to go looking for.
+    //
+    // On the landing rather than on the deck itself, so that raising the bridge from the booth
+    // does not drop whoever just spawned into the channel.
+    mi.spawn = vec3(119 * VOXEL_SIZE, Q * VOXEL_SIZE + 0.92f, 155 * VOXEL_SIZE);
+    mi.spawnYaw = 3.14159f * 1.5f;   // face -x, down the channel and across the bridge
     mi.sunDir = vnorm(vec3(0.78f, -0.30f, 0.12f));
     mi.sunColor = vec3(1.5f, 0.95f, 0.55f) * 2.6f;
     mi.skyHorizon = vec3(0.98f, 0.55f, 0.32f);
@@ -1247,6 +1260,19 @@ static MapInfo genMarina(World& w, uint32_t seed = 4242) {
         //
         // Last in the file for the same reason the cut is: every one of these is small, sits
         // exactly on a boundary, and would be erased by any stamp that came after it.
+        // A hard apron either side before any of it, because the ground cover ran grass right
+        // to the coping. A lawn meeting a commercial quay is the kind of wrong that is hard to
+        // name and impossible to unsee: nothing that takes a lorry or a crane outrigger is
+        // turfed. Weeds through the cracks are what the grass should have been all along, and
+        // they read as neglect rather than as landscaping.
+        for (int z = 0; z < WZ; z++)
+            for (int k = 1; k <= 9; k++) {
+                int r = (z * 6151 + k * 733) % 100;
+                uint8_t s = r < 8 ? P.grass : (r < 22 ? P.concreteDark : P.asphaltLight);
+                B.fill(CH0 - 1 - k, Q - 1, z, CH0 - 1 - k, Q - 1, z, s);
+                B.fill(CH1 + 1 + k, Q - 1, z, CH1 + 1 + k, Q - 1, z, s);
+            }
+
         detailQuayRun(B, P, F, CH0 - 1, +1, 4, WZ - 5, 4, SEA, Q - 1);   // channel, west bank
         detailQuayRun(B, P, F, CH1 + 1, -1, 4, WZ - 5, 4, SEA, Q - 1);   // channel, east bank
         detailQuayRun(B, P, F, LANDX,   +1, 6, 252,    4, SEA, Q - 1);   // the open-sea quay

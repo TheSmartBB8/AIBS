@@ -79,6 +79,9 @@ Update this the moment a system changes status, before starting the next one.
 |---|---|---|
 | Evermore Mall | built | |
 | Sandpoint Marina | built | incl. West Point industrial area |
+| Marina: two shores + channel | built | Restructured from the user's overhead reference, which shows two landmasses with water between rather than one continuous waterfront. Channel x62..108 (9.2 m wide, 1.4 m deep), warehouse and yard moved east of it. Verified navigable x64..106 at z=100. |
+| Marina: bridge across the channel | built (static) | Deck x56..114, z148..163 at y=13, timber over steel edge beams, kerb rails, abutments both banks, lit control post on the east bank. Verified 688/688 voxels solid over open water. `MapInfo` carries the footprint, hinge and button position. |
+| Lift bridge mechanism | **not started** | Deck is static. Design settled and specified: deck lives in the grid when down (walkable, destructible with no special cases), converts to a `FallingCluster` with `spinning=true` and a controlled `rot` about the hinge while moving — the renderer already rotates clusters about `center` via uSpin/uSpinCenter — and welds back at angle zero. Agent hit the usage limit before writing it. |
 | Hub / home yard | built | |
 | Vehicles: car | built | `vehicles.h`. Sprung suspension; rests at 0.48 m ride height with 0.0000 residual velocity, 88 km/h top speed |
 | Vehicles: truck | built | same chassis, heavier and slower |

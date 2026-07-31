@@ -18,6 +18,14 @@ struct MapInfo {
     vec3 waterColor;
     float fogDensity;
     int skyStyle;           // 0 = day, 1 = sunset
+    // Lift bridge, if the map has one. Voxel coordinates of the deck, the hinge, and where
+    // the control button stands. hasBridge is false on maps without one and every consumer
+    // must check it — the fields are otherwise meaningless rather than merely zero.
+    bool hasBridge = false;
+    int brX0 = 0, brY0 = 0, brZ0 = 0, brX1 = 0, brY1 = 0, brZ1 = 0;
+    int brHingeVox = 0;      // voxel coordinate of the hinge on the spanning axis
+    bool brHingeAlongX = false;
+    vec3 brButton;           // metres
 };
 
 // ---------------------------------------------------------------- helpers
@@ -876,7 +884,7 @@ static MapInfo genMarina(World& w, uint32_t seed = 4242) {
     B.fill(LANDX - 3, 5, 0, LANDX, Q - 1, WZ - 1, P.concreteDark);
     B.fill(LANDX - 1, Q - 1, 0, LANDX, Q - 1, WZ - 1, P.concrete);
     // gravel yard inland
-    B.fill(40, Q - 1, 30, 150, Q - 1, 250, P.asphaltLight);
+    B.fill(116, Q - 1, 30, 186, Q - 1, 250, P.asphaltLight);
     // beach in the south-east corner
     for (int i = 0; i < 30; i++)
         B.fill(150, std::max(4, Q - 2 - i / 4), 258 + i * 2, LANDX + 30, std::max(4, Q - 1 - i / 4), 259 + i * 2, P.sand);
@@ -888,7 +896,7 @@ static MapInfo genMarina(World& w, uint32_t seed = 4242) {
 
     // ---- warehouse x=60..150, z=40..130
     {
-        int X0 = 60, X1 = 150, Z0 = 40, Z1 = 130, H = 42;
+        int X0 = 116, X1 = 186, Z0 = 40, Z1 = 130, H = 42;
         for (int z = Z0; z <= Z1; z++) {
             uint8_t c = ((z / 3) & 1) ? corru : corruDark;
             B.fill(X0, Q, z, X0 + 1, H - 1, z, c);
@@ -1140,6 +1148,73 @@ static MapInfo genMarina(World& w, uint32_t seed = 4242) {
     mi.skyZenith = vec3(0.22f, 0.22f, 0.42f);
     mi.ambient = 0.42f;
     mi.hasWater = true;
+    // ---- the channel, cut last
+    //
+    // The reference overhead is not one waterfront: it is two pieces of land with water
+    // between them and a single bridge across. That is the layout's whole character —
+    // everything on the far side must be *crossed to*, which makes the bridge the level's one
+    // choke point and the obvious thing to blow up. A continuous quay cannot express that,
+    // however much is built along it.
+    //
+    // Cut after every structure is placed, never before. The first attempt carved early and
+    // the warehouse was stamped straight back over it, leaving the channel filled and its
+    // revetment standing in mid-air: the generator is a sequence of stamps, so anything that
+    // has to survive must go last.
+    {
+        const int CH0 = 62, CH1 = 108;
+        B.clear(CH0, 3, 0, CH1, WY - 1, WZ - 1);
+        B.fill(CH0, 2, 0, CH1, 3, WZ - 1, P.sand);        // bed, a step deeper than the harbour
+        // Revetment down both banks, ragged along the top so the cut does not read as a slot
+        // milled out of a solid block.
+        for (int z = 0; z < WZ; z++) {
+            int j = (z * 7919) % 6;
+            B.fill(CH0 - 2, 4, z, CH0 - 1, Q - 1 - j / 4, z, P.concreteDark);
+            B.fill(CH1 + 1, 4, z, CH1 + 2, Q - 1 - j / 4, z, P.concreteDark);
+        }
+    }
+
+    // ---- the lift bridge across the channel
+    //
+    // Built after the cut, not before. Placing it first looked right — the landings would sit
+    // in solid ground and the cut would open the water beneath — but the cut clears the full
+    // height of the channel, so it took the deck's midspan out with it and left two stubs
+    // facing each other across the gap. The landings are outside the channel walls either way,
+    // so building last costs nothing and the span survives.
+    {
+        const int BX0 = 56, BX1 = 114;        // deck spans the channel and lands on both banks
+        const int BZ0 = 148, BZ1 = 163;       // ~3 m wide
+        // Abutments: the deck has to arrive at something, and a walkway that simply stops at
+        // the water's edge is the clearest tell that a level was assembled from stamps.
+        B.fill(BX0 - 6, 5, BZ0 - 2, BX0 + 1, Q - 1, BZ1 + 2, P.concreteDark);
+        B.fill(BX1 - 1, 5, BZ0 - 2, BX1 + 6, Q - 1, BZ1 + 2, P.concreteDark);
+        // The deck itself: timber over a steel edge beam, which is what the reference's
+        // crossing reads as from above.
+        B.fill(BX0, Q, BZ0, BX1, Q, BZ1, P.woodLight);
+        B.fill(BX0, Q, BZ0, BX1, Q, BZ0, P.metalDark);
+        B.fill(BX0, Q, BZ1, BX1, Q, BZ1, P.metalDark);
+        // Kerb rails down both sides, low enough to see over.
+        for (int x = BX0; x <= BX1; x += 4) {
+            B.fill(x, Q + 1, BZ0, x, Q + 2, BZ0, P.metalDark);
+            B.fill(x, Q + 1, BZ1, x, Q + 2, BZ1, P.metalDark);
+        }
+        B.fill(BX0, Q + 2, BZ0, BX1, Q + 2, BZ0, P.metalDark);
+        B.fill(BX0, Q + 2, BZ1, BX1, Q + 2, BZ1, P.metalDark);
+
+        // Control post on the east bank, with a lit panel so it can be found at night. Set
+        // back from the hinge so you are not standing on the deck when it starts to move.
+        const int PX = BX1 + 4, PZ = BZ1 + 4;
+        B.fill(PX, Q, PZ, PX + 1, Q + 5, PZ + 1, P.metalDark);
+        B.fill(PX, Q + 5, PZ, PX + 1, Q + 6, PZ + 1, signRed);
+
+        mi.hasBridge = true;
+        mi.brX0 = BX0; mi.brY0 = Q;     mi.brZ0 = BZ0;
+        mi.brX1 = BX1; mi.brY1 = Q + 2; mi.brZ1 = BZ1;
+        // Spans X, so it must hinge about Z, at the east landing.
+        mi.brHingeAlongX = false;
+        mi.brHingeVox = BX1;
+        mi.brButton = vec3((PX + 1) * VOXEL_SIZE, (Q + 5) * VOXEL_SIZE, (PZ + 1) * VOXEL_SIZE);
+    }
+
     mi.waterLevel = SEA * VOXEL_SIZE;
     mi.waterColor = vec3(0.10f, 0.22f, 0.30f);
     mi.fogDensity = 0.005f;

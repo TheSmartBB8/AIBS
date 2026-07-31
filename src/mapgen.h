@@ -185,7 +185,14 @@ static void placeCar(MapBuilder& B, const Pals& P, int x, int y, int z, int alon
     bool isTaxi = colIdx == 8 || colIdx == 9;
     bool isPolice = colIdx == 10 || colIdx == 11;
     const int* c = bodyCols[colIdx];
-    uint8_t body = B.w.addPal(c[0], c[1], c[2], M_MED);
+    // Weathered, and by a per-car amount. A car park is dozens of these in every wide shot on
+    // the mall map, and as authored they were the most saturated surfaces in the frame — a row
+    // of flat lime and violet slabs, which is a large part of why that map read as plastic. A
+    // fleet is not uniformly grubby either, so the amount varies per car: identical weathering
+    // across forty vehicles is its own kind of tell. Taxis and police cars weather least,
+    // because those are the two that actually get washed.
+    float grime = (isTaxi || isPolice) ? 0.10f : (0.18f + B.rng.uf() * 0.30f);
+    uint8_t body = weatheredPal(B.w, c[0], c[1], c[2], M_MED, grime);
     uint8_t glass = P.glassBlue, wheel = P.black, trim = P.metalDark;
     uint8_t headlight = B.w.addPal(255, 240, 200, M_LIGHT, 0.8f);
     uint8_t taillight = B.w.addPal(200, 40, 30, M_LIGHT, 0.6f);
@@ -466,33 +473,44 @@ static void placeRailCrane(MapBuilder& B, const Pals& P, uint8_t bodyPal,
 // A blocky residential highrise used as background scenery around a mall map — gives the
 // lot the "surrounded by the city" backdrop a real mall parking lot sits in, without being
 // walkable/enterable content of its own.
-static void placeApartmentBlock(MapBuilder& B, int groundY, int x0, int z0, int w, int d, int floors, int colorIdx) {
+static void placeApartmentBlock(MapBuilder& B, const Pals& P, int groundY, int x0, int z0,
+                                int w, int d, int floors, int colorIdx) {
+    // Weathered, not as authored. The three colours here were among the most saturated on the
+    // map and these blocks are the backdrop to half of it, so they set the tone of every wide
+    // shot: a skyline of clean primaries is most of what made the whole thing read as toy.
     static const int cols[][3] = {
         {176, 92, 70},    // red brick
         {212, 188, 108},  // pale yellow
         {150, 152, 156},  // gray concrete
     };
     const int* c = cols[colorIdx % 3];
-    uint8_t wall = B.w.addPal(c[0], c[1], c[2], M_HEAVY);
-    uint8_t wallDark = B.w.addPal(c[0] * 3 / 4, c[1] * 3 / 4, c[2] * 3 / 4, M_HEAVY);
-    uint8_t winGlow = B.w.addPal(255, 244, 200, M_LIGHT, 1.0f);
+    uint8_t wall = weatheredPal(B.w, c[0], c[1], c[2], M_HEAVY, 0.34f);
+    uint8_t wallDark = shadePal(B.w, wall, 0.72f, 0.2f);
     int h = floors * 4;
     int x1 = x0 + w - 1, z1 = z0 + d - 1;
     B.fill(x0, groundY, z0, x1, groundY + h, z1, wall);
-    for (int fl = 0; fl < floors; fl++) {
-        int wy = groundY + 2 + fl * 4;
-        for (int wx = x0 + 2; wx < x1 - 1; wx += 3) {
-            uint8_t win = B.rng.uf() < 0.45f ? winGlow : wallDark;
-            B.w.setRaw(wx, wy, z0, win);
-            B.w.setRaw(wx, wy, z1, win);
-        }
-        for (int wz = z0 + 2; wz < z1 - 1; wz += 3) {
-            uint8_t win = B.rng.uf() < 0.45f ? winGlow : wallDark;
-            B.w.setRaw(x0, wy, wz, win);
-            B.w.setRaw(x1, wy, wz, win);
-        }
-    }
-    B.fill(x0, groundY + h, z0, x1, groundY + h + 1, z1, wallDark);
+
+    // Windows were one voxel each, flush with the wall, on a four-voxel pitch — a 0.2 m dot
+    // every 0.8 m, which at any distance is a dither pattern rather than a window. Recessed
+    // openings on a storey rhythm, with cornices at the floor lines and pipes down the corners,
+    // give the tower a scale; without them a forty-voxel wall and a four-voxel wall are the same
+    // picture at different zooms.
+    FacadeOpts o;
+    o.storeyH = 10;              // 2 m — short, but these are background scenery, not interiors
+    o.winW = 4; o.winH = 5; o.gapU = 4;
+    o.plinth = 3;
+    o.litFrac = 0.30f; o.boardedFrac = 0.04f; o.brokenFrac = 0.02f;
+    o.trimPal = wallDark;
+    detailFacade(B, P, FACE_NX, x0, z0, z1, groundY, groundY + h, o);
+    detailFacade(B, P, FACE_PX, x1, z0, z1, groundY, groundY + h, o);
+    detailFacade(B, P, FACE_NZ, z0, x0, x1, groundY, groundY + h, o);
+    detailFacade(B, P, FACE_PZ, z1, x0, x1, groundY, groundY + h, o);
+
+    // A parapet and some plant, because these are seen from below against sky and the roofline
+    // is the only part of a backdrop tower anyone actually reads.
+    B.fill(x0, groundY + h, z0, x1, groundY + h, z1, wallDark);
+    placeParapet(B, P, x0, z0, x1, z1, groundY + h, 3, wallDark, P.sidewalk);
+    placeRoofClutter(B, P, x0, z0, x1, z1, groundY + h + 1, 3);
 }
 
 // a roadside advertisement billboard on two posts
@@ -640,14 +658,15 @@ static MapInfo genMall(World& w, uint32_t seed = 1337) {
 
     // ---- facade signage
     {
-        // giant "MALL" scale 2, emissive orange, on dark band
-        const char* txt = "MALL";
-        int tw = B.textLen(txt, 2);              // 46
+        // The name goes on the upper band and the noun goes under it. It was the other way
+        // round, so the mall's own sign read MALL over EVERMORE top to bottom — which is the
+        // first thing the player sees on this map, and it is backwards.
+        const char* txt = "EVERMORE";
+        int tw = B.textLen(txt, 2);
         int sx = 160 - tw / 2;
-        B.fill(118, 29, MZ0, 202, ROOF, MZ0, P.signBack);
+        B.fill(sx - 8, 29, MZ0, sx + tw + 7, ROOF, MZ0, P.signBack);
         B.text3d(txt, sx, ROOF - 1, MZ0 - 1, 2, 2, signOrange, 1);
-        // "EVERMORE" scale 1 white above canopy
-        const char* t2 = "EVERMORE";
+        const char* t2 = "MALL";
         int t2w = B.textLen(t2, 1);
         int s2x = 160 - t2w / 2;
         B.fill(s2x - 4, F1 + 16, MZ0, s2x + t2w + 3, F1 + 23, MZ0, P.signBack);
@@ -832,10 +851,10 @@ static MapInfo genMall(World& w, uint32_t seed = 1337) {
     // ---- background city skyline: blocky residential highrises around the lot, plus a
     // couple of roadside ad billboards and a shipping container behind the mall, matching
     // the "big box store ringed by apartment blocks" backdrop of a real mall parking lot
-    placeApartmentBlock(B, G, 6, 6, 20, 16, 11, 0);
-    placeApartmentBlock(B, G, 294, 6, 20, 16, 13, 1);
-    placeApartmentBlock(B, G, 64, 292, 24, 20, 9, 2);
-    placeApartmentBlock(B, G, 236, 292, 22, 20, 10, 0);
+    placeApartmentBlock(B, P, G, 6, 6, 20, 16, 11, 0);
+    placeApartmentBlock(B, P, G, 294, 6, 20, 16, 13, 1);
+    placeApartmentBlock(B, P, G, 64, 292, 24, 20, 9, 2);
+    placeApartmentBlock(B, P, G, 236, 292, 22, 20, 10, 0);
     placeBillboard(B, P, 50, G, 96, 1);
     placeBillboard(B, P, 200, G, 96, 1);
     placeContainer(B, P, 196, G, 300, 1, 2);

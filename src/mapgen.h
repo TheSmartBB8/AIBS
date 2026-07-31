@@ -587,11 +587,11 @@ static MapInfo genMall(World& w, uint32_t seed = 1337) {
     // working harbour, signage is *painted*: it catches the sun and at dusk it is barely
     // brighter than the wall it is bolted to. A little emission separates it from the wall; a
     // lot destroys it.
-    uint8_t signOrange = w.addPal(255, 150, 40, M_LIGHT, 0.55f);
-    uint8_t signWhite  = w.addPal(240, 245, 255, M_LIGHT, 0.45f);
-    uint8_t signCyan   = w.addPal(80, 220, 235, M_LIGHT, 0.50f);
-    uint8_t signPink   = w.addPal(250, 90, 160, M_LIGHT, 0.50f);
-    uint8_t signGreen  = w.addPal(110, 235, 90, M_LIGHT, 0.50f);
+    uint8_t signOrange = w.addPal(255, 150, 40, M_LIGHT, 0.28f);
+    uint8_t signWhite  = w.addPal(240, 245, 255, M_LIGHT, 0.22f);
+    uint8_t signCyan   = w.addPal(80, 220, 235, M_LIGHT, 0.25f);
+    uint8_t signPink   = w.addPal(250, 90, 160, M_LIGHT, 0.25f);
+    uint8_t signGreen  = w.addPal(110, 235, 90, M_LIGHT, 0.25f);
     uint8_t fountainW  = w.addPal(90, 170, 200, M_LIGHT, 0.25f);
 
     const int G = 8;              // ground surface: solid 0..G-1, stand on y=G
@@ -933,16 +933,19 @@ static MapInfo genMarina(World& w, uint32_t seed = 4242) {
     MapBuilder B(w, seed);
     Pals P = makeCommonPalette(w);
     WfPals F = makeWfPals(w);
-    // Facade lettering emits about 0.5, not the 1.1-1.3 it used to.
+    // Facade lettering emits about 0.25, not the 1.1-1.3 it used to.
     //
     // The bright pass thresholds at luminance 1.0, and the sun runs at 3.5, so a sign that also
     // emitted 1.2 cleared the bloom threshold on its own before a single photon of sunlight
     // landed on it. In daylight the harbour office's sign read "OFF": the last three letters
     // were inside their own glow. A lit sign at noon is barely brighter than the wall it is
-    // bolted to — the glow is a night effect, and 0.5 against a night ambient near 0.1 still
-    // gives one.
-    uint8_t signWhite = w.addPal(240, 245, 255, M_LIGHT, 0.45f);
-    uint8_t signRed   = w.addPal(255, 90, 70, M_LIGHT, 0.50f);
+    // bolted to — the glow is a night effect. 0.5 was the first cut and it was still too hot at
+    // the other end: with the exposure ceiling raised so night is viewable at all, a sign at 0.5
+    // meters to 8 against a tonemap that clips at 1, so MARINA came back as an unreadable white
+    // smear. At 0.25 it lands just over the bloom threshold — glowing, with its letters still
+    // letters.
+    uint8_t signWhite = w.addPal(240, 245, 255, M_LIGHT, 0.22f);
+    uint8_t signRed   = w.addPal(255, 90, 70, M_LIGHT, 0.25f);
     uint8_t beacon    = w.addPal(255, 220, 120, M_LIGHT, 8.0f);
     uint8_t hullWhite = w.addPal(228, 230, 232, M_MED);
     uint8_t hullRed   = w.addPal(170, 52, 44, M_MED);
@@ -1488,8 +1491,8 @@ static MapInfo genHub(World& w, uint32_t seed = 777) {
     Pals P = makeCommonPalette(w);
     uint8_t siding    = w.addPal(214, 186, 112, M_MED);    // pale-yellow painted wood
     uint8_t roofDark  = w.addPal(70, 62, 58, M_MED);
-    uint8_t signOrange = w.addPal(255, 150, 40, M_LIGHT, 0.55f);
-    uint8_t signWhite  = w.addPal(240, 245, 255, M_LIGHT, 0.45f);
+    uint8_t signOrange = w.addPal(255, 150, 40, M_LIGHT, 0.28f);
+    uint8_t signWhite  = w.addPal(240, 245, 255, M_LIGHT, 0.22f);
     uint8_t hullRed    = w.addPal(170, 60, 46, M_MED);
 
     const int G = 12;     // stand level on grass (top voxel at G-1)

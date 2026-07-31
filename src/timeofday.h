@@ -159,8 +159,13 @@ static const float TOD_SKY_GAIN_Z = 1.13f;
 // are meant to be: `exposureHint` is what brings them back up to something viewable, so the
 // darkness stays in the scene's radiance where it belongs rather than being pre-baked into a
 // grey sky that then cannot be exposed down.
-static const vec3 TOD_NIGHT_HORIZON = vec3(0.0026f, 0.0026f, 0.0034f);
-static const vec3 TOD_NIGHT_ZENITH  = vec3(0.0009f, 0.0012f, 0.0022f);
+// Lifted about 3x from a pure airglow-and-moonlight value. This is a working harbour on the
+// edge of a town, and the dominant source over such a place at night is the town — sodium and
+// LED bouncing off the underside of whatever cloud is about. That is also why the horizon floor
+// is so much brighter than the zenith one and slightly warmer: the glow comes from around you,
+// not from above.
+static const vec3 TOD_NIGHT_HORIZON = vec3(0.0082f, 0.0079f, 0.0094f);
+static const vec3 TOD_NIGHT_ZENITH  = vec3(0.0026f, 0.0031f, 0.0052f);
 
 // Twilight brightness falls by about a decade for every 4 degrees the sun sinks below the
 // horizon. That is roughly what photometry of real twilight shows, and it is what makes civil

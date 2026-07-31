@@ -1916,7 +1916,17 @@ struct Renderer {
     static constexpr float EXPOSURE_KEY = 0.115f;
     // Bounds, so a frame that is almost entirely sky or almost entirely unlit interior cannot
     // drive the exposure somewhere the tonemap has no useful range left.
-    static constexpr float EXPOSURE_MIN = 0.25f, EXPOSURE_MAX = 4.0f;
+    // The ceiling has to be able to reach night, and at 4.0 it could not.
+    //
+    // The time-of-day model deliberately keeps night's darkness in the scene's radiance rather
+    // than baking a grey sky, on the understanding that exposure brings it back. It could not:
+    // a clear night meters at roughly 0.0013 against a key of 0.115, which asks for about 88x
+    // and got 4x. Measured on the marina at 21:30, the median pixel of the whole frame was
+    // luma 0.000 — over half the image was not dark, it was absent, with only the emissive
+    // signs and lamps above zero. 16x plus a lifted night floor puts it back where the model
+    // always intended it. Daytime never approaches this clamp (it meters around 0.4), so
+    // nothing about the graded look of the maps changes.
+    static constexpr float EXPOSURE_MIN = 0.25f, EXPOSURE_MAX = 16.0f;
     // Asymmetric, and the asymmetry is the point. Walking out of a dark interior into daylight
     // the frame is blown out and the exposure has to come *down*, which the eye does in a
     // fraction of a second; walking back in it has to come up, and that takes many seconds in

@@ -1081,11 +1081,19 @@ in vec3 vWorld;
 out vec4 FragColor;
 uniform vec3 uSunDirM;
 uniform vec3 uSunColorM;
-uniform float uAmbientM;
+// Ambient as a colour, not a scalar, and matching how the chunk shader uses it.
+//
+// This was a bare float added straight onto the lit term, which is fine as long as every scene
+// is daylit and stops being fine the moment one is not: with the sun down the ambient
+// coefficient rises (the sky is then the only light), so props, vehicles and the viewmodel got
+// *brighter* at midnight while the world around them went dark, and auto-exposure then blew
+// them to white. The chunk shader has always multiplied that coefficient into the sky colour;
+// doing the same here is what makes a boat at night look like a boat at night.
+uniform vec3 uAmbientColM;
 void main() {
     vec3 N = normalize(vNormal);
     float ndl = max(dot(N, -uSunDirM), 0.0);
-    vec3 col = vColor.rgb * (uSunColorM * ndl * 0.55 + vec3(uAmbientM));
+    vec3 col = vColor.rgb * (uSunColorM * ndl * 0.55 + uAmbientColM);
     col += vColor.rgb * vColor.a * 6.0;      // a used as emissive here
     FragColor = vec4(col, 1.0);
 }
@@ -2640,7 +2648,10 @@ struct Renderer {
         glUniformMatrix4fv(glGetUniformLocation(progModel, "uModel"), 1, GL_FALSE, model.m);
         glUniform3f(glGetUniformLocation(progModel, "uSunDirM"), mi.sunDir.x, mi.sunDir.y, mi.sunDir.z);
         glUniform3f(glGetUniformLocation(progModel, "uSunColorM"), mi.sunColor.x, mi.sunColor.y, mi.sunColor.z);
-        glUniform1f(glGetUniformLocation(progModel, "uAmbientM"), ambient);
+        // Same construction as beginChunks: the average sky colour scaled by the ambient
+        // coefficient, so models and world agree about how much light there is.
+        vec3 amb = (mi.skyHorizon + mi.skyZenith) * 0.5f * (ambient * 1.6f);
+        glUniform3f(glGetUniformLocation(progModel, "uAmbientColM"), amb.x, amb.y, amb.z);
         glBindVertexArray(modelVAO);
         glBindBuffer(GL_ARRAY_BUFFER, modelVBO);
         glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(modelVerts.size() * sizeof(ModelVert)), modelVerts.data(), GL_STREAM_DRAW);

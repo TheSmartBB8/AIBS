@@ -49,7 +49,8 @@ Update this the moment a system changes status, before starting the next one.
 | Reflections gathered along a vertical smear | built | compact sources elongate into shafts; measured -22% mean gradient |
 | Foam field (deposit, decay, spread, breakers) | built | `water.h`, constants measured |
 | Foam wired to the renderer | built | R32F upload + shader term; calm 0.006, post-blast 0.178 mean on visible water |
-| Foam deposited by moving objects | partial | player and loose props churn; **no vehicles exist to leave a wake** |
+| Foam deposited by moving objects | built | player, loose props and vehicle hulls churn |
+| Wake reads as foam | **open** | measured wake/water luminance ratio 0.52-0.80 at night and 0.77-1.17 at hazy dusk — parity with the surrounding water, where reference shows the wake clearly brightest. Cause is arithmetic, not lighting: trail is ~2.5 s old against a 5.5 s decay so coverage is ~0.31, and the shader blends 0.85 x 0.31 = 0.26 toward foam colour. A quarter-strength blend cannot make a bright trail however well lit. **Next step: raise the deposit toward 0.75 peak** (it was cut 3x to fix a saturated slab and overshot); 0.75 still clears the plateau failure. Verify it does not re-saturate before believing it. |
 | Residual ~7 px banding, water 17-66 m out | open | **unattributed.** Ruled out by measurement: planar views, wave normal (0.000, bit-constant), sky reflection, depth channel, alpha blend, the distance fades |
 
 ## Simulation

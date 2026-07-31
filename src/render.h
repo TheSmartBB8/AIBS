@@ -1121,6 +1121,19 @@ void main() {
 
     vec3 body = mix(uWaterColor * skyLit, refracted, trans);
 
+    // What the pixel is actually made of, before anything is mixed: R = the Fresnel weight the
+    // reflection gets, G = luminance of the body term, B = luminance of the reflection term.
+    // Three attempts at the near-field flatness have now failed by reasoning about which of
+    // these dominates instead of asking. If R is small and G and B are close, then no amount of
+    // normal detail can show, because both ends of the mix are the same colour and the weight
+    // between them barely moves the answer.
+    if (uDebug == 13) {
+        FragColor = vec4(fres,
+                         dot(body, vec3(0.2126, 0.7152, 0.0722)),
+                         dot(reflected, vec3(0.2126, 0.7152, 0.0722)), 1.0);
+        return;
+    }
+
     vec3 col = mix(body, reflected, fres);
 
     // Sun glint. Narrow and bright, off the perturbed normal, so the highlight breaks up over

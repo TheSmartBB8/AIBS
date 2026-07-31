@@ -894,6 +894,17 @@ static MapInfo genMarina(World& w, uint32_t seed = 4242) {
     uint8_t corruDark = w.addPal(118, 124, 130, M_MED);
     uint8_t tankWhite = w.addPal(225, 225, 220, M_HEAVY);
     uint8_t tankRed   = w.addPal(200, 60, 45, M_HEAVY);
+    // Harbour bottom. Not sand — a dredged channel silts up with whatever the traffic stirs
+    // and whatever runs off the quay, and it is dark. This is not a detail nobody sees: the
+    // refraction pass samples the bed through the surface, so the bed's brightness sets how
+    // dark the water's body term is, and the body term is one end of the mix the surface
+    // ripples modulate. Measured on the channel-eye camera, near-field reflection is only
+    // 1.37x the body against 2.65x mid-field, so near water was mixing between two nearly
+    // identical colours and the chop had nothing to show up against. Beach sand under two
+    // metres of harbour was the reason.
+    uint8_t silt      = w.addPal(58, 56, 48, M_MED);
+    uint8_t siltDark  = w.addPal(42, 42, 38, M_MED);
+    uint8_t siltWeed  = w.addPal(48, 58, 44, M_MED);
 
     const int SEA = 10;    // water surface height in voxels
     const int Q = 13;      // quay top; stand on y=Q
@@ -901,6 +912,14 @@ static MapInfo genMarina(World& w, uint32_t seed = 4242) {
 
     B.fill(0, 0, 0, WX - 1, 2, WZ - 1, P.bedrock);
     B.fill(0, 3, 0, WX - 1, 4, WZ - 1, P.sand);
+    // Everything seaward of the quay is working harbour, so it silts; the beach in the
+    // south-east corner is re-laid over this below and stays sand, which is the contrast that
+    // makes the beach read as a beach.
+    for (int z = 0; z < WZ; z++)
+        for (int x = LANDX; x < WX; x++) {
+            int r = (x * 7013 + z * 3571) % 100;
+            B.fill(x, 4, z, x, 4, z, r < 12 ? siltWeed : (r < 40 ? siltDark : silt));
+        }
     B.fill(0, 5, 0, LANDX, Q - 1, WZ - 1, P.dirt);
     B.fill(0, Q - 1, 0, LANDX, Q - 1, WZ - 1, P.grass);
     // quay strip
@@ -1261,7 +1280,15 @@ static MapInfo genMarina(World& w, uint32_t seed = 4242) {
     {
         const int CH0 = 62, CH1 = 108;
         B.clear(CH0, 3, 0, CH1, WY - 1, WZ - 1);
-        B.fill(CH0, 2, 0, CH1, 3, WZ - 1, P.sand);        // bed, a step deeper than the harbour
+        // Bed, a step deeper than the harbour, and silt rather than sand — see the palette
+        // note above for why the bed's brightness is a surface-shading decision.
+        B.fill(CH0, 2, 0, CH1, 3, WZ - 1, silt);
+        for (int z = 0; z < WZ; z++)
+            for (int x = CH0; x <= CH1; x++) {
+                int r = (x * 4093 + z * 8191) % 100;
+                if (r < 14) B.fill(x, 3, z, x, 3, z, siltWeed);
+                else if (r < 42) B.fill(x, 3, z, x, 3, z, siltDark);
+            }
         // Revetment down both banks, ragged along the top so the cut does not read as a slot
         // milled out of a solid block.
         for (int z = 0; z < WZ; z++) {

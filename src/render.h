@@ -146,13 +146,39 @@ vec3 skyColor(vec3 dir) {
         // fwidth on the cloud coordinate measures that sweep directly, so the rolloff follows
         // the real footprint instead of a hand-tuned function of elevation, and it works the
         // same whether the caller is the sky itself or a reflection off anything else.
+        // Two layers and a fake self-shadow.
+        //
+        // One thresholded fbm tinted a single colour is a stencil: it has an outline and no
+        // interior, so the sky reads as paper cut-outs however good the outline is. What makes
+        // a cloud a cloud is the gradient across its body — bright on the side facing the sun,
+        // dark underneath — and the cheapest honest way to get it is to sample the same noise
+        // field again a short step toward the sun. More density that way means more cloud
+        // between this point and the light, so this point is deeper in shadow. It is not light
+        // transport and does not need to be; it puts the gradient in the right place, which is
+        // the whole of the effect, for one extra fbm.
+        //
+        // The second layer is coarser and drifts slower. Parallax between two rates is what
+        // stops a sky reading as one sheet of wallpaper sliding past, and it costs nothing to
+        // reuse the same function at a different scale.
         float cl = fbmLod(q, clod);
         float cover = uSkyStyle == 1 ? 0.58 : 0.52;
-        float cm = smoothstep(cover, cover + 0.22, cl);
+        float dens = smoothstep(cover, cover + 0.26, cl);
+        float cl2 = fbmLod(q * 0.42 + vec2(uTime * 0.0016, 0.0), max(0.0, clod - 1.24));
+        float cm = clamp(dens + smoothstep(0.50, 0.80, cl2) * 0.55, 0.0, 1.0);
+
+        vec2 sunStep = normalize(toSun.xz + vec2(1e-4, 1e-4)) * 0.55;
+        float clSun = fbmLod(q + sunStep, clod);
+        float shade = clamp((clSun - cl) * 2.6 + 0.32, 0.0, 1.0);
+
+        vec3 cloudLit  = uSkyStyle == 1 ? vec3(1.30, 0.88, 0.62) : vec3(1.32, 1.29, 1.24);
+        vec3 cloudDark = uSkyStyle == 1 ? vec3(0.38, 0.25, 0.30) : vec3(0.50, 0.55, 0.66);
+        vec3 cloudCol = mix(cloudLit, cloudDark, shade);
+        // Silver lining. Sun behind a thin edge lights it through, and it is the one cloud cue
+        // that only appears near the sun — so it also tells the eye where the sun is on a
+        // frame where the disc itself is out of shot.
+        cloudCol += uSunColor * pow(sd, 6.0) * (1.0 - dens) * 0.30;
+
         float fade = smoothstep(0.015, 0.12, dir.y);
-        vec3 cloudCol = uSkyStyle == 1
-            ? mix(vec3(0.45, 0.28, 0.32), vec3(1.15, 0.72, 0.5), pow(sd, 2.0) * 0.8 + 0.3)
-            : mix(vec3(0.75, 0.78, 0.84), vec3(1.25, 1.22, 1.15), 0.6 + 0.4 * sd);
         col = mix(col, cloudCol, cm * fade * 0.85);
     }
     // How much atmosphere is in the way, recovered from the map's extinction.
@@ -173,9 +199,18 @@ vec3 skyColor(vec3 dir) {
     // Stars go out first and completely. Even light haze hides them — they are the faintest
     // thing in the sky, and nothing gives a "clear night" away faster than a star surviving a
     // fog bank.
-    if (uSkyStyle == 1 && dir.y > 0.25) {
+    //
+    // They also only come out at night, which this did not check. Haze was the *only* gate, so
+    // a clear noon sky was full of them: magnified, the daytime marina sky is speckled with
+    // white dots, and they have been in every clear-weather frame this project has ever
+    // rendered. The fog work that added the haze gate fixed "stars visible through 95% haze"
+    // and left "stars visible at midday" standing, because the frame it was checked against
+    // was a night one.
+    float night = 1.0 - smoothstep(-0.12, 0.02, -uSunDir.y);
+    if (uSkyStyle == 1 && dir.y > 0.25 && night > 0.0) {
         float st = step(0.9985, hash21(floor(dir.xz / max(dir.y, 0.01) * 240.0)));
-        col += vec3(st) * 0.35 * smoothstep(0.25, 0.6, dir.y) * (1.0 - smoothstep(0.15, 0.45, hz));
+        col += vec3(st) * 0.35 * night * smoothstep(0.25, 0.6, dir.y)
+             * (1.0 - smoothstep(0.15, 0.45, hz));
     }
 
     // Then the sky itself collapses toward the fog colour, taking the cloud contrast with it.

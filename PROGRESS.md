@@ -51,7 +51,16 @@ Update this the moment a system changes status, before starting the next one.
 | Foam wired to the renderer | built | R32F upload + shader term; calm 0.006, post-blast 0.178 mean on visible water |
 | Foam deposited by moving objects | built | player, loose props and vehicle hulls churn |
 | Wake reads as foam | **open** | measured wake/water luminance ratio 0.52-0.80 at night and 0.77-1.17 at hazy dusk — parity with the surrounding water, where reference shows the wake clearly brightest. Cause is arithmetic, not lighting: trail is ~2.5 s old against a 5.5 s decay so coverage is ~0.31, and the shader blends 0.85 x 0.31 = 0.26 toward foam colour. A quarter-strength blend cannot make a bright trail however well lit. **Next step: raise the deposit toward 0.75 peak** (it was cut 3x to fix a saturated slab and overshot); 0.75 still clears the plateau failure. Verify it does not re-saturate before believing it. |
-| Residual ~7 px banding, water 17-66 m out | open | **unattributed.** Ruled out by measurement: planar views, wave normal (0.000, bit-constant), sky reflection, depth channel, alpha blend, the distance fades |
+| ~7 px reflection banding | **attributed and fixed** | It was the reflection gather's own tap spacing, not any input. 13 taps over up to 0.075 UV puts one every ~3 px; above a pixel apart they stop blending and each lands as a separate copy of the source. Measured period 7.69 px in the lamp shaft, and present on *every* reflected feature — sign, lamps, quay, wake — which is what per-input testing could never have shown, since every input was fine. Taps are now dithered per pixel and resolved by the accumulator. |
+| Near-field wave contrast inverted | **open** | detrended ripple rms 0.08 near vs 1.01 far. Reality is the opposite: projected wavelength grows toward the camera, so near water should carry the most structure and far should smooth to a mirror. Reads as a matte painted floor. Critic calls this the single strongest recreation tell in the frame. Suspect a distance fade running the wrong way or normal-map LOD collapsing near detail. |
+| Wake is a blue trench, not white foam | **open** | dusk wake L 61.6 vs surround 85.0 (0.72); night 21.2 vs 45.7 (0.46) with **B 2x R** while the water is warm. A 0.26 blend of white over warm water cannot produce blue darkening, so the foam is either taking the body/extinction tint or suppressing the warm Fresnel term and exposing blue subsurface. **Raising coverage first would make this worse** — fix colour and the specular interaction, then coverage. Supersedes the earlier note that coverage was the fix. |
+| Hull froth | not started | absent entirely; under-hull waterline is pure hull-red reflection |
+| Fog does not land on geometry | **open** | 12% contrast decay across 40 m of extra depth (boat at 40 m sat 0.234, breakwater at 60 m 0.218). Applied as a near-step at the far plane rather than an exponential integrated from the camera. Previously mis-filed as "the map is only 64 m"; that was wrong — the *gradient* is missing, not the endpoint. |
+| Stars visible through 95% haze | **open** | 8.7% of the upper-sky window above median+45. Star layer needs gating on the same haze term. |
+| Sky too high-contrast under fog | **open** | luminance p5/p50/p95 = 65.3/84.5/199.3, a 2.36:1 highlight-to-median ratio where heavy fog wants ~1.1 and a featureless value plate |
+| Grade warm where reference is cool | **open** | sky (108,88,87), horizon (99.5,81.1,79.9) — R-dominant salmon against a reference described as cool-cast |
+| Water hue opposes fog hue | **open** | water B>=G>R (cool), sky R>G>B (warm); reference wants water close to fog in value and chromaticity. Water also ~1 stop low: near-water L 45 vs sky L 83. |
+| Lamp shafts inconsistent between lamps | **open** | wall lamp peaks 3.8x over water baseline, pole lamp only 1.37x and dies after 80 px. Reference has *each* quay lamp laying a shaft. Glitter-cone shape itself is correct: half-max width 17->31->40->57 px, peak 100->176->68. |
 
 ## Simulation
 
@@ -88,4 +97,7 @@ Update this the moment a system changes status, before starting the next one.
   0.00 m of lateral drift, peaking at 88 km/h. The road is 4.2 m wide against a 1.70 m track.
 - The marina basin is ~1.2 m deep everywhere; deepening it means raising `SEA` and `Q`
   together, which touches every `Q+n` placement in the generator.
-- No `visual-critic` pass has been run against most of the rendering list above.
+- First `visual-critic` pass ran against the marina water at dusk: **REWORK**. Its verdict:
+  "I would guess dusk_haze.png is the recreation, because the sky is a starlit high-contrast
+  cloudscape in a shot that is supposed to be heavy fog, and because the near water has a
+  ripple rms of 0.08 LSB." Nothing else in the rendering list has been through it.

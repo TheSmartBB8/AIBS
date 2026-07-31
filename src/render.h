@@ -662,6 +662,7 @@ uniform int uPlanar;            // 0 = no reflection/refraction targets availabl
 // same pixels, so when something is visibly wrong in the water the picture alone cannot say
 // which input carried it in; this puts each one on screen on its own. 0 = shade normally.
 uniform int uDebug;
+uniform float uSampleSeed;      // frame counter, so dithering averages out under accumulation
 )";
     s += GLSL_SKY_COMMON;
     s += R"(
@@ -735,12 +736,27 @@ vec3 reflectedStreak(vec2 uv, float rough, float NoV) {
     float len = min(rough * (0.02 + 0.10 / max(NoV, 0.05)), 0.075);
     vec3 c = texture(uRefl, uv).rgb;
     if (len < 0.0015) return c;
-    // Weighted toward the centre so the source still has a bright core with the streak
-    // trailing off it, rather than a uniform bar of light with hard ends.
+    // Tap positions are dithered per pixel, and that is not a refinement — without it this
+    // function draws a ladder instead of a shaft.
+    //
+    // Thirteen taps spread over up to 0.075 of the screen puts one roughly every three pixels.
+    // Above about a pixel apart they stop blending and each lands as its own visible copy of
+    // whatever is being reflected, so a lamp comes back as a stack of horizontal rungs and
+    // every other reflected feature — a sign, a quay, the wake — gets combed into the same
+    // lozenges. It reads as corrugated iron lying on the water.
+    //
+    // This is also why that banding resisted attribution for so long. It was hunted through
+    // the wave normal, the sky, the depth channel, the planar textures and the distance fades,
+    // one input at a time, and it is in none of them: the inputs are all fine and the sampling
+    // pattern applied to them is what is periodic. Offsetting each tap by a per-pixel fraction
+    // of the spacing turns that fixed comb into noise, which the temporal accumulator already
+    // in the pipeline then resolves into the smooth gradient the taps were meant to describe.
+    float jit = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233)) + uSampleSeed * 0.017)
+                      * 43758.5453);
     float wsum = 1.0;
     for (int i = 1; i <= 6; i++) {
-        float t = float(i) / 6.0;
-        float w = 1.0 - t * 0.85;
+        float t = (float(i) - 0.5 + jit) / 6.0;
+        float w = 1.0 - min(t, 1.0) * 0.85;
         float off = t * len;
         c += texture(uRefl, clamp(uv + vec2(0.0, off), 0.002, 0.998)).rgb * w;
         c += texture(uRefl, clamp(uv - vec2(0.0, off), 0.002, 0.998)).rgb * w;

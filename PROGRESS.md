@@ -35,6 +35,19 @@ Update this the moment a system changes status, before starting the next one.
 | Auto-exposure | built | luminance mip chain, asymmetric adaptation |
 | Portal sampling for interiors | not started | |
 
+## Look (whole-frame)
+
+| System | Status | Notes |
+|---|---|---|
+| Per-voxel shade mosaic | **built** | Chunk albedo is jittered by a hash of the voxel *cell*, not of world position, so a merged greedy quad reads as the grid it was built from. Cell biased inward along the normal, or neighbouring pixels of one face draw two cells. |
+| Contact ambient occlusion | **built** | `aoRayDist` returns hit distance as a fraction of a 4 m reference, so a second 0.6 m term is one rescale of a number already computed — no extra rays, which matters at 2-4 samples. The long term alone sat near 1.0 on any open wall. |
+| Grade | **built** | Saturation lift was 1.15 against a palette measured at sat p90 0.69; now 1.02. Contrast pivots at 0.44 (scene median 0.39) rather than mid-grey. Frame luma sd 0.146 -> 0.205, p1 0.094 -> 0.012. |
+| Bloom threshold | **built** | Was smoothstep(1.0, 2.2) on raw scene luminance, tuned as though 1.0 were white — but the sun runs at 3.5, so every pale sunlit surface bloomed and signs read as halos ("OFFICE" rendered as "OFF"). Now scaled by the tonemap's own exposure, smoothstep(2.4, 4.6), so it means "brighter than this frame can show" and works at both ends of the day. Office sign band: pixels above luma 235 3220 -> 2520, band mean 177.3 -> 150.4. |
+| Night is viewable | **built** | Frame luma median was **0.000** at 21:30 — over half the image pure black. Two correct decisions in conflict: the ToD model keeps night's darkness in scene radiance expecting exposure to recover it, and the exposure ceiling was 4x against the ~88x a clear night asks for. Ceiling now 16x (daytime meters ~0.4 and never reaches it), night sky floor lifted ~3x for town skyglow. Median 0.000 -> 0.163, p10 0.000 -> 0.045. Facade lettering dropped to 0.25 emissive so it does not clip to a smear at the new ceiling. |
+| Clouds | **built** | Were one thresholded fbm in a flat tint — a stencil with an outline and no interior. Now two layers at different rates for parallax, a fake self-shadow (sample the same field a step toward the sun; more density that way means more cloud in the light path), and a silver lining near the sun. Sky luma sd 27.40 -> 28.61, p95 143.8 -> 154.7. |
+| Daytime stars | **fixed** | Stars were gated on haze and nothing else, so a clear noon sky was full of them — in every clear-weather frame the project has ever rendered. Now faded by sun elevation. Isolated bright specks in open sky 112 -> 0. |
+| Palette weathering | **built** | `weatheredPal` in `facade.h` dirties a colour toward neutral by formula rather than by hand-picking a second RGB. Applied to containers (per-box amount — a yard is boxes of every age), car paint (per-car; taxis and police weather least, being the two that get washed) and the mall's backdrop towers. Mall frame sat p90 0.653 -> 0.606. |
+
 ## Water
 
 | System | Status | Notes |

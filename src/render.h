@@ -995,7 +995,20 @@ void main() {
     float foam = clamp(shore * 0.85 + steep * 0.9 + crest * 0.5 + trail * 1.1, 0.0, 1.0);
     // Break the shoreline band up, or it reads as a painted stripe following the coast.
     foam *= 0.65 + 0.35 * sin(p.x * 7.0 + p.y * 5.0 + t * 1.3);
-    col = mix(col, vec3(0.92, 0.95, 0.97) * skyLit, clamp(foam, 0.0, 1.0) * 0.85);
+    // Foam is lit by the whole light field, not just the sky's diffuse share.
+    //
+    // Scaling it by skyLit alone is right for the body colour and wrong here, and the night
+    // render showed why: at a grazing angle the water is dominated by what it reflects, so a
+    // dark harbour is still carrying bright lamps and sky across its surface, while a diffuse
+    // foam term scaled to the sky's 0.015 falls *below* the water it sits on and the wake
+    // disappears. Real foam does not go dark next to a lit surface — it is an optically thick
+    // scatterer sitting in the same light that produced those reflections, which is why a wake
+    // reads as the brightest thing in a night harbour photograph rather than the dimmest.
+    //
+    // So it takes whichever is the stronger source: the sky directly, or the light the surface
+    // around it is demonstrably carrying. In daylight skyLit dominates and nothing changes.
+    float foamLit = max(skyLit, dot(reflected, vec3(0.2126, 0.7152, 0.0722)) * 0.75);
+    col = mix(col, vec3(0.92, 0.95, 0.97) * foamLit, clamp(foam, 0.0, 1.0) * 0.85);
 
     float dist = length(vWorld - uCamPos);
     float f = 1.0 - exp(-pow(dist * uFogDensity, 1.5));

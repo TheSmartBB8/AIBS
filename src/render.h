@@ -890,6 +890,40 @@ void main() {
     float detailM = (1.0 / max(uTiling, 0.001)) * (5.0 / 256.0);
     float detailFade = 1.0 - smoothstep(detailM * 0.5, detailM * 1.6, texelWorld);
 
+    // ---- and the same again, six times finer.
+    //
+    // At one tile per nine metres every ripple train in the normal map runs at 1.8 m or
+    // coarser. Two metres from the eye that is a fraction of one undulation, so the near
+    // surface rendered as a sheet of flat paint while distant water — where the same map is
+    // many cycles inside a pixel footprint — carried structure: ripple contrast measured 5.9
+    // near, 8.1 mid, 10.1 far, which is the exact inverse of what perspective does in life.
+    // The chop restore that was supposed to fix this raised the amplitude of features that were
+    // never small enough to see, which is why it did not.
+    //
+    // Real water carries capillary chop of a few centimetres riding on the swell, and in the
+    // near field that layer is the entire texture. One more tap of the same map at six times
+    // the rate buys it, scrolling on a different heading so the two layers never phase-lock
+    // into a visible tile. It needs its own fade: a layer six times finer aliases six times
+    // sooner, and letting it run to the horizon would put back the shimmer this fade exists
+    // to kill.
+    // The fade is NOT the base criterion divided by FINE. That was the first attempt and it
+    // put the layer's whole useful range inside the last three rows of the frame — visible in
+    // --waterdebug 12, where the tap's own amplitude (red/blue) covers the entire surface and
+    // the fade (green) is a sliver along the bottom edge. Ripple contrast moved 5.889 to 5.910
+    // out of 255, which is nothing, and the shaded image could not have told me which of the
+    // three candidate causes it was.
+    //
+    // Dividing by FINE assumes the layer has to retire once its finest texel reaches Nyquist,
+    // but the sampler is mip-filtered, so the finest content is band-limited by hardware before
+    // this shader sees it and cannot alias on its own. What the fade is actually protecting
+    // against is the nonlinearity downstream: an averaged normal does not shade like the
+    // average of the shading, so a mip-flattened chop reads as a surface that is wrong rather
+    // than one that is smooth. That argument scales with the layer's *coarse* content, not its
+    // fine content, so the fine layer wants the same threshold as the base one, slightly ahead
+    // of it — finer detail should retire first, not sixfold sooner.
+    const float FINE = 6.0;
+    float fineFade = 1.0 - smoothstep(detailM * 0.35, detailM * 1.10, texelWorld);
+
     // The same criterion applied to the simulation field itself, whose cells are 0.25 m.
     //
     // Fading the tiled maps was not enough, and the horizon proved it: with those switched off
@@ -950,7 +984,12 @@ void main() {
     // procedural ripple did; letting them alias there would reintroduce the moiré grid this
     // is meant to be free of, so the detail retires and leaves the smooth simulated normal.
     float edge = clamp(waterDepth * 1.4, 0.0, 1.0);
-    dTotal *= 0.022 * edge * detailFade;
+    // The fine layer distorts what is seen through the surface as well as what is seen in it.
+    // Without this the bed is displaced only by the metre-scale swell, so it slides as one
+    // sheet; the small wobble is what makes a shallow bottom read as being under moving water.
+    vec2 fineUV = warpUV * FINE + vec2(-uMoveFactor * 1.7, uMoveFactor * 0.9);
+    dTotal = dTotal * (0.022 * edge * detailFade)
+           + (texture(uDudv, fineUV).rg * 2.0 - 1.0) * (0.006 * edge * fineFade);
 
     // One coordinate serves both lookups, and that is worth stating because the well-known
     // version of this technique needs two. There, the reflection pass mirrors the eye position
@@ -981,7 +1020,15 @@ void main() {
     // smooth ribbon rather than breaking into the ladder of discrete glints that a real
     // rippled surface produces. Restoring it is one change for both, because both were only
     // ever the same missing detail seen from different directions.
-    vec3 N = normalize(fieldN + vec3(nm.x, 0.0, nm.z) * 0.70 * detailFade);
+    // Sampled plainly. Feeding this an unwarped footprint through textureGrad was tried — the
+    // theory being that warpUV's derivative is dominated by its displacement rather than by
+    // how fast the surface recedes, so the sampler was picking too flat a mip — and it is not
+    // what is happening: mid-field ripple contrast went 8.675 to 8.591 and near-field did not
+    // move at all. The mip is fine. Recorded because the theory is a plausible one that will
+    // occur to the next reader too.
+    vec3 nmFine = texture(uWaveNormal, fineUV).rgb * 2.0 - 1.0;
+    vec3 N = normalize(fieldN + vec3(nm.x, 0.0, nm.z) * 0.70 * detailFade
+                              + vec3(nmFine.x, 0.0, nmFine.z) * 0.34 * fineFade);
 
     vec3 V = Vf;
     float NoV = max(dot(N, V), 0.0);
@@ -990,6 +1037,16 @@ void main() {
     // the surface is opaque and nothing behind it can be mistaken for the term being inspected.
     // Bounded to the modes handled here: an open-ended `!= 0` swallowed the reflection modes
     // below and returned black for them, which reads exactly like a term that evaluates to zero.
+    // The fine chop layer on its own: how much tilt it is contributing (red/blue) and how much
+    // of it survives the distance fade (green). Added because the layer went in and the ripple
+    // contrast it was meant to raise did not move — measured 5.889 to 5.910 out of 255, which
+    // is nothing — and the shaded image cannot say whether the cause is the fade, the tap or
+    // the amplitude. Each is a different fix and guessing between them is how this file has
+    // been wrong before.
+    if (uDebug == 12) {
+        FragColor = vec4(abs(nmFine.x), fineFade, abs(nmFine.z), 1.0);
+        return;
+    }
     if (uDebug == 11) {   // simulated foam coverage on its own
         // Green flags "this fragment is water", so a measurement over the image can separate
         // the surface from the sky and geometry that are still shaded normally around it.

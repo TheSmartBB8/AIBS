@@ -62,6 +62,13 @@ correct the claim — including in commit messages already written.
 glslangValidator, builds the headless EGL renderer, cross-compiles `dist/VoxWreck.exe`.
 All four must pass before a commit.
 
+**Check for `== BUILD COMPLETE: all stages ran ==` on the last line.** Not for the absence of
+the word "error". The script used to abort silently partway — `set -e` kills it at an
+assignment whose command substitution fails — printing neither a success nor a failure line
+and skipping the last two stages on the way out. Grepping the output for success strings read
+that as a pass for six commits while CI failed on every one of them. Absence of an error is
+not evidence a stage ran.
+
 Screenshots: `LIBGL_ALWAYS_SOFTWARE=1 /tmp/voxwreck_render --render -w 1280 -h 720 -n 60 \
 -o out.ppm -m 1 --cam X Y Z YAW PITCH` then `node tools/ppm2png.mjs out.ppm out.png`.
 Software rendering, so a 1280x720 frame takes minutes — prefer `-n 4 --noaccum` when

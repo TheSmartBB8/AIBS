@@ -588,6 +588,12 @@ in vec2 vUV;
 out vec4 FragColor;
 uniform vec3 uCamRight, uCamUp, uCamFwd;
 uniform float uTanHalfFov, uAspect;
+// skyColor() reads these to fog itself. The chunk and water shaders happened to declare them
+// already for their own distance fog, which is exactly why adding the term to the shared sky
+// header compiled in two of the three programs and left this one referencing an identifier
+// that does not exist here.
+uniform vec3 uFogColor;
+uniform float uFogDensity;
 )";
     s += GLSL_SKY_COMMON;
     s += R"(

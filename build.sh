@@ -15,14 +15,23 @@ if command -v glslangValidator >/dev/null 2>&1; then
     mkdir -p /tmp/voxwreck_shaders
     g++ -std=c++17 -O0 -I src src/glapi.cpp tools/dump_shaders.cpp -o /tmp/dump_shaders
     (cd /tmp/voxwreck_shaders && /tmp/dump_shaders)
+    # `|| true` on the assignment, and it is load-bearing rather than defensive.
+    #
+    # Under `set -e` an assignment whose command substitution fails aborts the script on the
+    # spot. That is what happened when a shader stopped compiling: this loop died at the first
+    # bad file, before it could print FAIL or set the flag, so the script exited having printed
+    # neither a success line nor a failure line — and skipped the offscreen and Windows builds
+    # entirely on its way out. Anything reading the output for a success string saw no error and
+    # concluded the build was fine. It had not run.
     fail=0
-    for f in /tmp/voxwreck_shaders/*.vert; do
-        out=$(glslangValidator -S vert "$f" 2>&1)
-        if [ $? -ne 0 ] || echo "$out" | grep -qi error; then echo "FAIL: $f"; echo "$out"; fail=1; fi
-    done
-    for f in /tmp/voxwreck_shaders/*.frag; do
-        out=$(glslangValidator -S frag "$f" 2>&1)
-        if [ $? -ne 0 ] || echo "$out" | grep -qi error; then echo "FAIL: $f"; echo "$out"; fail=1; fi
+    for f in /tmp/voxwreck_shaders/*.vert /tmp/voxwreck_shaders/*.frag; do
+        stage=vert; case "$f" in *.frag) stage=frag;; esac
+        # Assignment inside an `if` condition is exempt from `set -e`, so this captures the
+        # real exit status without the script dying before it can report which file failed.
+        if out=$(glslangValidator -S "$stage" "$f" 2>&1); then rc=0; else rc=$?; fi
+        if [ $rc -ne 0 ] || echo "$out" | grep -qi error; then
+            echo "FAIL: $f (exit $rc)"; echo "$out"; fail=1
+        fi
     done
     if [ $fail -ne 0 ]; then echo "SHADER VALIDATION FAILED"; exit 1; fi
     echo "All shaders valid (GLSL 3.30 core)."
@@ -78,3 +87,9 @@ else
     echo "x86_64-w64-mingw32-g++ not found; skipping Windows exe build."
     echo "Install with: sudo apt-get install g++-mingw-w64-x86-64-posix"
 fi
+
+# Printed only if control actually reaches the end. A build script that can exit silently
+# midway is worse than one that fails loudly, because it reads as success to anything
+# scanning for errors rather than for completion.
+echo
+echo "== BUILD COMPLETE: all stages ran =="

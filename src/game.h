@@ -12,6 +12,7 @@
 // green while that work is in flight, and the menu's time-of-day control starts driving a real
 // sun the moment the file appears rather than needing a second edit here to switch it on.
 #include "vehicles.h"
+#include "bridge.h"
 #if __has_include("timeofday.h")
   #include "timeofday.h"
   #define VOXWRECK_HAVE_TIMEOFDAY 1
@@ -78,6 +79,7 @@ struct Game {
     bool cheatKeepDebris = false;        // debris never despawns
 
     VehicleSystem vehicles;
+    LiftBridge bridge;
     int drivingVehicle = -1;             // index into vehicles.list, or -1 on foot
     Rng fxRng{20260722};      // cosmetic-only randomness (particles/loose spawns from cluster fx)
 
@@ -175,6 +177,18 @@ struct Game {
                             return world.solidClamped((int)(x / VOXEL_SIZE), (int)(y / VOXEL_SIZE),
                                                       (int)(z / VOXEL_SIZE));
                         });
+        // Snapshot the deck now the map is finished, so the mechanism owns an exact copy to
+        // put back. Harmless on maps with no bridge — arm() sees an empty footprint and
+        // disarms itself.
+        bridge = LiftBridge();
+        if (mapInfo.hasBridge) {
+            bridge.x0 = mapInfo.brX0; bridge.y0 = mapInfo.brY0; bridge.z0 = mapInfo.brZ0;
+            bridge.x1 = mapInfo.brX1; bridge.y1 = mapInfo.brY1; bridge.z1 = mapInfo.brZ1;
+            bridge.hingeVox = mapInfo.brHingeVox;
+            bridge.hingeAlongX = mapInfo.brHingeAlongX;
+            bridge.buttonPos = mapInfo.brButton;
+            bridge.arm(world);
+        }
         wasInWater = false;
         world.markAllDirty();
         // full remesh across all cores before first frame
@@ -759,6 +773,17 @@ struct Game {
             water.packFoam(foamPacked);
             ren.uploadFoamField(foamPacked.data(), water.nx, water.nz);
         }
+
+        // ---- lift bridge
+        bridge.update(dt, world);
+        if (ctl && in.keyPressed['F'] && mapInfo.hasBridge) {
+            // Reach is generous because the post is a thin pole and the deck beside it is a
+            // busy silhouette; making the player hunt for a pixel is not the interesting part.
+            if (vlen(player.pos - bridge.buttonPos) < 3.5f) {
+                bridge.toggle(world);
+                audio.play(SND_CLICK, 0.9f);
+            }
+        }
         // thrown props smash glass where they land (networked via the normal op path)
         loose.update(dt, world, [&](vec3 p, vec3 v) {
             DestructionOp op;
@@ -876,6 +901,20 @@ struct Game {
                 for (auto& b : vb) ren.modelBox(b.center, b.half, b.r, b.g, b.b);
                 ren.modelDraw(mat4::identity(), mapInfo, mapInfo.ambient);
             }
+        }
+
+        // The lift bridge's deck, while it is out of the voxel grid. Drawn from the same
+        // snapshot that will be put back, so what you see rotating is exactly what returns.
+        if (bridge.movingOrUp() && !bridge.deck.empty()) {
+            ren.modelBegin();
+            const float h = VOXEL_SIZE * 0.5f;
+            for (const auto& v : bridge.deck) {
+                const PalEntry& pe = world.palette[v.pal];
+                ren.modelBox(vec3((v.x + 0.5f) * VOXEL_SIZE, (v.y + 0.5f) * VOXEL_SIZE,
+                                  (v.z + 0.5f) * VOXEL_SIZE),
+                             vec3(h, h, h), pe.r, pe.g, pe.b);
+            }
+            ren.modelDraw(bridge.transform(), mapInfo, mapInfo.ambient);
         }
 
         // loose grabbable debris props (the one currently held is drawn with the viewmodel)

@@ -375,6 +375,29 @@ void main() {
     // pick up the same detail instead of every face lighting as a perfectly flat plane.
     vec2 uvTex = abs(N.x) > 0.5 ? vWorld.zy : (abs(N.y) > 0.5 ? vWorld.xz : vWorld.xy);
     float roughness = 1.0 - vSmooth;
+
+    // ---- per-voxel shade variation, quantised to the grid the geometry is built from.
+    //
+    // Every other noise layer in this shader is continuous in world space, which reads as dirt
+    // on a smooth plane -- correct for a photoreal renderer and wrong for this one. A voxel
+    // model's surface is a mosaic: each cube carries its own palette entry, so a wall is a
+    // field of slightly different flat shades with hard boundaries on the grid. That mosaic is
+    // most of why a voxel render reads as voxels at all, and without it a merged greedy quad is
+    // indistinguishable from a painted box however much noise is smeared over it.
+    //
+    // The cell is biased *inward* along the normal: vWorld sits exactly on the face plane, so
+    // floor() there lands on whichever side of the boundary the float error picks, and adjacent
+    // pixels of the same face would draw from two different cells.
+    vec3 vcell = floor(vWorld / uVoxelSize - N * 0.25);
+    float vjit = hash13(vcell + 0.5) - 0.5;
+    float vjit2 = hash13(vcell * 1.37 + 11.3) - 0.5;
+    // Rough materials vary more than polished ones for the same reason they do in life: the
+    // variation is grime and wear, and a smooth surface holds neither.
+    albedo *= 1.0 + vjit * 0.15 * (0.4 + roughness * 0.6);
+    // A little hue drift as well as value, warm one voxel and cool the next. Value alone reads
+    // as noise; the hue is what makes it read as material.
+    albedo *= vec3(1.0 + vjit2 * 0.05, 1.0, 1.0 - vjit2 * 0.05);
+
     float fine = fbm(uvTex * 46.0) - 0.5;
     float coarse = fbm(uvTex * 5.0 + 19.0) - 0.5;
     albedo *= 1.0 + (fine * 0.5 + coarse * 0.8) * roughness * 0.4;
@@ -477,13 +500,26 @@ void main() {
     // ---- ray-traced ambient occlusion: cosine-weighted hemisphere rays whose *distance*
     // to the nearest voxel sets the AO intensity (mirrors Teardown's ambient lighting pass:
     // farther unobstructed travel = less occluded), blended with baked per-vertex corner AO.
+    //
+    // Two ranges, both read off the same rays. aoRayDist returns the hit distance as a
+    // fraction of maxDist, so rescaling that one number against a shorter reference gives a
+    // second, tighter occlusion term for free -- no extra rays, which is the whole reason to
+    // do it this way at 2-4 samples.
+    //
+    // The long range (4 m) is the room-scale term: it is what darkens the inside of a shed and
+    // it is nearly 1.0 everywhere else, because on an open wall most rays escape. That is
+    // correct and it is also why the render read flat -- an occlusion that only responds at
+    // room scale has nothing to say about the last half-metre of a corner, and the tight dark
+    // gradient where two surfaces meet is exactly the part that reads as Teardown. The short
+    // range (0.6 m, three voxels) is that gradient.
     float ao = vAO;
     if (uAOQuality > 0) {
         vec3 T = normalize(abs(N.y) < 0.9 ? cross(N, vec3(0, 1, 0)) : vec3(1, 0, 0));
         vec3 B = cross(N, T);
         int n = uAOQuality == 1 ? 2 : 4;
         float maxDist = 20.0;
-        float accum = 0.0;
+        float contactDist = 3.0;
+        float accum = 0.0, accumNear = 0.0;
         for (int k = 0; k < 4; k++) {
             if (k >= n) break;
             vec3 jp = seedAt(vWorld, float(k));
@@ -495,10 +531,13 @@ void main() {
             vec3 d = normalize(T * localDir.x + B * localDir.y + N * localDir.z);
             // jitter the ray origin too, to hide repeating per-voxel AO artifacts
             vec3 originJitter = (vec3(hash13(jp + 9.1), hash13(jp + 13.7), hash13(jp + 21.3)) - 0.5) * 0.5;
-            accum += aoRayDist(vp + originJitter, d, maxDist);
+            float f = aoRayDist(vp + originJitter, d, maxDist);
+            accum += f;
+            accumNear += clamp(f * maxDist / contactDist, 0.0, 1.0);
         }
         float rayAO = accum / float(n);
-        ao *= mix(1.0, rayAO, 0.85);
+        float contact = accumNear / float(n);
+        ao *= mix(1.0, rayAO, 0.85) * mix(1.0, contact, 0.55);
     }
 
     // ---- lighting (uses the bumped shading normal Nb so the surface detail above actually
@@ -1549,12 +1588,16 @@ void main() {
     c += texture(uBloom, vUV).rgb * uBloomStrength;
     c = aces(c * uExposure);
     c = pow(c, vec3(1.0 / 2.2));
-    // final grade: a mild S-curve contrast around mid-gray plus a small saturation lift.
-    // Cheap, display-referred polish pass -- the flat ACES+gamma output on its own reads as
-    // washed out compared to the punchier grade most references (Teardown included) ship with.
-    c = mix(vec3(0.5), c, 1.10);
+    // Final grade. Contrast pivots at 0.44, not 0.5: this scene's median luma measured 0.390,
+    // so pivoting at mid-grey pushed most of the frame down and clipped the top instead of
+    // opening the gap between lit and shadowed. Pivoting near the median rotates the histogram
+    // about where the picture actually sits, which is what "more contrast" was meant to mean.
+    c = mix(vec3(0.44), c, 1.22);
+    // Saturation is a *lift*, and it was set at 1.15 against a palette already measured at
+    // saturation p90 0.69 -- which is why the containers and panels read as poster paint. The
+    // reference is muted and weathered and gets its colour from the light, not from the grade.
     float lum = dot(c, vec3(0.2126, 0.7152, 0.0722));
-    c = mix(vec3(lum), c, 1.15);
+    c = mix(vec3(lum), c, 1.02);
     c = clamp(c, 0.0, 1.0);
     vec2 d = vUV - 0.5;
     c *= 1.0 - uVignette * dot(d, d) * 1.6;

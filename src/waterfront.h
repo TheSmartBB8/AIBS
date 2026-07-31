@@ -335,9 +335,30 @@ static void placeMooredBoat(MapBuilder& B, const WfPals& F, int x, int z, int se
  */
 static void placeQuayClutter(MapBuilder& B, const Pals& P, const WfPals& F,
                              int x0, int x1, int z0, int z1, int y, int count) {
+    // Somewhere to put a thing down: standing on ground, with room above it.
+    //
+    // Without this the run along the channel's east bank scattered crates into the warehouse
+    // wall, which starts three voxels inside the clutter band — a stack of boxes growing out of
+    // a building. A footprint test is the general answer and it is also what lets the same call
+    // dress a quay that has anything at all on it, which every quay eventually does.
+    auto freeAt = [&](int px, int pz, int w, int d, int h) {
+        for (int x = px; x < px + w; x++)
+            for (int z = pz; z < pz + d; z++) {
+                if (!B.w.get(x, y - 1, z)) return false;             // nothing to stand on
+                for (int yy = y; yy < y + h; yy++)
+                    if (B.w.get(x, yy, z)) return false;             // something already there
+            }
+        return true;
+    };
     for (int i = 0; i < count; i++) {
-        int px = B.rng.ri(std::min(x0, x1), std::max(x0, x1));
-        int pz = B.rng.ri(z0, z1);
+        int px = 0, pz = 0;
+        bool ok = false;
+        for (int t = 0; t < 12 && !ok; t++) {
+            px = B.rng.ri(std::min(x0, x1), std::max(x0, x1));
+            pz = B.rng.ri(z0, z1);
+            ok = freeAt(px, pz, 6, 5, 10);
+        }
+        if (!ok) continue;
         int roll = B.rng.ri(0, 7);
         switch (roll) {
             case 0: {   // coil of rope
@@ -439,6 +460,8 @@ static void detailQuayRun(MapBuilder& B, const Pals& P, const WfPals& F,
         placeQuayLadder(B, F, x, dir, z, seaY, topY);
     for (int z = z0 + 8; z < z1 - 4; z += 34)
         placeBollard(B, F, x - dir * 3, topY + 1, z + (z * 13) % 5);
+    // Asked for more than will fit, because the footprint test rejects candidates and a quay
+    // wants to look accumulated rather than allocated.
     placeQuayClutter(B, P, F, x - dir * 3, x - dir * 9, z0 + 4, z1 - 4, topY + 1,
-                     std::max(2, (z1 - z0) / 22));
+                     std::max(3, (z1 - z0) / 13));
 }

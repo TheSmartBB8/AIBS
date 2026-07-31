@@ -82,7 +82,9 @@ Update this the moment a system changes status, before starting the next one.
 
 ## Known open items
 
-- Carriageway too narrow for the cars to actually drive.
+- ~~Carriageway too narrow for the cars to actually drive.~~ **Stale — it described the web
+  build.** Measured on the native one: a car on the mall road travels 53.4 m in 20 s with
+  0.00 m of lateral drift, peaking at 88 km/h. The road is 4.2 m wide against a 1.70 m track.
 - The marina basin is ~1.2 m deep everywhere; deepening it means raising `SEA` and `Q`
   together, which touches every `Q+n` placement in the generator.
 - No `visual-critic` pass has been run against most of the rendering list above.

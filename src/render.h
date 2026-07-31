@@ -1479,14 +1479,30 @@ void main() {
 )";
 
 // ---------------------------------------------------------------- post
+// What gets to bloom.
+//
+// The threshold used to be smoothstep(1.0, 2.2) on the raw scene value, tuned as though 1.0
+// were white. It is not: the sun runs at luminance 3.5, so a plain white wall in daylight
+// arrives here at about 3.3 and cleared the threshold outright. Everything pale and sunlit was
+// blooming — which is why the harbour office's sign read "OFF" in the shot that started this,
+// with its last three letters inside their own halo, and why light surfaces across both maps
+// had a soft edge they should not have had. Bloom is for light *sources*, and a wall lit by one
+// is not one.
+//
+// The threshold is scaled by the same exposure the tonemap uses, so it means "brighter than
+// this frame is going to be able to show" rather than a fixed scene value. That is what makes
+// it work at both ends of the day without a second constant: at noon a diffuse white sits just
+// under it, and at night, where auto-exposure has opened up, a sign emitting a fraction of that
+// sits well over.
 static const char* FS_BRIGHT = R"(#version 330 core
 in vec2 vUV;
 out vec4 FragColor;
 uniform sampler2D uTex;
+uniform float uExposure;
 void main() {
     vec3 c = texture(uTex, vUV).rgb;
-    float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
-    FragColor = vec4(c * smoothstep(1.0, 2.2, l), 1.0);
+    float l = dot(c, vec3(0.2126, 0.7152, 0.0722)) * uExposure;
+    FragColor = vec4(c * smoothstep(2.4, 4.6, l), 1.0);
 }
 )";
 static const char* FS_BLUR = R"(#version 330 core
@@ -3136,6 +3152,7 @@ struct Renderer {
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, lit);
         glUniform1i(glGetUniformLocation(progBright, "uTex"), 0);
+        glUniform1f(glGetUniformLocation(progBright, "uExposure"), exposure);
         glBindVertexArray(fsVAO);
         glDrawArrays(GL_TRIANGLES, 0, 6);
         // blur x2

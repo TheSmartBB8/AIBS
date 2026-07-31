@@ -272,19 +272,68 @@ static void placeShelf(MapBuilder& B, const Pals& P, int x0, int y, int z0, int 
     }
 }
 
+/**
+ * A shipping container, 6.4 x 2.4 x 2.6 m.
+ *
+ * These are the largest single-colour surfaces on either map — a yard of them, plus more stacked
+ * on the quay — and as authored they were also the most saturated: six poster primaries with a
+ * darker stripe every four voxels and nothing else on them. That is most of what made the yard
+ * read as a toy box.
+ *
+ * Two changes. The paint is weathered by a per-box amount, because a yard is boxes of every age
+ * and uniform weathering is as much a tell as none. And the box gets the features that say
+ * container rather than crate: corner castings, top and bottom rails, doors with locking bars at
+ * one end, and rust breaking through along the seams where it always does first.
+ */
 static void placeContainer(MapBuilder& B, const Pals& P, int x, int y, int z, int alongX, int colIdx) {
     static const int cols[][3] = {
         {160, 62, 44}, {44, 90, 150}, {70, 130, 70}, {200, 160, 40}, {150, 150, 155}, {130, 70, 120},
     };
     const int* c = cols[colIdx % 6];
-    uint8_t body = B.w.addPal(c[0], c[1], c[2], M_MED);
-    uint8_t rib = B.w.addPal(c[0] * 3 / 4, c[1] * 3 / 4, c[2] * 3 / 4, M_MED);
+    float grime = 0.22f + ((colIdx * 37) % 40) * 0.010f;      // 0.22..0.61, stable per index
+    uint8_t body = weatheredPal(B.w, c[0], c[1], c[2], M_MED, grime);
+    uint8_t rib = shadePal(B.w, body, 0.80f);
+    uint8_t castings = weatheredPal(B.w, 78, 76, 72, M_HEAVY, 0.2f);
+    uint8_t rust = weatheredPal(B.w, 132, 82, 52, M_MED, 0.25f);
     int L = 32, W = 12, H = 13;
     int lx = alongX ? L : W, lz = alongX ? W : L;
     B.fill(x, y, z, x + lx - 1, y + H - 1, z + lz - 1, body);
     B.clear(x + 1, y + 1, z + 1, x + lx - 2, y + H - 2, z + lz - 2);
     if (alongX) { for (int i = 2; i < L; i += 4) B.fill(x + i, y, z, x + i, y + H - 1, z + lz - 1, rib); }
     else        { for (int i = 2; i < L; i += 4) B.fill(x, y, z + i, x + lx - 1, y + H - 1, z + i, rib); }
+
+    // Top and bottom rails run the whole length and are what the ribs stop against. Without
+    // them the corrugation runs off the ends and the box has no edge.
+    B.fill(x, y, z, x + lx - 1, y, z + lz - 1, castings);
+    B.fill(x, y + H - 1, z, x + lx - 1, y + H - 1, z + lz - 1, castings);
+    // Corner castings, the blocks a crane actually lifts by.
+    for (int cx : {x, x + lx - 2})
+        for (int cz : {z, z + lz - 2})
+            for (int cy : {y, y + H - 2})
+                B.fill(cx, cy, cz, cx + 1, cy + 1, cz + 1, castings);
+
+    // Doors at one end: a flat panel, a hinge column each side, and four vertical locking bars.
+    // The bars are the single most recognisable thing on a container and they cost 4 columns.
+    {
+        int dx0 = alongX ? x + lx - 1 : x, dz0 = alongX ? z : z + lz - 1;
+        for (int k = 0; k < 4; k++) {
+            int off = 2 + k * ((alongX ? lz : lx) - 5) / 3;
+            if (alongX) B.fill(dx0, y + 1, z + off, dx0, y + H - 2, z + off, castings);
+            else        B.fill(x + off, y + 1, dz0, x + off, y + H - 2, dz0, castings);
+        }
+    }
+
+    // Rust along the seams. Real corrosion starts where water sits — the bottom rail and the
+    // door end — so it goes there rather than scattered, which is what makes it read as decay
+    // rather than as noise.
+    for (int i = 0; i < 14; i++) {
+        int rr = (colIdx * 977 + i * 613) % 100;
+        if (rr < 45) continue;
+        int a = (colIdx * 271 + i * 137) % (alongX ? lx : lz);
+        if (alongX) B.fill(x + a, y + 1, z, x + a, y + 1 + rr % 3, z, rust);
+        else        B.fill(x, y + 1, z + a, x, y + 1 + rr % 3, z + a, rust);
+    }
+    (void)P;
 }
 
 // ---------------------------------------------------------------- harbour vernacular
@@ -538,11 +587,11 @@ static MapInfo genMall(World& w, uint32_t seed = 1337) {
     // working harbour, signage is *painted*: it catches the sun and at dusk it is barely
     // brighter than the wall it is bolted to. A little emission separates it from the wall; a
     // lot destroys it.
-    uint8_t signOrange = w.addPal(255, 150, 40, M_LIGHT, 1.3f);
-    uint8_t signWhite  = w.addPal(240, 245, 255, M_LIGHT, 1.1f);
-    uint8_t signCyan   = w.addPal(80, 220, 235, M_LIGHT, 1.2f);
-    uint8_t signPink   = w.addPal(250, 90, 160, M_LIGHT, 1.2f);
-    uint8_t signGreen  = w.addPal(110, 235, 90, M_LIGHT, 1.2f);
+    uint8_t signOrange = w.addPal(255, 150, 40, M_LIGHT, 0.55f);
+    uint8_t signWhite  = w.addPal(240, 245, 255, M_LIGHT, 0.45f);
+    uint8_t signCyan   = w.addPal(80, 220, 235, M_LIGHT, 0.50f);
+    uint8_t signPink   = w.addPal(250, 90, 160, M_LIGHT, 0.50f);
+    uint8_t signGreen  = w.addPal(110, 235, 90, M_LIGHT, 0.50f);
     uint8_t fountainW  = w.addPal(90, 170, 200, M_LIGHT, 0.25f);
 
     const int G = 8;              // ground surface: solid 0..G-1, stand on y=G
@@ -884,8 +933,16 @@ static MapInfo genMarina(World& w, uint32_t seed = 4242) {
     MapBuilder B(w, seed);
     Pals P = makeCommonPalette(w);
     WfPals F = makeWfPals(w);
-    uint8_t signWhite = w.addPal(240, 245, 255, M_LIGHT, 1.1f);
-    uint8_t signRed   = w.addPal(255, 90, 70, M_LIGHT, 1.2f);
+    // Facade lettering emits about 0.5, not the 1.1-1.3 it used to.
+    //
+    // The bright pass thresholds at luminance 1.0, and the sun runs at 3.5, so a sign that also
+    // emitted 1.2 cleared the bloom threshold on its own before a single photon of sunlight
+    // landed on it. In daylight the harbour office's sign read "OFF": the last three letters
+    // were inside their own glow. A lit sign at noon is barely brighter than the wall it is
+    // bolted to — the glow is a night effect, and 0.5 against a night ambient near 0.1 still
+    // gives one.
+    uint8_t signWhite = w.addPal(240, 245, 255, M_LIGHT, 0.45f);
+    uint8_t signRed   = w.addPal(255, 90, 70, M_LIGHT, 0.50f);
     uint8_t beacon    = w.addPal(255, 220, 120, M_LIGHT, 8.0f);
     uint8_t hullWhite = w.addPal(228, 230, 232, M_MED);
     uint8_t hullRed   = w.addPal(170, 52, 44, M_MED);
@@ -1431,8 +1488,8 @@ static MapInfo genHub(World& w, uint32_t seed = 777) {
     Pals P = makeCommonPalette(w);
     uint8_t siding    = w.addPal(214, 186, 112, M_MED);    // pale-yellow painted wood
     uint8_t roofDark  = w.addPal(70, 62, 58, M_MED);
-    uint8_t signOrange = w.addPal(255, 150, 40, M_LIGHT, 1.3f);
-    uint8_t signWhite  = w.addPal(240, 245, 255, M_LIGHT, 1.1f);
+    uint8_t signOrange = w.addPal(255, 150, 40, M_LIGHT, 0.55f);
+    uint8_t signWhite  = w.addPal(240, 245, 255, M_LIGHT, 0.45f);
     uint8_t hullRed    = w.addPal(170, 60, 46, M_MED);
 
     const int G = 12;     // stand level on grass (top voxel at G-1)
